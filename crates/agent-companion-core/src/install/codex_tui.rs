@@ -511,6 +511,15 @@ mod tests {
         save(&path, &read(&path).unwrap(), Some(&[])).unwrap();
         assert!(path.is_symlink());
         assert_eq!(read(&target).unwrap().items, Some(vec![]));
+        let backup = fs::read_dir(dir.path())
+            .unwrap()
+            .map(Result::unwrap)
+            .find(|entry| entry.file_name().to_string_lossy().contains(".backup."))
+            .unwrap();
+        assert_eq!(
+            backup.metadata().unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         assert_eq!(
             fs::metadata(target).unwrap().permissions().mode() & 0o777,
             0o600
