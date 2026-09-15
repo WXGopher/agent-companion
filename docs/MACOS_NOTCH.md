@@ -24,9 +24,10 @@
 ## 验证（v0.3.0 开发版）
 
 - 本地 macOS arm64 debug/release 构建通过，Mach-O 最低系统版本与 app 元数据均为 macOS 14.0。
+- 打包时对整个 app 做 ad-hoc 完整性签名并执行 `codesign --verify --strict`，封装资源后再生成 ZIP 和校验和；不使用 Developer ID，不做公证。
 - Clippy 无警告；共享后端 `--features server` 175 项通过，2 项显式忽略；macOS 默认公共逻辑 169 项和编辑器 2 项通过。
 - 新增原生离屏检查使用实际 SwiftUI/AppKit 视图：窄条、物理刘海、活动、结束、跳转失败、空数据、读取失败、加载中；检查可变视图展开/收起后的实际尺寸。通过 `cargo test` 自动接入现有 macOS CI。
-- Windows GNU 交叉编译三个可执行文件通过。Windows MSVC 结果以本分支 GitHub Actions 为准；不宣称 Windows 桌面行为在本机实测。
+- Windows GNU 交叉编译三个可执行文件通过。Windows MSVC 与 macOS arm64 的构建、Clippy 和测试均已在 [GitHub CI](https://github.com/WXGopher/agent-companion/actions/runs/35001046723) 通过；不宣称 Windows 桌面行为在本机实测。
 - 测试数据均为合成会话，不向模型发起任务、不修改真实 Codex 配置。
 - 当前桌面自动化接口对应用和 Finder 均返回 `cgWindowNotFound`。真实悬停、键盘、跳转、跨屏/全屏及从退出按钮结束进程尚未完成，离屏渲染不代替这些检查。
 
