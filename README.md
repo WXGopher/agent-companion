@@ -22,7 +22,7 @@ macOS 关闭窗口即退出，不启动菜单栏常驻、hooks、会话监控或
 
 ### macOS 安装
 
-从 Releases 下载 `agent-companion-v0.2.0-macos-arm64.zip`，解压并将 **Agent Companion.app** 拖到“应用程序”。首次发布没有 Developer ID 签名或 Apple 公证。首次打开若被系统拦截，按 [Apple 官方步骤](https://support.apple.com/en-us/102445)，在“系统设置 → 隐私与安全性”中选择“仍要打开”。
+从 Releases 下载 `agent-companion-v0.2.1-macos-arm64.zip`，解压并将 **Agent Companion.app** 拖到“应用程序”。首次发布没有 Developer ID 签名或 Apple 公证。首次打开若被系统拦截，按 [Apple 官方步骤](https://support.apple.com/en-us/102445)，在“系统设置 → 隐私与安全性”中选择“仍要打开”。
 
 在终端可直接运行 `/Applications/Agent Companion.app/Contents/MacOS/agent-companion codex-tui`（路径含空格时请加引号）。窗口显示本次实际配置路径，读取进程的 `CODEX_HOME`，缺省为 `~/.codex/config.toml`。Finder 启动不读取 shell 初始化脚本；若只在 shell 中设置了 `CODEX_HOME`，请从该终端启动应用。
 
@@ -56,7 +56,7 @@ Agent Companion 以 Codex 为支持和验证对象，通过 hooks、本地会话
 <img src="docs/readout.png" width="96" alt="垂直任务栏中的额度控件">
 <img src="docs/card.png" width="440" alt="Claude Code 工具审批卡片">
 
-当前源码版本为 v0.2.0。项目仍在早期开发，部分截图来自较早版本，具体外观以当前程序为准。Codex CLI 提问接入与桌面分页历史读取为实验性功能，桌面原生问题仍在 Codex 中作答。
+当前源码版本为 v0.2.1。项目仍在早期开发，部分截图来自较早版本，具体外观以当前程序为准。Codex CLI 提问接入与桌面分页历史读取为实验性功能，桌面原生问题仍在 Codex 中作答。
 
 ### 安装与使用
 
@@ -184,7 +184,7 @@ cargo test -p agent-companion --test display_lifecycle -- --ignored --nocapture
 正式发布通过 [GitHub Actions](.github/workflows/release.yml) 构建。macOS 压缩包包含 `Agent Companion.app`，Windows 压缩包包含三个 Windows 程序；两者附 README 和许可证，并提供统一 `SHA256SUMS.txt` 与构建来源证明。可用 GitHub CLI 验证：
 
 ```powershell
-gh attestation verify agent-companion-v0.2.0-windows-x86_64.zip --repo WXGopher/agent-companion
+gh attestation verify agent-companion-v0.2.1-windows-x86_64.zip --repo WXGopher/agent-companion
 ```
 
 F01–F03 的交付范围与后续更新、远端会话候选项，见对照 open-vibe-island 整理的 [功能路线图](docs/ROADMAP.md)。更多代理、通知偏好和界面语言切换本轮不做。维护事项单列在 [已知问题](docs/KNOWN_ISSUES.md)。
@@ -210,7 +210,7 @@ Closing the macOS window exits the process. This release has no macOS menu bar s
 
 ### macOS installation
 
-Download `agent-companion-v0.2.0-macos-arm64.zip` from Releases and drag **Agent Companion.app** into Applications. This first release has no Developer ID signature or Apple notarization. If macOS blocks the first launch, follow [Apple's instructions](https://support.apple.com/en-us/102445) to choose **Open Anyway** in System Settings → Privacy & Security.
+Download `agent-companion-v0.2.1-macos-arm64.zip` from Releases and drag **Agent Companion.app** into Applications. This first release has no Developer ID signature or Apple notarization. If macOS blocks the first launch, follow [Apple's instructions](https://support.apple.com/en-us/102445) to choose **Open Anyway** in System Settings → Privacy & Security.
 
 From a terminal, run `"/Applications/Agent Companion.app/Contents/MacOS/agent-companion" codex-tui`. The window shows the resolved config path: `$CODEX_HOME/config.toml`, defaulting to `~/.codex/config.toml`. Finder uses its process environment and does not source shell startup files; launch from your terminal when `CODEX_HOME` is set only in that shell.
 
@@ -244,7 +244,7 @@ Agent Companion focuses on Codex, using hooks, local session logs and an optiona
 <img src="docs/readout.png" width="96" alt="Quota readout in a vertical taskbar">
 <img src="docs/card.png" width="440" alt="Claude Code tool approval card">
 
-The current source version is v0.2.0. The project is in early development and some screenshots show earlier versions. Codex CLI question integration and desktop paginated-history reads are experimental; desktop questions still require answering in Codex.
+The current source version is v0.2.1. The project is in early development and some screenshots show earlier versions. Codex CLI question integration and desktop paginated-history reads are experimental; desktop questions still require answering in Codex.
 
 ### Install and use
 
@@ -369,7 +369,7 @@ With Agent Companion installed and Windows notifications enabled, run `cargo tes
 The macOS ZIP contains `Agent Companion.app`; the Windows ZIP contains the three Windows executables. Both include the README and license. Release archives are built by [GitHub Actions](.github/workflows/release.yml). Each archive has a `SHA256SUMS.txt` checksum alongside it and a build provenance attestation. Verify the attestation with the GitHub CLI:
 
 ```powershell
-gh attestation verify agent-companion-v0.2.0-windows-x86_64.zip --repo WXGopher/agent-companion
+gh attestation verify agent-companion-v0.2.1-windows-x86_64.zip --repo WXGopher/agent-companion
 ```
 
 See the [feature roadmap](docs/ROADMAP.md) for gaps compared with open-vibe-island, including the delivered F01–F03 scope and candidate update/remote-session features; more agents, notification preferences and language switching are not planned. Maintenance work is tracked separately in [known issues](docs/KNOWN_ISSUES.md).
