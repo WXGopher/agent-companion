@@ -1,6 +1,7 @@
 //! Agent Companion's user-facing binary.
 //!
-//! On macOS, no subcommand opens the standalone editor and closing it exits.
+//! On macOS, no subcommand opens the compact Codex notch. `codex-tui` opens
+//! the independent status bar editor; closing that editor exits its process.
 //! On Windows it runs the app: a usage readout in the taskbar, cards
 //! for the approvals a session needs, a tray icon, and the named-pipe server
 //! that feeds them all. The subcommands are the parts that have to
@@ -20,6 +21,8 @@ mod codex;
 mod codex_tui;
 #[cfg(windows)]
 mod headless;
+#[cfg(target_os = "macos")]
+mod macos;
 mod out;
 
 pub mod ui {
@@ -42,7 +45,7 @@ use clap::{Parser, Subcommand};
 
 use crate::out::errln;
 
-/// Codex CLI status bar editor and Windows agent companion.
+/// Codex task and usage companion, with a native CLI status bar editor.
 #[derive(Debug, Parser)]
 #[command(name = "agent-companion", version, about, long_about = None)]
 struct Cli {
@@ -54,6 +57,9 @@ struct Cli {
 enum Command {
     /// Open the standalone Codex CLI status bar editor. Apply, close, then restart Codex.
     CodexTui,
+    /// Show the compact Codex task and weekly usage notch.
+    #[cfg(target_os = "macos")]
+    Notch,
     /// Watch the hook event stream in a terminal, with no windows at all.
     #[cfg(windows)]
     Headless(headless::Args),
@@ -105,7 +111,9 @@ fn main() -> ExitCode {
     let result = match cli.command {
         #[cfg(windows)]
         None => app::run(),
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
+        None | Some(Command::Notch) => macos::run(),
+        #[cfg(all(not(windows), not(target_os = "macos")))]
         None => codex_tui::run(),
         Some(Command::CodexTui) => codex_tui::run(),
         #[cfg(windows)]
