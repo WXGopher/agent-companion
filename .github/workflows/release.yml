@@ -86,7 +86,12 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Combine checksums
-        run: cat dist/SHA256SUMS-*.txt > dist/SHA256SUMS.txt
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          checksums = "".join(path.read_text() for path in sorted(Path("dist").glob("SHA256SUMS-*.txt")))
+          Path("dist/SHA256SUMS.txt").write_text(checksums)
+          PY
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
