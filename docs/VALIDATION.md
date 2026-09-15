@@ -7,7 +7,7 @@
 | 项目 | 结果 |
 | --- | --- |
 | `cargo fmt --all --check` | 通过 |
-| macOS 主程序与公共核心测试 | 2 个编辑器草稿测试、158 个核心测试通过；1 个耗时基准忽略 |
+| macOS 主程序与公共核心测试 | 2 个编辑器草稿测试、158 个核心测试通过；1 个读取真实会话的测试显式忽略 |
 | `cargo test -p agent-companion-core --features server --locked` | 172 项通过；2 个显式忽略项 |
 | macOS Clippy，全部 targets，`-D warnings` | 通过 |
 | Windows GNU x86_64 交叉编译和 Clippy，整个 workspace/全部 targets | 通过；不等同于 Windows 运行测试 |

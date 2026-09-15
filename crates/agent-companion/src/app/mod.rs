@@ -2357,11 +2357,11 @@ mod tests {
     fn a_session_is_labelled_by_its_project_and_its_last_word() {
         assert_eq!(
             session_title(
-                Some("agent-companion"),
+                Some("parser"),
                 Some("**Done.** Wired the parser."),
                 "abc12345"
             ),
-            "agent-companion · Done. Wired the parser."
+            "parser · Done. Wired the parser."
         );
         // No transcript read yet: the project alone.
         assert_eq!(
