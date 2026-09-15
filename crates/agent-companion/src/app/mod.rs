@@ -284,7 +284,7 @@ impl App {
             }
         }
         self.refresh();
-        self.migrate_startup_shortcut();
+        self.migrate_login_launch();
 
         self.wire_flyout();
         self.start_adopting();
@@ -1907,14 +1907,11 @@ impl App {
         }
     }
 
-    /// An earlier Agent Companion wired run-at-login as a hand-made Startup shortcut.
-    /// Move that to the registry Run key, once, so the settings checkbox and
-    /// the mechanism agree from the first time the window opens.
-    fn migrate_startup_shortcut(&self) {
-        let Some(link) = legacy_startup_shortcut() else {
-            return;
-        };
-        if !link.exists() {
+    /// Preserve an enabled login launch across the rename, and move the old
+    /// Startup shortcut to the same managed Run key. Disabled stays disabled.
+    fn migrate_login_launch(&self) {
+        let link = legacy_startup_shortcut().filter(|path| path.exists());
+        if link.is_none() && !win::runs_at_login() {
             return;
         }
         let exe = match agent_companion_core::install::stable_bin_dir() {
@@ -1925,8 +1922,10 @@ impl App {
             },
         };
         if win::set_run_at_login(true, &exe).is_ok() {
-            let _ = std::fs::remove_file(link);
-            crate::util::debug_log("moved the Startup shortcut to the Run key");
+            if let Some(link) = link {
+                let _ = std::fs::remove_file(link);
+            }
+            crate::util::debug_log("updated the enabled login launch to Agent Companion");
         }
     }
 
@@ -2206,10 +2205,7 @@ fn agent_present(dir: &str) -> bool {
 /// Where the hand-made Startup shortcut lived, while it existed.
 fn legacy_startup_shortcut() -> Option<PathBuf> {
     let appdata = std::env::var_os("APPDATA")?;
-    Some(
-        PathBuf::from(appdata)
-            .join(r"Microsoft\Windows\Start Menu\Programs\Startup\Agent Companion.lnk"),
-    )
+    Some(PathBuf::from(appdata).join(r"Microsoft\Windows\Start Menu\Programs\Startup\Atoll.lnk"))
 }
 
 /// Remove the legacy shortcut, so the registry Run key is the one mechanism.
