@@ -1,0 +1,184 @@
+import { Theme, UsageChip } from "common.slint";
+
+// The usage readout that sits inside the taskbar.
+//
+// One block per agent: `● 92%` for the quota, and — while the agent has live
+// sessions — a task line with a segment per state: `? 1` waiting on the human,
+// a breathing dot with the running count, `✓ 2` finished. Blocks stack on a
+// vertical taskbar and sit side by side on a horizontal one. Rust decides
+// which; see `taskbar::Along`.
+//
+// Deliberately austere. This is a readout on somebody else's furniture: no
+// border, no card, no background of its own beyond the faintest wash to lift
+// the text off whatever the shell paints behind it. The only colour is the
+// information — the agent's dot and the percentage's tier.
+//
+// It has no TouchArea, and that is not an omission. Clicks and drags on this
+// window are picked up in Rust, from Windows directly; see
+// `taskbar::TaskbarView::poll_click` for what makes that necessary.
+//
+// The breathing dot's phase is pushed from Rust at 10 Hz, and only while a
+// task line is showing — never a display-rate animation, and never a repaint
+// while the readout is at rest. A resident widget has no business keeping a
+// laptop's GPU awake.
+component AgentBlock {
+    in property <UsageChip> chip;
+    in property <float> pulse;
+
+    // Mirrors `taskbar::CHIP_HEIGHT` and friends.
+    property <length> chip-h: 15px;
+    property <length> dot: 7px;
+
+    function agent-color() -> color {
+        chip.agent == "codex"
+            ? Theme.codex
+            : (chip.agent == "claude" ? Theme.claude : Theme.idle-dot);
+    }
+
+    VerticalLayout {
+        spacing: 1px;
+        HorizontalLayout {
+            height: root.chip-h;
+            spacing: 4px;
+            Rectangle {
+                width: root.dot;
+                horizontal-stretch: 0;
+                Rectangle {
+                    y: (parent.height - root.dot) / 2;
+                    width: root.dot;
+                    height: root.dot;
+                    border-radius: root.dot / 2;
+                    background: root.agent-color();
+                }
+            }
+            Text {
+                text: chip.value;
+                color: chip.tier == "low"
+                    ? Theme.spent
+                    : (chip.tier == "warn" ? Theme.thin : (chip.tier == "good" ? Theme.plenty : Theme.faint));
+                font-size: 11px;
+                font-weight: 600;
+                vertical-alignment: center;
+                horizontal-alignment: left;
+            }
+        }
+        // The task line: a segment per state with anything in it. Widths and
+        // gaps are mirrored by `taskbar::task_line_width`, which is what sizes
+        // the window around this.
+        if chip.pending + chip.running + chip.done > 0: HorizontalLayout {
+            height: root.chip-h;
+            alignment: start;
+            spacing: 5px;
+
+            // Blocked on the human — the one state that is the user's fault,
+            // so it takes the warning amber and the pulse.
+            if chip.pending > 0: HorizontalLayout {
+                spacing: 2px;
+                Text {
+                    text: "?";
+                    color: Theme.thin;
+                    opacity: 0.25 + 0.75 * root.pulse;
+                    font-size: 11px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: chip.pending;
+                    color: Theme.thin;
+                    font-size: 11px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+            }
+
+            // Working: the agent's own colour, breathing.
+            if chip.running > 0: HorizontalLayout {
+                spacing: 2px;
+                Rectangle {
+                    width: root.dot;
+                    horizontal-stretch: 0;
+                    Rectangle {
+                        y: (parent.height - root.dot) / 2;
+                        width: root.dot;
+                        height: root.dot;
+                        border-radius: root.dot / 2;
+                        background: root.agent-color();
+                        opacity: 0.25 + 0.75 * root.pulse;
+                    }
+                }
+                Text {
+                    text: chip.running;
+                    color: Theme.faint;
+                    font-size: 11px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+            }
+
+            // Finished, and quiet about it.
+            if chip.done > 0: HorizontalLayout {
+                spacing: 2px;
+                Text {
+                    text: "✓";
+                    color: Theme.faint;
+                    font-size: 11px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: chip.done;
+                    color: Theme.faint;
+                    font-size: 11px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}
+
+export component TaskbarBar inherits Window {
+    // Matched verbatim by the Win32 code that finds this window to reparent it
+    // into the taskbar.
+    title: "Agent Companion Usage";
+    no-frame: true;
+    always-on-top: true;
+    background: transparent;
+
+    in property <[UsageChip]> chips;
+    // Set from the taskbar's own shape, not from a docking constant.
+    in property <bool> vertical: true;
+    // The breathing dot's brightness, 0..1; see `TaskbarView::breathe`.
+    in property <float> pulse: 1.0;
+
+    // Mirrors `taskbar::PADDING` and `taskbar::BLOCK_GAP`.
+    property <length> pad: 4px;
+    property <length> block-gap: 4px;
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: 6px;
+        // Barely there: enough to keep 10 px digits legible over a light
+        // taskbar theme, not enough to read as a box sitting on the bar.
+        background: Theme.taskbar-wash;
+
+        if root.vertical: VerticalLayout {
+            padding: root.pad;
+            spacing: root.block-gap;
+            for chip in root.chips: AgentBlock {
+                chip: chip;
+                pulse: root.pulse;
+            }
+        }
+
+        if !root.vertical: HorizontalLayout {
+            padding: root.pad;
+            spacing: 10px;
+            for chip in root.chips: AgentBlock {
+                chip: chip;
+                pulse: root.pulse;
+            }
+        }
+    }
+}

@@ -1,19 +1,19 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/atoll-hook",
-    "crates/atoll-core",
-    "crates/atoll",
+    "crates/agent-companion-hook",
+    "crates/agent-companion-core",
+    "crates/agent-companion",
 ]
 
 [workspace.package]
-version = "0.1.6"
+version = "0.2.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/WXGopher/atoll"
+repository = "https://github.com/WXGopher/agent-companion"
 
 [workspace.dependencies]
-atoll-core = { path = "crates/atoll-core", version = "0.1.6" }
+agent-companion-core = { path = "crates/agent-companion-core", version = "0.2.0" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -69,5 +69,5 @@ opt-level = 2
 codegen-units = 1
 panic = "abort"
 
-[profile.release.package.atoll-hook]
+[profile.release.package.agent-companion-hook]
 opt-level = "z"

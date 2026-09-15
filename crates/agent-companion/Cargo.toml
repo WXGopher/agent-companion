@@ -1,0 +1,38 @@
+[package]
+name = "agent-companion"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Codex CLI status bar editor, with Windows agent monitoring and approvals."
+
+[[bin]]
+name = "agent-companion"
+path = "src/main.rs"
+
+[[bin]]
+name = "agent-companion-codex"
+path = "src/codex_main.rs"
+
+[dependencies]
+agent-companion-core = { workspace = true, features = ["config-edit"] }
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+slint.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+agent-companion-core = { workspace = true, features = ["server"] }
+tokio.workspace = true
+futures-util = { version = "0.3", features = ["sink"] }
+tokio-tungstenite = "0.28"
+tray-icon.workspace = true
+windows.workspace = true
+
+[build-dependencies]
+slint-build.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+slint = { workspace = true, features = ["unstable-winit-030"] }
+tempfile.workspace = true
