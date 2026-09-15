@@ -35,13 +35,14 @@ with (contents / "Info.plist").open("wb") as stream:
         "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": version,
         "CFBundleVersion": version,
-        "LSMinimumSystemVersion": "11.0",
+        "LSMinimumSystemVersion": "14.0",
         "LSArchitecturePriority": ["arm64"],
         "NSHighResolutionCapable": True,
         "NSPrincipalClass": "NSApplication",
+        "NSAppleEventsUsageDescription": "Agent Companion selects the terminal tab for the Codex task you click.",
         "LSApplicationCategoryType": "public.app-category.developer-tools",
     }, stream)
-for name in ("README.md", "LICENSE"):
+for name in ("README.md", "LICENSE", "THIRD_PARTY_NOTICES.md"):
     shutil.copy2(root / name, contents / "Resources" / name)
 archive = args.output / f"agent-companion-v{version}-macos-arm64.zip"
 subprocess.run(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(app), str(archive)], check=True)

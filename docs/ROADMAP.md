@@ -2,7 +2,15 @@
 
 路线图描述用户能做什么及明确的接入边界。当前以 **Codex** 为支持和验证对象；Claude Code 保留为实验性兼容代码，未在真实 Claude Code 环境验证，新配置默认关闭其显示。
 
-## v0.2.0：Agent Companion 与 macOS
+## v0.3.0：Codex 窄刘海
+
+- macOS 14+ Apple Silicon：默认启动原生窄刘海，左侧为活动数与最近结束数，右侧为 Codex 周额度已用百分比。
+- 悬停预览、点击展开、活动/结束列表、桌面对话及终端跳转、键盘收起、退出、无数据和错误状态。
+- 复用 Open Island 的部分 GPLv3 实现，出处见 [第三方声明](../THIRD_PARTY_NOTICES.md)；保留 Rust 读取逻辑与独立 Slint 编辑器。
+- 只接入 Codex，不加入其他代理、宠物或主题编辑。Windows 保持现有功能，本轮以编译通过为验收要求。
+- 设计与验证记录见 [macOS 刘海](MACOS_NOTCH.md)。
+
+## 已发布 v0.2.0：Agent Companion 与 macOS
 
 - 正式名称改为 Agent Companion，仓库目标为 `WXGopher/agent-companion`，主命令 `agent-companion`。
 - macOS 首版支持 Apple Silicon，启动独立状态栏编辑器，关闭即退出；保存后由 Codex 自行读取，无需常驻。
@@ -36,7 +44,7 @@ F02 的接入范围是 **通过 Agent Companion 启动或恢复的 Codex CLI 会
 
 ## 后续功能
 
-对照 [Open Island README](https://github.com/Octane0411/open-vibe-island/blob/334c58073ec0ea8a1b34da0c71f969b1affd0959/README.md) 与其 [路线图](https://github.com/Octane0411/open-vibe-island/blob/334c58073ec0ea8a1b34da0c71f969b1affd0959/docs/roadmap.zh-CN.md)，比较基线为 2026-09-10。仅保留 Windows 与 Codex 的实际需求，不照搬 macOS 产品形态。
+Windows 功能基线对照 [Open Island README](https://github.com/Octane0411/open-vibe-island/blob/334c58073ec0ea8a1b34da0c71f969b1affd0959/README.md) 与其 [路线图](https://github.com/Octane0411/open-vibe-island/blob/334c58073ec0ea8a1b34da0c71f969b1affd0959/docs/roadmap.zh-CN.md)，比较日期为 2026-09-10。v0.3.0 的 macOS 范围在上方单列，仍以 Codex 为优先。
 
 | 编号 | 功能 | 希望实现什么 | 状态 |
 | --- | --- | --- | --- |

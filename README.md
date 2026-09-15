@@ -6,23 +6,33 @@
   <a href="https://github.com/WXGopher/agent-companion/actions/workflows/ci.yml"><img src="https://github.com/WXGopher/agent-companion/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/WXGopher/agent-companion/releases/latest"><img src="https://img.shields.io/github/v/release/WXGopher/agent-companion?include_prereleases" alt="Release"></a>
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0078d4" alt="Windows and macOS">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="GPL-3.0-or-later"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="GPL-3.0-only"></a>
 </p>
 
 ## 中文
 
-**Windows + macOS Apple Silicon。** Agent Companion（原 Atoll）支持编辑 Codex CLI 原生状态栏：勾选预览，Apply 保存，退出后设置仍生效，重启 Codex CLI 加载。
+**Windows + macOS Apple Silicon。** Agent Companion（原 Atoll）在 Windows 任务栏和 macOS 窄刘海显示 Codex 任务与额度，并提供独立的 Codex CLI 原生状态栏编辑器。
 
 | 平台 | 本版功能 | 启动方式 |
 | --- | --- | --- |
 | Windows x86_64 | 原有任务栏、会话、审批、通知、启动器，以及状态栏编辑器 | `agent-companion.exe`；独立编辑器用 `agent-companion.exe codex-tui` |
-| macOS Apple Silicon | 独立 Codex CLI 状态栏编辑器 | 双击 `Agent Companion.app`，或 `agent-companion codex-tui` |
+| macOS 14+ Apple Silicon | Codex 窄刘海、任务列表与跳转、独立状态栏编辑器 | 双击 `Agent Companion.app`；独立编辑器用 `agent-companion codex-tui` |
 
-macOS 关闭窗口即退出，不启动菜单栏常驻、hooks、会话监控或审批服务。本版不支持 Intel Mac、主题编辑或灵动岛。
+### macOS 窄刘海
+
+- 左侧两个数字分别表示**活动任务**与**最近十五分钟结束的任务**；右侧 `32% wk` 表示 Codex 原生周额度已使用 32%。没有读数或读数已过重置时间时显示 `—`。
+- 悬停展开预览，移开收起；点击后保持展开，按 Esc 或点击外部收起。展开默认显示活动任务，可切换 Finished 查看完成、停止和失败的任务。
+- 点击任务返回对应 Codex 桌面对话。CLI 根据存活进程定位 Terminal/iTerm2 的原标签页；首次可能需要在系统 Automation 设置中授权。其他终端尽力唤起宿主应用，定位失败时可复制 `codex resume` 命令。
+- 有物理刘海时贴合摄像头区域；普通显示器使用菜单栏下方的 216 × 28 窄条。支持屏幕变化与不同桌面空间。
+- **Status bar** 打开独立状态栏编辑器；电源按钮或右键菜单退出刘海。刘海需要运行才能更新任务，保存后的 CLI 状态栏配置无需常驻。
+
+只读取本地 Codex 会话、分页历史和额度，不发起模型请求。macOS 不启动 hooks、审批服务或其他代理，不包含宠物、主题编辑或 Intel Mac 支持。
+
+<p align="center"><img src="docs/macos-notch.png" width="432" alt="macOS Codex 刘海展开界面，合成数据渲染"></p>
 
 ### macOS 安装
 
-从 Releases 下载 `agent-companion-v0.2.0-macos-arm64.zip`，解压并将 **Agent Companion.app** 拖到“应用程序”。首次发布没有 Developer ID 签名或 Apple 公证。首次打开若被系统拦截，按 [Apple 官方步骤](https://support.apple.com/en-us/102445)，在“系统设置 → 隐私与安全性”中选择“仍要打开”。
+从 Releases 下载 `agent-companion-v0.3.0-macos-arm64.zip`，解压并将 **Agent Companion.app** 拖到“应用程序”。需要 macOS 14 或更新版本。本版没有 Developer ID 签名或 Apple 公证。首次打开若被系统拦截，按 [Apple 官方步骤](https://support.apple.com/en-us/102445)，在“系统设置 → 隐私与安全性”中选择“仍要打开”。
 
 在终端可直接运行 `/Applications/Agent Companion.app/Contents/MacOS/agent-companion codex-tui`（路径含空格时请加引号）。窗口显示本次实际配置路径，读取进程的 `CODEX_HOME`，缺省为 `~/.codex/config.toml`。Finder 启动不读取 shell 初始化脚本；若只在 shell 中设置了 `CODEX_HOME`，请从该终端启动应用。
 
@@ -56,7 +66,7 @@ Agent Companion 以 Codex 为支持和验证对象，通过 hooks、本地会话
 <img src="docs/readout.png" width="96" alt="垂直任务栏中的额度控件">
 <img src="docs/card.png" width="440" alt="Claude Code 工具审批卡片">
 
-当前源码版本为 v0.2.0。项目仍在早期开发，部分截图来自较早版本，具体外观以当前程序为准。Codex CLI 提问接入与桌面分页历史读取为实验性功能，桌面原生问题仍在 Codex 中作答。
+当前源码版本为 v0.3.0。项目仍在早期开发，部分截图来自较早版本，具体外观以当前程序为准。Codex CLI 提问接入与桌面分页历史读取为实验性功能，桌面原生问题仍在 Codex 中作答。
 
 ### 安装与使用
 
@@ -107,7 +117,7 @@ Agent Companion 以 Codex 为支持和验证对象，通过 hooks、本地会话
 
 <img src="docs/codex-tui.png" width="620" alt="Codex CLI 状态栏编辑器：实时预览、组件开关、Apply 和恢复默认">
 
-macOS 启动即打开编辑器；Windows 可在设置的 **Codex TUI** 页打开，或运行 `agent-companion codex-tui`。勾选表示显示，取消勾选表示隐藏；预览使用示例数据，不会发起模型请求。组件与默认预览按本机 Codex CLI **0.154.0** 的 `/statusline` 核对，包含模型、推理强度、目录、Git、上下文、额度、token 和会话信息。实际终端会省略无数据的组件，并按终端宽度显示。
+macOS 可从刘海的 **Status bar** 打开编辑器；Windows 可在设置的 **Codex TUI** 页打开。两平台也可运行 `agent-companion codex-tui`。勾选表示显示，取消勾选表示隐藏；预览使用示例数据，不会发起模型请求。组件与默认预览按本机 Codex CLI **0.154.0** 的 `/statusline` 核对，包含模型、推理强度、目录、Git、上下文、额度、token 和会话信息。实际终端会省略无数据的组件，并按终端宽度显示。
 
 点击 **Apply** 写入 `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`）的 `tui.status_line`。全部取消后保存空列表以隐藏状态栏。现有组件顺序保持不变，新增组件排在后面；同一次编辑中取消再勾选会恢复原位置。重启 Codex CLI 后加载配置，可用 `codex resume` 继续已有会话。项目、profile 和命令行覆盖配置可能优先于此用户配置。
 
@@ -149,13 +159,14 @@ Agent Companion 未启动、忙碌或响应超时时，hooks 会让代理回到�
 
 ### 构建与验证
 
-在 Apple Silicon Mac 上安装近期稳定版 Rust 后运行：
+在 macOS 14+ Apple Silicon 上安装近期稳定版 Rust 和 Xcode Command Line Tools（包含 Swift 编译器）后运行：
 
 ```sh
 cargo fmt --all --check
 cargo clippy -p agent-companion -p agent-companion-core --all-targets --locked -- -D warnings
 cargo test -p agent-companion -p agent-companion-core --locked
 cargo test -p agent-companion-core --features server --locked
+sh scripts/test-macos-ui.sh
 cargo build -p agent-companion --bin agent-companion --release --locked
 python3 scripts/package-macos.py --binary target/release/agent-companion
 ```
@@ -184,33 +195,43 @@ cargo test -p agent-companion --test display_lifecycle -- --ignored --nocapture
 正式发布通过 [GitHub Actions](.github/workflows/release.yml) 构建。macOS 压缩包包含 `Agent Companion.app`，Windows 压缩包包含三个 Windows 程序；两者附 README 和许可证，并提供统一 `SHA256SUMS.txt` 与构建来源证明。可用 GitHub CLI 验证：
 
 ```powershell
-gh attestation verify agent-companion-v0.2.0-windows-x86_64.zip --repo WXGopher/agent-companion
+gh attestation verify agent-companion-v0.3.0-windows-x86_64.zip --repo WXGopher/agent-companion
 ```
 
 F01–F03 的交付范围与后续更新、远端会话候选项，见对照 open-vibe-island 整理的 [功能路线图](docs/ROADMAP.md)。更多代理、通知偏好和界面语言切换本轮不做。维护事项单列在 [已知问题](docs/KNOWN_ISSUES.md)。
 
 ### 致谢与许可证
 
-Agent Companion 受到 macOS 项目 [open-vibe-island](https://github.com/Octane0411/open-vibe-island) 的启发，使用 Rust 与 Slint 独立实现。
+Agent Companion 复用 [open-vibe-island](https://github.com/Octane0411/open-vibe-island) 的部分 macOS 刘海形状、窗口和终端选择实现，保留 Rust 会话与额度逻辑及 Slint 编辑器。具体来源、固定版本及修改说明见 [第三方声明](THIRD_PARTY_NOTICES.md)。
 
-采用 GPL-3.0-or-later 许可证，详见 [LICENSE](LICENSE)。
+采用 GPL-3.0-only 许可证，详见 [LICENSE](LICENSE)。
 
 ---
 
 ## English
 
-**Windows + macOS Apple Silicon.** Agent Companion (formerly Atoll) edits the native Codex CLI status bar. Preview checkbox changes, click Apply, then restart Codex CLI. Settings persist after the editor exits.
+**Windows + macOS Apple Silicon.** Agent Companion (formerly Atoll) shows Codex tasks and usage in the Windows taskbar and a compact macOS notch, with an independent native Codex CLI status bar editor.
 
 | Platform | Scope | Launch |
 | --- | --- | --- |
 | Windows x86_64 | Existing taskbar, sessions, approvals, notifications, launcher and editor | `agent-companion.exe`; standalone editor: `agent-companion.exe codex-tui` |
-| macOS Apple Silicon | Standalone Codex CLI status bar editor | Open `Agent Companion.app` or run `agent-companion codex-tui` |
+| macOS 14+ Apple Silicon | Compact Codex notch, task list and navigation, independent editor | Open `Agent Companion.app`; editor: `agent-companion codex-tui` |
 
-Closing the macOS window exits the process. This release has no macOS menu bar service, hooks, session monitor, approvals, Intel support, theme editor or Dynamic Island.
+### Compact macOS notch
+
+- The two numbers on the left show **active tasks** and **tasks finished within the last 15 minutes**. `32% wk` on the right means 32% of the native Codex weekly allowance is used. Missing or expired readings show `—`.
+- Hover to preview, move away to collapse, or click to keep the list open. Escape or an outside click collapses it. The list opens on Active; Finished includes completed, stopped and failed tasks.
+- Click to return to the exact Codex desktop conversation. Live CLI processes can select their original Terminal/iTerm2 tab; macOS may request Automation permission on first use. Other terminal hosts are activated when identifiable, with a copyable `codex resume` command if precise navigation is unavailable.
+- The surface fits around a physical camera notch. Displays without a notch use a 216 × 28 strip below the menu bar. Display and desktop Space changes are handled automatically.
+- **Status bar** opens the independent editor. The power button or context menu quits the notch. The notch runs to keep tasks updated; saved CLI status bar settings need no background process.
+
+Reads local Codex sessions, paginated history and usage without making model requests. The macOS surface has no hooks, approvals, other agents, pets, theme editor or Intel support.
+
+<p align="center"><img src="docs/macos-notch.png" width="432" alt="Expanded macOS Codex notch, rendered with synthetic data"></p>
 
 ### macOS installation
 
-Download `agent-companion-v0.2.0-macos-arm64.zip` from Releases and drag **Agent Companion.app** into Applications. This first release has no Developer ID signature or Apple notarization. If macOS blocks the first launch, follow [Apple's instructions](https://support.apple.com/en-us/102445) to choose **Open Anyway** in System Settings → Privacy & Security.
+Download `agent-companion-v0.3.0-macos-arm64.zip` from Releases and drag **Agent Companion.app** into Applications. Requires macOS 14 or newer. This release has no Developer ID signature or Apple notarization. If macOS blocks the first launch, follow [Apple's instructions](https://support.apple.com/en-us/102445) to choose **Open Anyway** in System Settings → Privacy & Security.
 
 From a terminal, run `"/Applications/Agent Companion.app/Contents/MacOS/agent-companion" codex-tui`. The window shows the resolved config path: `$CODEX_HOME/config.toml`, defaulting to `~/.codex/config.toml`. Finder uses its process environment and does not source shell startup files; launch from your terminal when `CODEX_HOME` is set only in that shell.
 
@@ -244,7 +265,7 @@ Agent Companion focuses on Codex, using hooks, local session logs and an optiona
 <img src="docs/readout.png" width="96" alt="Quota readout in a vertical taskbar">
 <img src="docs/card.png" width="440" alt="Claude Code tool approval card">
 
-The current source version is v0.2.0. The project is in early development and some screenshots show earlier versions. Codex CLI question integration and desktop paginated-history reads are experimental; desktop questions still require answering in Codex.
+The current source version is v0.3.0. The project is in early development and some screenshots show earlier versions. Codex CLI question integration and desktop paginated-history reads are experimental; desktop questions still require answering in Codex.
 
 ### Install and use
 
@@ -334,13 +355,14 @@ If Agent Companion is unavailable, busy or times out, hooks let the agent contin
 
 ### Build and verify
 
-On Apple Silicon macOS, use a recent stable Rust toolchain:
+On macOS 14+ Apple Silicon, install a recent stable Rust toolchain and Xcode Command Line Tools (including the Swift compiler):
 
 ```sh
 cargo fmt --all --check
 cargo clippy -p agent-companion -p agent-companion-core --all-targets --locked -- -D warnings
 cargo test -p agent-companion -p agent-companion-core --locked
 cargo test -p agent-companion-core --features server --locked
+sh scripts/test-macos-ui.sh
 cargo build -p agent-companion --bin agent-companion --release --locked
 python3 scripts/package-macos.py --binary target/release/agent-companion
 ```
@@ -369,13 +391,13 @@ With Agent Companion installed and Windows notifications enabled, run `cargo tes
 The macOS ZIP contains `Agent Companion.app`; the Windows ZIP contains the three Windows executables. Both include the README and license. Release archives are built by [GitHub Actions](.github/workflows/release.yml). Each archive has a `SHA256SUMS.txt` checksum alongside it and a build provenance attestation. Verify the attestation with the GitHub CLI:
 
 ```powershell
-gh attestation verify agent-companion-v0.2.0-windows-x86_64.zip --repo WXGopher/agent-companion
+gh attestation verify agent-companion-v0.3.0-windows-x86_64.zip --repo WXGopher/agent-companion
 ```
 
 See the [feature roadmap](docs/ROADMAP.md) for gaps compared with open-vibe-island, including the delivered F01–F03 scope and candidate update/remote-session features; more agents, notification preferences and language switching are not planned. Maintenance work is tracked separately in [known issues](docs/KNOWN_ISSUES.md).
 
 ### Acknowledgements and license
 
-Agent Companion is inspired by [open-vibe-island](https://github.com/Octane0411/open-vibe-island) for macOS. It is an independent Rust and Slint implementation.
+Agent Companion incorporates parts of [open-vibe-island](https://github.com/Octane0411/open-vibe-island)'s macOS notch shape, window behavior and terminal selection. It retains its Rust session/usage logic and Slint editor. See [third-party notices](THIRD_PARTY_NOTICES.md) for the pinned source and modifications.
 
-Licensed under GPL-3.0-or-later. See [LICENSE](LICENSE).
+Licensed under GPL-3.0-only. See [LICENSE](LICENSE).
