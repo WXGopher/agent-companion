@@ -11,7 +11,8 @@ default = []
 # The named-pipe server pulls in tokio. `agent-companion-hook` turns it off so the hook
 # binary stays tiny and starts in single-digit milliseconds.
 config-edit = ["dep:toml_edit", "dep:tempfile"]
-server = ["config-edit", "dep:tokio", "dep:base64", "dep:rusqlite"]
+desktop-history = ["dep:rusqlite"]
+server = ["config-edit", "desktop-history", "dep:tokio", "dep:base64"]
 
 [dependencies]
 serde.workspace = true

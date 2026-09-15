@@ -21,7 +21,7 @@ const READ_BUDGET: u64 = 4 * 1024 * 1024;
 const INITIAL_TAIL: u64 = 512 * 1024;
 const FILES_PER_SCAN: usize = 32;
 
-#[cfg(feature = "server")]
+#[cfg(feature = "desktop-history")]
 mod desktop;
 
 #[derive(Default)]
@@ -115,6 +115,18 @@ impl Events {
                         self.questions.clear();
                         self.turn = turn.map(str::to_string);
                         self.phase = Some(Phase::Running);
+                        if kind == "user_message"
+                            && let Some(message) = payload["message"].as_str()
+                            && let Some(session) = &mut self.session
+                        {
+                            // A useful title for CLI rollouts without desktop metadata.
+                            // Bound the preview before allocating a normalized string.
+                            let preview: String = message.chars().take(240).collect();
+                            let title = preview.split_whitespace().collect::<Vec<_>>().join(" ");
+                            if !title.is_empty() {
+                                session.display_name = Some(title);
+                            }
+                        }
                     }
                     "task_complete" | "turn_aborted" => {
                         self.questions.clear();
@@ -227,7 +239,7 @@ impl Cursor {
 #[derive(Default)]
 pub struct SessionCache {
     files: HashMap<PathBuf, Cursor>,
-    #[cfg(feature = "server")]
+    #[cfg(feature = "desktop-history")]
     desktop: desktop::Cache,
 }
 
@@ -265,7 +277,7 @@ impl SessionCache {
             .iter()
             .filter_map(|(path, cursor)| cursor.events.snapshot(path))
             .collect();
-        #[cfg(feature = "server")]
+        #[cfg(feature = "desktop-history")]
         let sessions = {
             let mut sessions = sessions;
             self.desktop.merge(codex_home, now, &mut sessions);
