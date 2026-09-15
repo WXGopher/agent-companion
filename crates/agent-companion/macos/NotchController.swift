@@ -171,7 +171,7 @@ final class NotchController: NSObject, NSApplicationDelegate {
             NotificationCenter.default.removeObserver(observer)
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
         }
-        panel.orderOut(nil)
+        panel?.orderOut(nil)
         NSApp.stop(nil)
         if let event = NSEvent.otherEvent(with: .applicationDefined, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, subtype: 0, data1: 0, data2: 0) {
             NSApp.postEvent(event, atStart: false)
@@ -180,7 +180,10 @@ final class NotchController: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         quit()
-        return .terminateCancel // Rust joins the read-only monitor after NSApp.run returns.
+        // Do not cancel a system logout/shutdown request. Explicit in-app Quit
+        // returns through NSApp.run so Rust can join its monitor; system exit
+        // also closes the process-owned lock and its read-only worker.
+        return .terminateNow
     }
 }
 
