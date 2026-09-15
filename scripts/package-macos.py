@@ -43,6 +43,12 @@ with (contents / "Info.plist").open("wb") as stream:
     }, stream)
 for name in ("README.md", "LICENSE"):
     shutil.copy2(root / name, contents / "Resources" / name)
+# Rust's linker signs the Mach-O executable ad hoc. Once it is placed in an
+# app bundle, seal Info.plist and Resources as well; otherwise codesign reports
+# "code has no resources but signature indicates they must be present".
+# This uses no certificate and does not claim Developer ID trust/notarization.
+subprocess.run(["codesign", "--force", "--sign", "-", "--timestamp=none", str(app)], check=True)
+subprocess.run(["codesign", "--verify", "--strict", str(app)], check=True)
 archive = args.output / f"agent-companion-v{version}-macos-arm64.zip"
 subprocess.run(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(app), str(archive)], check=True)
 digest = hashlib.sha256(archive.read_bytes()).hexdigest()
