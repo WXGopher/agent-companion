@@ -102,8 +102,8 @@ pub(super) fn save_editor(path: &Path, original: Option<&[u8]>, bytes: &[u8]) ->
     fs::create_dir_all(parent)?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     temporary.write_all(bytes)?;
-    if let Some(permissions) = permissions {
-        temporary.as_file().set_permissions(permissions)?;
+    if let Some(permissions) = &permissions {
+        temporary.as_file().set_permissions(permissions.clone())?;
     }
     temporary.as_file().sync_all()?;
     if read_optional(path)?.as_deref() != original {
@@ -115,6 +115,9 @@ pub(super) fn save_editor(path: &Path, original: Option<&[u8]>, bytes: &[u8]) ->
             .create_new(true)
             .write(true)
             .open(backup)?;
+        if let Some(permissions) = &permissions {
+            file.set_permissions(permissions.clone())?;
+        }
         file.write_all(original)?;
         file.sync_all()?;
     }

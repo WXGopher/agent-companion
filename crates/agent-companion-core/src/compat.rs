@@ -41,7 +41,12 @@ pub fn migrate_files(legacy: &Path, current: &Path, files: &[&str]) -> io::Resul
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),
         };
-        if let Err(error) = io::copy(&mut input, &mut output).and_then(|_| output.sync_all()) {
+        let mut copy = || -> io::Result<()> {
+            output.set_permissions(input.metadata()?.permissions())?;
+            io::copy(&mut input, &mut output)?;
+            output.sync_all()
+        };
+        if let Err(error) = copy() {
             drop(output);
             let _ = fs::remove_file(target);
             return Err(error);
