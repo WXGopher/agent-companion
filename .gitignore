@@ -2,3 +2,4 @@
 /.local/
 *.backup.*
 .DS_Store
+/dist
