@@ -2,7 +2,7 @@
 
 ## 本地验证（2026-09-15，Apple Silicon）
 
-使用 Rust 1.98.1、Codex CLI 0.154.0。
+使用 Rust 1.98.1、Codex CLI 0.154.0；已安装并登录 GitHub CLI 2.97.0。
 
 | 项目 | 结果 |
 | --- | --- |
@@ -28,11 +28,17 @@
 - 关闭窗口后退出码为 0，无编辑器残留进程。
 - 编辑器退出后启动 Codex CLI 0.154.0，实际 footer 显示保存的模型组件和 Git 分支；未知 fixture 项被 Codex 自己忽略。没有提交模型任务。
 
-## 远端状态
+## 远端验证（2026-09-16，UTC+8）
 
 - 已将原仓库直接改名为 `WXGopher/agent-companion`，页面确认原有 1 个 Star 保留。本地 origin 已更新。
-- Windows MSVC 与 macOS arm64 CI、正式发布与来源证明：等待推送后记录结果。
-- Windows 原生任务栏、通知、终端定位及启动器的人工实机回归本轮尚未执行。现有 Windows 管道及桌面测试保留，并仅在 Windows 编译/执行；显式忽略的真实桌面测试需按 README 运行。
+- [CI run 34994024326](https://github.com/WXGopher/agent-companion/actions/runs/34994024326) 在源码 `08f1105` 上通过 Windows MSVC x86_64 和 macOS arm64 的格式、构建、Clippy、测试及隐私扫描。
+- Windows 共通过 331 项测试：主程序 137、启动器 1、端到端 19、核心 172、hook 2；另有 10 项依赖真实桌面、网络或本机会话的测试显式忽略。公共核心测试另以 `server` feature 再次通过。
+- macOS 通过 2 项编辑器测试、158 项核心测试，以及启用 `server` feature 的 172 项公共测试；`.app` 打包通过。
+- Windows 按本轮交付边界以编译通过为验收，未进行人工桌面回归。管道及桌面集成测试仅在 Windows 编译/执行；显式忽略的真实桌面测试可按 README 运行。
+- [Release run 34994066105](https://github.com/WXGopher/agent-companion/actions/runs/34994066105) 全部通过，已发布 [v0.2.0](https://github.com/WXGopher/agent-companion/releases/tag/v0.2.0)。两个 ZIP 都从该标签的 `08f1105` 源码构建。
+- 已下载正式发布的两个 ZIP，确认压缩包完整性、Windows 三个程序与 macOS `.app` 的文件布局，并通过 `shasum -a 256 -c SHA256SUMS.txt`。汇总校验文件已统一为 LF 换行，后续发布流程也会自动归一化 Windows 换行符。
+- 两个 ZIP 均通过 `gh attestation verify`，限定本仓库、`.github/workflows/release.yml`、`refs/tags/v0.2.0`、完整源码提交及 GitHub 托管 runner。
+- 下载的 macOS 程序报告版本 0.2.0，arm64 架构、应用元数据和资源正确，仅依赖系统动态库。最后一次下载包窗口复检时所有应用窗口均无法访问，因此未计为成功；测试进程已清理。上方本地构建的 macOS 实机结果仍为实际验证结果。
 
 ## 发布约定
 
