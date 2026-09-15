@@ -4,32 +4,51 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   build:
-    name: Build & test
-    runs-on: windows-latest
+    name: Build & test (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            packages: --workspace
+          - os: macos-14
+            target: aarch64-apple-darwin
+            packages: -p agent-companion -p agent-companion-core
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+          targets: ${{ matrix.target }}
 
       - name: Format
         run: cargo fmt --all --check
 
       - name: Build
-        run: cargo build --workspace
+        run: cargo build ${{ matrix.packages }} --target ${{ matrix.target }} --locked
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy ${{ matrix.packages }} --all-targets --target ${{ matrix.target }} --locked -- -D warnings
 
       - name: Test
-        run: cargo test --workspace
+        run: cargo test ${{ matrix.packages }} --target ${{ matrix.target }} --locked
+
+      - name: Common backend and migration tests
+        run: cargo test -p agent-companion-core --features server --target ${{ matrix.target }} --locked
+
+      - name: Package Apple Silicon app
+        if: runner.os == 'macOS'
+        run: python3 scripts/package-macos.py --binary target/${{ matrix.target }}/debug/agent-companion --output dist
 
       - name: Privacy scan
         shell: bash

@@ -1,0 +1,256 @@
+import { Button, CheckBox, SpinBox, TabWidget, VerticalBox, HorizontalBox } from "std-widgets.slint";
+
+// The settings window is the one place Agent Companion shows a conventional window, so it
+// uses the platform style rather than the hand-drawn one everything else has:
+// it is a dialog, and it should look like the operating system's dialogs.
+export component SettingsWindow inherits Window {
+    title: "Agent Companion Settings";
+    preferred-width: 460px;
+    preferred-height: 380px;
+    min-width: 420px;
+    min-height: 360px;
+
+    in property <bool> claude-installed;
+    // Human-readable state of the hook wiring, e.g. "8 of 8 hooks installed".
+    in property <string> claude-status: "checking…";
+    // Whether Claude Code's own directory exists on this machine at all. A
+    // machine without it is a normal machine; the row says what it found.
+    in property <bool> claude-present: true;
+    in property <bool> codex-installed;
+    in property <bool> codex-present: true;
+    in property <string> codex-status: "checking…";
+    callback install-codex();
+    callback uninstall-codex();
+    callback customize-codex-tui();
+
+    in property <bool> completion-notifications: true;
+    callback set-completion-notifications(bool);
+
+    // The outcome of the last button press, shown along the bottom.
+    in property <string> message;
+
+    callback install();
+    callback uninstall();
+
+    in property <bool> taskbar-enabled: true;
+    // What the readout actually managed to do — embedded in the taskbar, or
+    // floating against it because the shell would not take a child.
+    in property <string> taskbar-status;
+    callback set-taskbar-enabled(bool);
+
+    // Read from the registry, which is the mechanism itself, so this can never
+    // drift from what Windows will actually do.
+    in property <bool> run-at-login;
+    callback set-run-at-login(bool);
+
+    in property <bool> show-claude: true;
+    in property <bool> show-codex: true;
+    // "claude" | "codex", and whether it gets its block in the readout.
+    callback set-agent-shown(string, bool);
+
+    // Where the percentage-left colour turns; see `usage_cache::left_tier`.
+    in property <int> good-at: 50;
+    in property <int> warn-at: 20;
+    callback set-thresholds(int, int);
+
+    VerticalBox {
+        TabWidget {
+            Tab {
+                title: "Codex TUI";
+                VerticalBox {
+                    alignment: start;
+                    spacing: 14px;
+                    Text { text: "Your Codex CLI status bar"; font-size: 16px; font-weight: 600; }
+                    Text {
+                        text: "Preview the bottom status bar, choose the components you want to see, then apply your selection to Codex CLI.";
+                        wrap: word-wrap;
+                    }
+                    Button {
+                        text: "Customize status bar…";
+                        primary: true;
+                        clicked => { root.customize-codex-tui(); }
+                    }
+                    Text {
+                        text: "Restore Codex defaults at any time from the editor. Restart Codex CLI to load saved changes; use codex resume to continue a session.";
+                        font-size: 11px;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+            Tab {
+                title: "Setup";
+                VerticalBox {
+                    alignment: start;
+                    spacing: 14px;
+
+                    HorizontalBox {
+                        padding: 0px;
+                        alignment: start;
+                        spacing: 12px;
+                        VerticalLayout {
+                            alignment: center;
+                            width: 180px;
+                            Text {
+                                text: "Claude Code (experimental)";
+                                wrap: word-wrap;
+                                font-weight: 600;
+                            }
+                            Text {
+                                text: root.claude-status;
+                                font-size: 11px;
+                                wrap: word-wrap;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Button {
+                                text: root.claude-installed ? "Uninstall" : "Install";
+                                primary: !root.claude-installed && root.claude-present;
+                                enabled: root.claude-present;
+                                clicked => {
+                                    if (root.claude-installed) {
+                                        root.uninstall();
+                                    } else {
+                                        root.install();
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalBox {
+                        padding: 0px;
+                        alignment: start;
+                        spacing: 12px;
+                        VerticalLayout {
+                            alignment: center;
+                            width: 180px;
+                            Text { text: "Codex"; font-weight: 600; }
+                            Text { text: root.codex-status; font-size: 11px; wrap: word-wrap; }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Button {
+                                text: root.codex-installed ? "Uninstall" : "Install";
+                                enabled: root.codex-present;
+                                clicked => {
+                                    if (root.codex-installed) { root.uninstall-codex(); }
+                                    else { root.install-codex(); }
+                                }
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: "The hooks are how Agent Companion sees your sessions: what each one is doing, and when one stops to ask you something. They are added alongside anything you already have, and uninstalling removes exactly what was added.";
+                        font-size: 11px;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+
+            Tab {
+                title: "General";
+                VerticalBox {
+                    alignment: start;
+                    spacing: 12px;
+
+                    CheckBox {
+                        text: "Start Agent Companion at login";
+                        checked: root.run-at-login;
+                        toggled => {
+                            root.set-run-at-login(self.checked);
+                        }
+                    }
+
+                    CheckBox {
+                        text: "Notify when a background task finishes";
+                        checked: root.completion-notifications;
+                        toggled => { root.set-completion-notifications(self.checked); }
+                    }
+
+                    Rectangle {
+                        height: 1px;
+                        background: #80808040;
+                    }
+
+                    CheckBox {
+                        text: "Show usage in the taskbar";
+                        checked: root.taskbar-enabled;
+                        toggled => {
+                            root.set-taskbar-enabled(self.checked);
+                        }
+                    }
+                    Text {
+                        text: root.taskbar-status;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                    }
+
+                    HorizontalBox {
+                        padding: 0px;
+                        alignment: start;
+                        spacing: 18px;
+                        CheckBox {
+                            text: "Claude Code (experimental)";
+                            checked: root.show-claude;
+                            enabled: root.taskbar-enabled;
+                            toggled => {
+                                root.set-agent-shown("claude", self.checked);
+                            }
+                        }
+                        CheckBox {
+                            text: "Codex";
+                            checked: root.show-codex;
+                            enabled: root.taskbar-enabled;
+                            toggled => {
+                                root.set-agent-shown("codex", self.checked);
+                            }
+                        }
+                    }
+
+                    HorizontalBox {
+                        padding: 0px;
+                        alignment: start;
+                        spacing: 8px;
+                        VerticalLayout {
+                            alignment: center;
+                            Text { text: "Green ≥"; font-size: 11px; }
+                        }
+                        good-spin := SpinBox {
+                            minimum: 1;
+                            maximum: 100;
+                            value: root.good-at;
+                            edited(value) => {
+                                root.set-thresholds(value, warn-spin.value);
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Text { text: "%   Amber ≥"; font-size: 11px; }
+                        }
+                        warn-spin := SpinBox {
+                            minimum: 0;
+                            maximum: 99;
+                            value: root.warn-at;
+                            edited(value) => {
+                                root.set-thresholds(good-spin.value, value);
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Text { text: "%"; font-size: 11px; }
+                        }
+                    }
+                }
+            }
+        }
+
+        Text {
+            text: root.message;
+            font-size: 11px;
+            wrap: word-wrap;
+            height: 32px;
+        }
+    }
+}

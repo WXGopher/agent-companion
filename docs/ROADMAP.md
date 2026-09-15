@@ -1,17 +1,26 @@
-# Atoll 功能路线图
+# Agent Companion 功能路线图
 
 路线图描述用户能做什么及明确的接入边界。当前以 **Codex** 为支持和验证对象；Claude Code 保留为实验性兼容代码，未在真实 Claude Code 环境验证，新配置默认关闭其显示。
 
-## 本轮交付
+## v0.2.0：Agent Companion 与 macOS
+
+- 正式名称改为 Agent Companion，仓库目标为 `WXGopher/agent-companion`，主命令 `agent-companion`。
+- macOS 首版支持 Apple Silicon，启动独立状态栏编辑器，关闭即退出；保存后由 Codex 自行读取，无需常驻。
+- Windows 保持原桌面功能；两平台提供 `agent-companion codex-tui`。
+- 新旧数据目录、环境变量、hooks 及恢复记录兼容；旧管道和必要持久化标识保留。
+- CI 与发布脚本覆盖 Windows x86_64、macOS arm64。实测结果与未完成的远端步骤见 [验证记录](VALIDATION.md)。
+- 不新增其他客户端、Intel Mac、主题编辑、灵动岛或 macOS 常驻服务。
+
+## 已有 Windows 交付
 
 | 编号 | 功能 | 状态 | 用户可用的能力与边界 |
 | --- | --- | --- | --- |
 | F01 | Codex 桌面会话直达 | 已实现 | 无终端信息的本地会话可通过官方 `codex://threads/<id>` 打开对应对话；终端失效时也可回退。需安装并注册 Codex 桌面应用；只接受合法本地会话 ID。沿用桌面应用本身的登录和会话访问状态 |
-| F02 | 完整的 Codex 原生提问回复 | 已实现，接入为实验性 | 通过 `atoll-codex.exe` 启动 CLI 会话，在卡片中逐题回答、查看完整选项说明、输入多行文本、返回修改草稿并统一提交；秘密输入遮罩。卡片与终端先答者生效，取消、断连会撤销卡片。基于真实 `item/tool/requestUserInput`，不用工具审批代替回复 |
-| F03 | Windows Terminal 精确跳转 | 已实现 | 通过 Atoll 启动时记录窗口、标签页、分屏身份；隐藏标签页及运行中输出变化仍能回到原分屏。身份失效后回退终端窗口或 Codex 桌面对话。当前验收范围为 Windows Terminal 与 Codex 桌面端，IDE 暂不纳入 |
+| F02 | 完整的 Codex 原生提问回复 | 已实现，接入为实验性 | 通过 `agent-companion-codex.exe` 启动 CLI 会话，在卡片中逐题回答、查看完整选项说明、输入多行文本、返回修改草稿并统一提交；秘密输入遮罩。卡片与终端先答者生效，取消、断连会撤销卡片。基于真实 `item/tool/requestUserInput`，不用工具审批代替回复 |
+| F03 | Windows Terminal 精确跳转 | 已实现 | 通过 Agent Companion 启动时记录窗口、标签页、分屏身份；隐藏标签页及运行中输出变化仍能回到原分屏。身份失效后回退终端窗口或 Codex 桌面对话。当前验收范围为 Windows Terminal 与 Codex 桌面端，IDE 暂不纳入 |
 | F09 | Codex 桌面生命周期 | 已实现本地跟踪，存储接入为实验性 | 补充读取分页历史，识别运行、完成、中断、失败、断连和归档；有当前写入锁的长任务不会因十五分钟无输出而消失。日志中可观测的阻塞提问显示待答并返回 Codex 处理；桌面端直接回复仍待可附接接口 |
 
-F02 的接入范围是 **通过 Atoll 启动或恢复的 Codex CLI 会话**。现有桌面会话和普通 `codex` 命令启动的会话仍在 Codex 中回答。上游 app-server / WebSocket 接口处于实验阶段，Atoll 的本地中转仅监听回环地址、要求临时令牌且拒绝浏览器 Origin。Atoll 不可用时仍可在 Codex 终端回答。
+F02 的接入范围是 **通过 Agent Companion 启动或恢复的 Codex CLI 会话**。现有桌面会话和普通 `codex` 命令启动的会话仍在 Codex 中回答。上游 app-server / WebSocket 接口处于实验阶段，Agent Companion 的本地中转仅监听回环地址、要求临时令牌且拒绝浏览器 Origin。Agent Companion 不可用时仍可在 Codex 终端回答。
 
 当前 Codex 原生问题支持单选或自由文本，没有多选字段；不把多选伪装成工具审批。多选待上游接口提供相应能力后再评估，不作为此次 Codex 接入的验收项。
 
@@ -19,7 +28,7 @@ F02 的接入范围是 **通过 Atoll 启动或恢复的 Codex CLI 会话**。�
 
 - 在 Windows 任务栏显示 Codex 额度和运行、等待、完成状态，点击展开详情。
 - 悬停预览待处理会话，移开自动收起，预览不抢焦点。
-- 安装、检查、卸载 Codex hooks，在 Atoll 中允许或拒绝实际工具审批。
+- 安装、检查、卸载 Codex hooks，在 Agent Companion 中允许或拒绝实际工具审批。
 - 长后台任务完成后显示静音 Windows 通知，**三秒后收起**；运行期间点击返回会话。
 - 从 Codex 本地日志与分页历史发现会话，独立刷新本地额度；启动时恢复显示状态，已确认仍在运行的会话可立即恢复跟踪。
 - 开机启动、任务栏显隐和额度颜色设置；安装 hooks 前备份，保留用户配置。

@@ -133,6 +133,45 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "agent-companion"
+version = "0.2.0"
+dependencies = [
+ "agent-companion-core",
+ "clap",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "slint",
+ "slint-build",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite",
+ "tray-icon",
+ "windows 0.61.3",
+]
+
+[[package]]
+name = "agent-companion-core"
+version = "0.2.0"
+dependencies = [
+ "base64",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml_edit 0.25.13+spec-1.1.0",
+]
+
+[[package]]
+name = "agent-companion-hook"
+version = "0.2.0"
+dependencies = [
+ "agent-companion-core",
+ "serde_json",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -475,45 +514,6 @@ dependencies = [
  "gobject-sys",
  "libc",
  "system-deps",
-]
-
-[[package]]
-name = "atoll"
-version = "0.1.6"
-dependencies = [
- "atoll-core",
- "clap",
- "futures-util",
- "serde",
- "serde_json",
- "slint",
- "slint-build",
- "tempfile",
- "tokio",
- "tokio-tungstenite",
- "tray-icon",
- "windows 0.61.3",
-]
-
-[[package]]
-name = "atoll-core"
-version = "0.1.6"
-dependencies = [
- "base64",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "toml_edit 0.25.13+spec-1.1.0",
-]
-
-[[package]]
-name = "atoll-hook"
-version = "0.1.6"
-dependencies = [
- "atoll-core",
- "serde_json",
 ]
 
 [[package]]
