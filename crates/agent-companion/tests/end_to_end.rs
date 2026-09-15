@@ -660,7 +660,7 @@ fn the_status_line_renders_and_caches_rate_limits() {
         "[Opus 5] 42% context"
     );
 
-    let cache = dir.path().join("Agent Companion").join("rl.json");
+    let cache = dir.path().join("AgentCompanion").join("rl.json");
     let cached: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cache).expect("the cache was written"))
             .expect("the cache is JSON");
@@ -848,7 +848,7 @@ fn a_silent_delegate_does_not_get_replaced_by_agent_companions_own_line() {
 /// than refusal — the pipe never ends up shared, and the newcomer never ends up
 /// as a second readout nobody is feeding.
 ///
-/// The mechanism is covered by [`a_second_agent-companion_takes_the_pipe_from_the_first`];
+/// The mechanism is covered by [`a_second_agent_companion_takes_the_pipe_from_the_first`];
 /// this is the part that used to be an error, kept as its own case because
 /// "starting Agent Companion twice does not fail" is the promise that changed.
 #[test]
