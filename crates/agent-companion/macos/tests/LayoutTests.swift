@@ -2,6 +2,7 @@
 // Render the actual SwiftUI component with synthetic local data. No desktop
 // interaction, Codex processes, network requests or production data involved.
 import AppKit
+import Combine
 import SwiftUI
 
 @_cdecl("agent_companion_snapshot_json")
@@ -91,6 +92,8 @@ struct LayoutTests {
         try render(model, name: "loading", output: output, height: 300...430)
         verifyDisplaySizing()
         verifyResize()
+        try verifyBoundedContent(output: output)
+        verifySnapshotRefresh()
         try verifyMorphing(output: output)
         let cameraOutput = output.appendingPathComponent("camera-morph")
         try FileManager.default.createDirectory(at: cameraOutput, withIntermediateDirectories: true)
@@ -112,6 +115,102 @@ struct LayoutTests {
         let right = CGRect(x: left.maxX + width, y: left.minY,
                            width: screen.maxX - left.maxX - width, height: height)
         return NotchMetrics(screen: screen, safeTop: height, topLeft: left, topRight: right)
+    }
+
+    @MainActor private static func verifyBoundedContent(output: URL) throws {
+        func scrollViews(in view: NSView) -> [NSScrollView] {
+            (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap { scrollViews(in: $0) }
+        }
+        for camera in [false, true] {
+            let screen = CGRect(x: -10000, y: -10000, width: 1280, height: 720)
+            let model = CompanionModel()
+            model.metrics = camera ? cameraMetrics(screen: screen, width: 156) : NotchMetrics(screen: screen)
+            model.snapshot = CodexSnapshot(activeCount: 8, tasks: (0..<8).map { index in
+                CodexTask(id: "1b966260-04f3-4281-9179-219ee11f60a\(index)", title: "Task \(index)",
+                          project: "fixture", cwd: nil, client: "cli", state: "running",
+                          updatedAt: 0, transcriptPath: nil)
+            }, error: String(repeating: "The local session could not be read. ", count: 12), loading: false)
+            model.message = String(repeating: "The terminal could not be opened. Check Automation permissions. ", count: 12)
+            model.failedTask = model.snapshot.tasks[0]
+            model.expanded = true
+            let panel = NSPanel(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
+            panel.isReleasedWhenClosed = false
+            let presentation = NotchPresentation(panel: panel, model: model, reduceMotion: { true })
+            defer { presentation.stop(); panel.close() }
+            func update() {
+                // Simulate a 60-point bottom Dock without changing the desktop.
+                presentation.update(screen: screen, availableHeight: 660, animated: false)
+                RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+            }
+            update()
+            let surface = presentation.surface
+            precondition(panel.frame.height == 652 && screen.contains(panel.frame),
+                         "Long content escaped the screen or covered the bottom Dock: \(panel.frame)")
+            precondition(panel.frame.width == model.compactWidth && panel.frame.maxY == screen.maxY)
+            guard let scroll = scrollViews(in: surface).first, let document = scroll.documentView else {
+                fatalError("Overflowing content has no scroll view")
+            }
+            let viewport = scroll.convert(scroll.bounds, to: surface)
+            precondition(viewport.minY >= model.compactHeight && viewport.maxY < surface.bounds.maxY - 30,
+                         "The summary or footer became part of the scrolling content")
+            precondition(document.bounds.height > scroll.contentSize.height, "The error text is not scrollable")
+            func capture(_ suffix: String) throws -> NSBitmapImageRep {
+                let bitmap = surface.bitmapImageRepForCachingDisplay(in: surface.bounds)!
+                surface.cacheDisplay(in: surface.bounds, to: bitmap)
+                let png = bitmap.representation(using: .png, properties: [:])!
+                let name = "bounded-\(camera ? "camera" : "external")-\(suffix).png"
+                try png.write(to: output.appendingPathComponent(name))
+                return NSBitmapImageRep(data: png)!
+            }
+            let before = try capture("top")
+            scroll.contentView.scroll(to: CGPoint(x: 0, y: document.bounds.height - scroll.contentSize.height))
+            scroll.reflectScrolledClipView(scroll.contentView)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+            let offset = scroll.contentView.bounds.minY
+            precondition(offset > 100, "Could not reach the bottom of the long error")
+            model.snapshot.updatedAt += 1
+            update()
+            precondition(scrollViews(in: surface).first === scroll && abs(scroll.contentView.bounds.minY - offset) < 1,
+                         "A snapshot refresh reset the content's scroll position")
+            let after = try capture("bottom")
+            let scale = CGFloat(before.pixelsHigh) / surface.bounds.height
+            for y in stride(from: Int((viewport.maxY + 5) * scale), to: before.pixelsHigh - 4, by: 4) {
+                for x in stride(from: 8, to: before.pixelsWide - 8, by: 4) {
+                    precondition(before.colorAt(x: x, y: y) == after.colorAt(x: x, y: y),
+                                 "Scrolling displaced or hid the footer actions")
+                }
+            }
+            model.snapshot.error = nil
+            model.message = nil
+            model.failedTask = nil
+            update()
+            precondition(panel.frame.height < 652, "Clearing errors left a screen-sized empty panel")
+            model.expanded = false
+            update()
+            precondition(panel.frame.height == model.compactHeight, "Closing overflow left an invisible hit area")
+        }
+        print("Bounded content: screen/Dock limits, reachable errors, fixed footer, stable scroll on refresh and recovery passed")
+    }
+
+    @MainActor private static func verifySnapshotRefresh() {
+        let model = CompanionModel()
+        var changes = 0
+        let subscription = model.objectWillChange.sink { changes += 1 }
+        defer { model.stop(); withExtendedLifetime(subscription) {} }
+        model.start()
+        let initial = changes
+        model.start()
+        precondition(changes == initial, "Repeated start duplicated the snapshot source")
+        let deadline = Date().addingTimeInterval(1.2)
+        while Date() < deadline { RunLoop.main.run(mode: .eventTracking, before: deadline) }
+        precondition(changes > initial, "Scrolling or an open menu paused the snapshot timer")
+        model.stop()
+        let stopped = changes
+        RunLoop.main.run(until: Date().addingTimeInterval(1.2))
+        precondition(changes == stopped, "Snapshots continued after shutdown")
+        model.start()
+        precondition(changes > stopped, "The snapshot source could not restart")
+        print("Snapshot timer: menu/scroll tracking, idempotent start, shutdown and restart passed")
     }
 
     @MainActor private static func verifyDisplaySizing() {
