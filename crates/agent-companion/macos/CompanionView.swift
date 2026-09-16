@@ -184,11 +184,13 @@ struct CompanionView: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(task.title).font(.system(size: 12, weight: .medium)).lineLimit(1)
                     HStack(spacing: 5) {
-                        Text(task.project).lineLimit(1)
-                        Text("·")
-                        Text(task.status)
+                        if model.compactWidth >= 260 {
+                            Text(task.project).lineLimit(1)
+                            Text("·")
+                        }
+                        Text(task.status).lineLimit(1).fixedSize()
                         Spacer(minLength: 4)
-                        Text(Date(timeIntervalSince1970: task.updatedAt), style: .relative).lineLimit(1)
+                        Text(age(task.updatedAt)).monospacedDigit().fixedSize()
                     }.font(.system(size: 10)).foregroundStyle(.secondary)
                 }
                 if model.jumpingID == task.id { ProgressView().controlSize(.mini) }
@@ -210,6 +212,13 @@ struct CompanionView: View {
             Button("Open session") { model.jump(to: task) }
             if task.resumeCommand != nil { Button("Copy resume command") { model.copyResume(task) } }
         }
+    }
+
+    private func age(_ timestamp: TimeInterval) -> String {
+        let seconds = max(0, Int(Date().timeIntervalSince1970 - timestamp))
+        if seconds < 60 { return "\(seconds)s" }
+        if seconds < 3600 { return "\(seconds / 60)m" }
+        return "\(seconds / 3600)h"
     }
 
     private func empty(_ title: String, detail: String, symbol: String) -> some View {
