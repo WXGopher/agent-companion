@@ -16,7 +16,7 @@
 | 平台 | 本版功能 | 启动方式 |
 | --- | --- | --- |
 | Windows x86_64 | 原有任务栏、会话、审批、通知、启动器，以及状态栏编辑器 | `agent-companion.exe`；独立编辑器用 `agent-companion.exe codex-tui` |
-| macOS 14+ Apple Silicon | Codex 窄刘海、任务列表与跳转、独立状态栏编辑器 | 双击 `Agent Companion.app`；独立编辑器用 `agent-companion codex-tui` |
+| macOS 14+ Apple Silicon | Codex 窄刘海、任务列表与跳转、内置 TUI 设置入口 | 双击 `Agent Companion.app`；独立编辑器用 `agent-companion codex-tui` |
 
 ### macOS 窄刘海
 
@@ -24,7 +24,8 @@
 - 悬停展开预览，移开收起；点击后保持展开，按 Esc 或点击外部收起。展开默认显示活动任务，可切换 Finished 查看完成、停止和失败的任务。
 - 点击任务返回对应 Codex 桌面对话。CLI 根据存活进程定位 Terminal/iTerm2 的原标签页；首次可能需要在系统 Automation 设置中授权。其他终端尽力唤起宿主应用，定位失败时可复制 `codex resume` 命令。
 - 有物理刘海时贴合摄像头区域；普通显示器使用菜单栏下方的 216 × 28 窄条。支持屏幕变化与不同桌面空间。
-- **Status bar** 打开独立状态栏编辑器；电源按钮或右键菜单退出刘海。刘海需要运行才能更新任务，保存后的 CLI 状态栏配置无需常驻。
+- 展开面板保持与收起时相同的宽度，只向下展开；摄像头两侧只保留任务数和周用量。
+- **Settings（设置）** 打开 TUI 定制窗口；再次点击会回到已打开的设置；电源按钮或右键菜单退出刘海。刘海需要运行才能更新任务，保存后的 CLI 状态栏配置无需常驻。
 
 只读取本地 Codex 会话、分页历史和额度，不发起模型请求。macOS 不启动 hooks、审批服务或其他代理，不包含宠物、主题编辑或 Intel Mac 支持。
 
@@ -117,7 +118,7 @@ Agent Companion 以 Codex 为支持和验证对象，通过 hooks、本地会话
 
 <img src="docs/codex-tui.png" width="620" alt="Codex CLI 状态栏编辑器：实时预览、组件开关、Apply 和恢复默认">
 
-macOS 可从刘海的 **Status bar** 打开编辑器；Windows 可在设置的 **Codex TUI** 页打开。两平台也可运行 `agent-companion codex-tui`。勾选表示显示，取消勾选表示隐藏；预览使用示例数据，不会发起模型请求。组件与默认预览按本机 Codex CLI **0.154.0** 的 `/statusline` 核对，包含模型、推理强度、目录、Git、上下文、额度、token 和会话信息。实际终端会省略无数据的组件，并按终端宽度显示。
+macOS 可从展开刘海后的齿轮 **Settings（设置）** 定制 TUI 状态栏；Windows 可在设置的 **Codex TUI** 页打开。两平台也可运行 `agent-companion codex-tui`。勾选表示显示，取消勾选表示隐藏；预览使用示例数据，不会发起模型请求。组件与默认预览按本机 Codex CLI **0.154.0** 的 `/statusline` 核对，包含模型、推理强度、目录、Git、上下文、额度、token 和会话信息。实际终端会省略无数据的组件，并按终端宽度显示。
 
 点击 **Apply** 写入 `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`）的 `tui.status_line`。全部取消后保存空列表以隐藏状态栏。现有组件顺序保持不变，新增组件排在后面；同一次编辑中取消再勾选会恢复原位置。重启 Codex CLI 后加载配置，可用 `codex resume` 继续已有会话。项目、profile 和命令行覆盖配置可能优先于此用户配置。
 
@@ -215,7 +216,7 @@ Agent Companion 复用 [open-vibe-island](https://github.com/Octane0411/open-vib
 | Platform | Scope | Launch |
 | --- | --- | --- |
 | Windows x86_64 | Existing taskbar, sessions, approvals, notifications, launcher and editor | `agent-companion.exe`; standalone editor: `agent-companion.exe codex-tui` |
-| macOS 14+ Apple Silicon | Compact Codex notch, task list and navigation, independent editor | Open `Agent Companion.app`; editor: `agent-companion codex-tui` |
+| macOS 14+ Apple Silicon | Compact Codex notch, task navigation and integrated TUI settings | Open `Agent Companion.app`; editor: `agent-companion codex-tui` |
 
 ### Compact macOS notch
 
@@ -223,7 +224,8 @@ Agent Companion 复用 [open-vibe-island](https://github.com/Octane0411/open-vib
 - Hover to preview, move away to collapse, or click to keep the list open. Escape or an outside click collapses it. The list opens on Active; Finished includes completed, stopped and failed tasks.
 - Click to return to the exact Codex desktop conversation. Live CLI processes can select their original Terminal/iTerm2 tab; macOS may request Automation permission on first use. Other terminal hosts are activated when identifiable, with a copyable `codex resume` command if precise navigation is unavailable.
 - The surface fits around a physical camera notch. Displays without a notch use a 216 × 28 strip below the menu bar. Display and desktop Space changes are handled automatically.
-- **Status bar** opens the independent editor. The power button or context menu quits the notch. The notch runs to keep tasks updated; saved CLI status bar settings need no background process.
+- The task panel expands downward at the same width as the compact notch, preserving menu bar space.
+- **Settings** opens Codex CLI status bar customization. Reopening settings brings the existing window forward. The power button or context menu quits the notch. The notch runs to keep tasks updated; saved CLI status bar settings need no background process.
 
 Reads local Codex sessions, paginated history and usage without making model requests. The macOS surface has no hooks, approvals, other agents, pets, theme editor or Intel support.
 
