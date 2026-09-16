@@ -5,6 +5,7 @@ import hashlib
 import plistlib
 import shutil
 import subprocess
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -24,6 +25,10 @@ if app.exists():
 contents = app / "Contents"
 (contents / "MacOS").mkdir(parents=True)
 (contents / "Resources").mkdir()
+with tempfile.TemporaryDirectory(prefix="agent-companion-icon-") as temporary:
+    iconset = Path(temporary) / "AgentCompanion.iconset"
+    subprocess.run(["xcrun", "swift", str(root / "scripts/create-macos-icon.swift"), str(iconset)], check=True)
+    subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o", str(contents / "Resources/AgentCompanion.icns")], check=True)
 shutil.copy2(args.binary, contents / "MacOS" / "agent-companion")
 (contents / "MacOS" / "agent-companion").chmod(0o755)
 with (contents / "Info.plist").open("wb") as stream:
@@ -32,11 +37,14 @@ with (contents / "Info.plist").open("wb") as stream:
         "CFBundleIdentifier": "com.wxgopher.agent-companion",
         "CFBundleName": "Agent Companion",
         "CFBundleDisplayName": "Agent Companion",
+        "CFBundleIconFile": "AgentCompanion.icns",
         "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": version,
         "CFBundleVersion": version,
         "LSMinimumSystemVersion": "14.0",
         "LSArchitecturePriority": ["arm64"],
+        # Start without a Dock tile; the saved preference may opt in at runtime.
+        "LSUIElement": True,
         "NSHighResolutionCapable": True,
         "NSPrincipalClass": "NSApplication",
         "NSAppleEventsUsageDescription": "Agent Companion selects the terminal tab for the Codex task you click.",

@@ -14,6 +14,10 @@ path = "src/main.rs"
 name = "agent-companion-codex"
 path = "src/codex_main.rs"
 
+[[test]]
+name = "macos_editor"
+harness = false
+
 [dependencies]
 agent-companion-core = { workspace = true, features = ["config-edit"] }
 clap.workspace = true
@@ -31,6 +35,7 @@ windows.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 agent-companion-core = { workspace = true, features = ["desktop-history"] }
+slint = { workspace = true, features = ["unstable-winit-030"] }
 
 [build-dependencies]
 slint-build.workspace = true

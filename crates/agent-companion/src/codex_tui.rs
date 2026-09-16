@@ -131,6 +131,20 @@ impl Editor {
             editor
                 .window
                 .set_window_title("Agent Companion · Settings".into());
+            editor.window.set_macos_preferences(true);
+            editor
+                .window
+                .set_show_dock_icon(crate::macos::dock_visible());
+            let weak = Rc::downgrade(&editor);
+            editor.window.on_toggle_dock_icon(move |visible| {
+                if let Some(editor) = weak.upgrade() {
+                    let saved = crate::macos::set_dock_visible(visible);
+                    editor
+                        .window
+                        .set_show_dock_icon(crate::macos::dock_visible());
+                    editor.window.set_dock_error(!saved);
+                }
+            });
         }
         let weak = Rc::downgrade(&editor);
         editor.window.on_toggle(move |id, enabled| {
@@ -258,12 +272,19 @@ fn update_rows(model: &VecModel<ui::StatusComponent>, rows: Vec<ui::StatusCompon
 /// Standalone mode owns only this window. No tray, pipe, hook, or monitor starts.
 pub fn run() -> std::io::Result<()> {
     let path = agent_companion_core::install::codex_home()?.join("config.toml");
+    #[cfg(target_os = "macos")]
+    crate::macos::prepare_editor().map_err(std::io::Error::other)?;
     let editor = Editor::new(path).map_err(std::io::Error::other)?;
     editor.window.window().on_close_requested(|| {
         let _ = slint::quit_event_loop();
         slint::CloseRequestResponse::HideWindow
     });
     editor.show().map_err(std::io::Error::other)?;
+    #[cfg(target_os = "macos")]
+    slint::Timer::single_shot(
+        std::time::Duration::ZERO,
+        crate::macos::start_editor_preferences,
+    );
     slint::run_event_loop().map_err(std::io::Error::other)
 }
 

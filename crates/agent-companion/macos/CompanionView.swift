@@ -39,22 +39,24 @@ struct CompanionView: View {
             if model.hasCamera { Color.clear.frame(width: model.cameraWidth) }
             else { Spacer(minLength: 20) }
             Button { model.expand?() } label: {
-                HStack(spacing: 4) {
-                    Text(model.weeklyText).monospacedDigit().fontWeight(.semibold).lineLimit(1).fixedSize()
-                    Text("wk").font(.system(size: 9)).foregroundStyle(.white.opacity(0.5))
+                HStack(spacing: 3) {
+                    Text(model.weeklyText).monospacedDigit().fontWeight(.semibold).lineLimit(1).minimumScaleFactor(0.8)
+                    if model.weeklyRemainingPercent != nil {
+                        Text("left").font(.system(size: 9)).foregroundStyle(.white.opacity(0.5)).fixedSize()
+                    }
                 }
                 .frame(width: model.sideWidth)
                 .frame(height: model.compactHeight)
                 .contentShape(Rectangle())
             }
-            .accessibilityLabel("Weekly usage \(model.weeklyText). Open Codex tasks")
+            .accessibilityLabel("Weekly quota remaining: \(model.weeklyText). Open Codex tasks")
         }
         .font(.system(size: 12))
         .padding(.horizontal, 6)
         .frame(width: model.compactWidth, height: model.compactHeight)
         .buttonStyle(.plain)
         .accessibilityHint("Open task list")
-        .help("\(model.snapshot.activeCount) active · \(model.snapshot.completedCount) finished in the last 15 minutes · \(model.weeklyText) weekly used")
+        .help("\(model.snapshot.activeCount) active · \(model.snapshot.completedCount) finished in the last 15 minutes · Weekly quota remaining: \(model.weeklyText)")
         .contextMenu {
             Button("Show tasks") { model.expand?() }
             Button("Settings…") { model.openSettings() }
@@ -138,17 +140,17 @@ struct CompanionView: View {
     private var weekly: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack {
-                Text("Weekly usage").font(.system(size: 11)).foregroundStyle(.secondary)
+                Text("Weekly quota").font(.system(size: 11)).foregroundStyle(.secondary)
                 Spacer()
-                Text(model.weeklyText + (model.weeklyText == "—" ? "" : " used"))
+                Text(model.weeklyText + (model.weeklyRemainingPercent == nil ? "" : " left"))
                     .font(.system(size: 12, weight: .medium)).monospacedDigit()
             }
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
                     Capsule().fill(.white.opacity(0.10))
-                    if let usage = model.snapshot.weekly, !usage.expired {
-                        Capsule().fill(usage.usedPercent >= 90 ? Color.orange : CompanionModel.accent)
-                            .frame(width: geometry.size.width * CGFloat(usage.usedPercent) / 100)
+                    if let remaining = model.weeklyRemainingPercent {
+                        Capsule().fill(remaining <= 10 ? Color.orange : CompanionModel.accent)
+                            .frame(width: geometry.size.width * CGFloat(remaining) / 100)
                     }
                 }
             }.frame(height: 3).accessibilityHidden(true)
