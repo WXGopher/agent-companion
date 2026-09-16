@@ -7,6 +7,9 @@ struct CompanionView: View {
     var drawsBackground = true
     @State private var hoveredTask: String?
 
+    private func scaled(_ value: CGFloat) -> CGFloat { value * model.metrics.contentScale }
+    private func compactScaled(_ value: CGFloat) -> CGFloat { value * min(1, model.compactWidth / 179) }
+
     var body: some View {
         VStack(spacing: 0) {
             compact
@@ -29,34 +32,36 @@ struct CompanionView: View {
     }
 
     private var compact: some View {
-        HStack(spacing: 0) {
-            Button { model.expand?() } label: {
-                HStack(spacing: 7) {
-                    count(model.snapshot.activeCount, symbol: "circle.inset.filled", tint: CompanionModel.accent)
-                    count(model.snapshot.completedCount, symbol: "checkmark", tint: .white.opacity(0.7))
-                }
-                .frame(width: model.sideWidth, alignment: .center)
-                .frame(height: model.compactHeight)
-                .contentShape(Rectangle())
-            }
-            .accessibilityLabel("Codex: \(model.snapshot.activeCount) active, \(model.snapshot.completedCount) recently finished")
-            if model.hasCamera { Color.clear.frame(width: model.cameraWidth) }
-            else { Spacer(minLength: 20) }
-            Button { model.expand?() } label: {
-                HStack(spacing: 3) {
-                    Text(model.weeklyText).monospacedDigit().fontWeight(.semibold).lineLimit(1).minimumScaleFactor(0.8)
-                    if model.weeklyRemainingPercent != nil {
-                        Text("left").font(.system(size: 9)).foregroundStyle(.white.opacity(0.5)).fixedSize()
+        VStack(spacing: 0) {
+            // Keep the menu-bar band entirely inside the physical camera gap.
+            // Counters sit just below it instead of growing wings over menus.
+            if model.hasCamera { Color.clear.frame(height: model.metrics.cameraHeight) }
+            HStack(spacing: 0) {
+                Button { model.expand?() } label: {
+                    HStack(spacing: compactScaled(7)) {
+                        count(model.snapshot.activeCount, symbol: "circle.inset.filled", tint: CompanionModel.accent)
+                        count(model.snapshot.completedCount, symbol: "checkmark", tint: .white.opacity(0.7))
                     }
+                    .frame(height: model.metrics.statsHeight)
+                    .contentShape(Rectangle())
                 }
-                .frame(width: model.sideWidth)
-                .frame(height: model.compactHeight)
-                .contentShape(Rectangle())
+                .accessibilityLabel("Codex: \(model.snapshot.activeCount) active, \(model.snapshot.completedCount) recently finished")
+                Spacer(minLength: compactScaled(8))
+                Button { model.expand?() } label: {
+                    HStack(spacing: compactScaled(3)) {
+                        Text(model.weeklyText).monospacedDigit().fontWeight(.semibold).lineLimit(1).fixedSize()
+                        if model.weeklyRemainingPercent != nil {
+                            Text("left").font(.system(size: compactScaled(9))).foregroundStyle(.white.opacity(0.5)).fixedSize()
+                        }
+                    }
+                    .frame(height: model.metrics.statsHeight)
+                    .contentShape(Rectangle())
+                }
+                .accessibilityLabel("Weekly quota remaining: \(model.weeklyText). Open Codex tasks")
             }
-            .accessibilityLabel("Weekly quota remaining: \(model.weeklyText). Open Codex tasks")
+            .padding(.horizontal, compactScaled(10))
         }
-        .font(.system(size: 12))
-        .padding(.horizontal, 6)
+        .font(.system(size: compactScaled(12)))
         .frame(width: model.compactWidth, height: model.compactHeight)
         .buttonStyle(.plain)
         .accessibilityHint("Open task list")
@@ -70,28 +75,28 @@ struct CompanionView: View {
     }
 
     private func count(_ count: Int, symbol: String, tint: Color) -> some View {
-        HStack(spacing: 3) {
-            Image(systemName: symbol).font(.system(size: 8, weight: .semibold)).foregroundStyle(tint)
+        HStack(spacing: compactScaled(3)) {
+            Image(systemName: symbol).font(.system(size: compactScaled(8), weight: .semibold)).foregroundStyle(tint)
             Text(model.countText(count)).monospacedDigit().fontWeight(.semibold).lineLimit(1).fixedSize()
         }
     }
 
     private var expanded: some View {
-        VStack(alignment: .leading, spacing: 13) {
-            HStack(alignment: .center) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Codex").font(.system(size: 20, weight: .semibold))
-                    Text("Your tasks, at a glance").font(.system(size: 11)).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: scaled(13)) {
+            HStack(alignment: .center, spacing: scaled(8)) {
+                VStack(alignment: .leading, spacing: scaled(3)) {
+                    Text("Codex").font(.system(size: scaled(20), weight: .semibold))
+                    Text("Your tasks, at a glance").font(.system(size: scaled(11))).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button { model.collapse?() } label: { Image(systemName: "chevron.up").frame(width: 26, height: 26) }
+                Button { model.collapse?() } label: { Image(systemName: "chevron.up").frame(width: scaled(26), height: scaled(26)) }
                     .buttonStyle(.plain).foregroundStyle(.secondary).help("Collapse (Esc)").accessibilityLabel("Collapse task list")
             }
             weekly
-            HStack(spacing: 8) {
+            HStack(spacing: scaled(8)) {
                 tab("Active", count: model.snapshot.activeCount, completed: false)
                 tab("Finished", count: model.snapshot.completedCount, completed: true)
-                Spacer()
+                Spacer(minLength: 0)
             }
             if let error = model.snapshot.error { notice(error, symbol: "exclamationmark.triangle") }
             if model.snapshot.loading {
@@ -102,52 +107,54 @@ struct CompanionView: View {
                       symbol: model.showingCompleted ? "checkmark.circle" : "terminal")
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 4) {
+                    LazyVStack(spacing: scaled(4)) {
                         ForEach(model.visibleTasks) { task in taskRow(task) }
                     }
                 }
-                .frame(height: min(CGFloat(model.visibleTasks.count) * 58, 232))
+                .frame(height: scaled(min(CGFloat(model.visibleTasks.count) * 58, 232)))
                 .scrollIndicators(.visible)
             }
             if let message = model.message {
-                VStack(alignment: .leading, spacing: 7) {
-                    HStack(alignment: .top) {
-                        Text(message).font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
-                        Spacer(minLength: 4)
+                VStack(alignment: .leading, spacing: scaled(7)) {
+                    HStack(alignment: .top, spacing: scaled(8)) {
+                        Text(message).font(.system(size: scaled(11))).fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: scaled(4))
                         Button { model.message = nil; model.failedTask = nil } label: { Image(systemName: "xmark") }
                             .buttonStyle(.plain).accessibilityLabel("Dismiss message")
                     }
                     if let task = model.failedTask {
                         ViewThatFits(in: .horizontal) {
-                            HStack { recoveryButtons(task) }
-                            VStack(alignment: .leading, spacing: 6) { recoveryButtons(task) }
+                            HStack(spacing: scaled(8)) { recoveryButtons(task) }
+                            VStack(alignment: .leading, spacing: scaled(6)) { recoveryButtons(task) }
                         }
-                        .buttonStyle(.bordered).controlSize(.small)
+                        .buttonStyle(.bordered).controlSize(.small).font(.system(size: scaled(11)))
                     }
                 }
-                .padding(10).background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                .padding(scaled(10)).background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: scaled(10)))
             }
             Divider().overlay(.white.opacity(0.06))
-            HStack {
-                Button { model.openSettings() } label: { Label("Settings", systemImage: "gearshape") }
-                    .help("Customize the Codex CLI status bar…")
-                Spacer()
-                Button("Open Codex") { model.openCodex() }
-                Button { model.quit?() } label: { Image(systemName: "power") }
-                    .help("Quit Agent Companion").accessibilityLabel("Quit Agent Companion")
+            VStack(alignment: .leading, spacing: scaled(10)) {
+                HStack {
+                    Button { model.openSettings() } label: { Label("Settings", systemImage: "gearshape").fixedSize() }
+                        .help("Customize the Codex CLI status bar…")
+                    Spacer(minLength: 0)
+                    Button { model.quit?() } label: { Image(systemName: "power") }
+                        .help("Quit Agent Companion").accessibilityLabel("Quit Agent Companion")
+                }
+                Button { model.openCodex() } label: { Label("Open Codex", systemImage: "arrow.up.forward.app").fixedSize() }
             }
-            .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.secondary)
+            .buttonStyle(.plain).font(.system(size: scaled(11))).foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 16)
+        .padding(.horizontal, scaled(16)).padding(.top, scaled(12)).padding(.bottom, scaled(16))
     }
 
     private var weekly: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack {
-                Text("Weekly quota").font(.system(size: 11)).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: scaled(7)) {
+            HStack(spacing: scaled(8)) {
+                Text("Weekly quota").font(.system(size: scaled(11))).foregroundStyle(.secondary)
                 Spacer()
                 Text(model.weeklyText + (model.weeklyRemainingPercent == nil ? "" : " left"))
-                    .font(.system(size: 12, weight: .medium)).monospacedDigit()
+                    .font(.system(size: scaled(12), weight: .medium)).monospacedDigit()
             }
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
@@ -157,25 +164,26 @@ struct CompanionView: View {
                             .frame(width: geometry.size.width * CGFloat(remaining) / 100)
                     }
                 }
-            }.frame(height: 3).accessibilityHidden(true)
+            }.frame(height: scaled(3)).accessibilityHidden(true)
             if let usage = model.snapshot.weekly, !usage.expired, let resets = usage.resetsAt {
                 Text("Resets \(Date(timeIntervalSince1970: resets).formatted(date: .abbreviated, time: .shortened))")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                    .font(.system(size: scaled(10))).foregroundStyle(.secondary)
             } else {
                 Text(model.snapshot.weekly?.expired == true ? "Waiting for a new Codex usage reading after reset." : "Usage appears after Codex records a rate limit reading.")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                    .font(.system(size: scaled(10))).foregroundStyle(.secondary)
             }
         }
-        .padding(12).background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 12))
+        .padding(scaled(12)).background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: scaled(12)))
     }
 
     private func tab(_ title: String, count: Int, completed: Bool) -> some View {
         Button { model.showingCompleted = completed } label: {
-            HStack(spacing: 5) {
+            HStack(spacing: scaled(5)) {
                 Text(title)
-                Text("\(count)").monospacedDigit().foregroundStyle(model.showingCompleted == completed ? CompanionModel.accent : .white.opacity(0.55))
+                Text(model.countText(count)).monospacedDigit().foregroundStyle(model.showingCompleted == completed ? CompanionModel.accent : .white.opacity(0.55))
             }
-            .font(.system(size: 11, weight: .medium)).padding(.horizontal, 11).padding(.vertical, 7)
+            .font(.system(size: scaled(11), weight: .medium)).fixedSize()
+            .padding(.horizontal, scaled(8)).padding(.vertical, scaled(7))
             .background(.white.opacity(model.showingCompleted == completed ? 0.11 : 0.035), in: Capsule())
         }
         .buttonStyle(.plain)
@@ -186,26 +194,26 @@ struct CompanionView: View {
 
     private func taskRow(_ task: CodexTask) -> some View {
         Button { model.jump(to: task) } label: {
-            HStack(spacing: 10) {
-                Image(systemName: task.symbol).foregroundStyle(task.tint).font(.system(size: 13)).frame(width: 18)
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(task.title).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                    HStack(spacing: 5) {
+            HStack(spacing: scaled(10)) {
+                Image(systemName: task.symbol).foregroundStyle(task.tint).font(.system(size: scaled(13))).frame(width: scaled(18))
+                VStack(alignment: .leading, spacing: scaled(5)) {
+                    Text(task.title).font(.system(size: scaled(12), weight: .medium)).lineLimit(1)
+                    HStack(spacing: scaled(5)) {
                         if model.compactWidth >= 260 {
                             Text(task.project).lineLimit(1)
                             Text("·")
                         }
                         Text(task.status).lineLimit(1).fixedSize()
-                        Spacer(minLength: 4)
+                        Spacer(minLength: scaled(4))
                         Text(age(task.updatedAt)).monospacedDigit().fixedSize()
-                    }.font(.system(size: 10)).foregroundStyle(.secondary)
+                    }.font(.system(size: scaled(10))).foregroundStyle(.secondary)
                 }
                 if model.jumpingID == task.id { ProgressView().controlSize(.mini) }
-                else { Image(systemName: "arrow.up.right").font(.system(size: 10)).foregroundStyle(.secondary) }
+                else { Image(systemName: "arrow.up.right").font(.system(size: scaled(10))).foregroundStyle(.secondary) }
             }
-            .padding(.horizontal, 10).frame(height: 54)
-            .background(.white.opacity(hoveredTask == task.id ? 0.10 : 0.045), in: RoundedRectangle(cornerRadius: 10))
-            .contentShape(RoundedRectangle(cornerRadius: 10))
+            .padding(.horizontal, scaled(10)).frame(height: scaled(54))
+            .background(.white.opacity(hoveredTask == task.id ? 0.10 : 0.045), in: RoundedRectangle(cornerRadius: scaled(10)))
+            .contentShape(RoundedRectangle(cornerRadius: scaled(10)))
         }
         .buttonStyle(.plain)
         .disabled(model.jumpingID != nil)
@@ -234,16 +242,16 @@ struct CompanionView: View {
     }
 
     private func empty(_ title: String, detail: String, symbol: String) -> some View {
-        VStack(spacing: 9) {
-            Image(systemName: symbol).font(.system(size: 22)).foregroundStyle(.white.opacity(0.35))
-            Text(title).font(.system(size: 12, weight: .medium))
-            Text(detail).font(.system(size: 11)).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        VStack(spacing: scaled(9)) {
+            Image(systemName: symbol).font(.system(size: scaled(22))).foregroundStyle(.white.opacity(0.35))
+            Text(title).font(.system(size: scaled(12), weight: .medium))
+            Text(detail).font(.system(size: scaled(11))).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }
-        .frame(maxWidth: .infinity).frame(height: 132).padding(.horizontal, 25)
+        .frame(maxWidth: .infinity).frame(height: scaled(132)).padding(.horizontal, scaled(25))
     }
 
     private func notice(_ text: String, symbol: String) -> some View {
-        Label(text, systemImage: symbol).font(.system(size: 11)).foregroundStyle(.orange)
+        Label(text, systemImage: symbol).font(.system(size: scaled(11))).foregroundStyle(.orange)
             .fixedSize(horizontal: false, vertical: true)
     }
 }

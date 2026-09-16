@@ -109,6 +109,7 @@ final class NotchPresentation {
     private var motion = NotchMotion()
     private var screen: CGRect = .zero
     private var width: CGFloat = 0
+    private var metrics = NotchMetrics()
     private var expandedHeight: CGFloat = 0
     private var timer: Timer?
     private var lastFrame: TimeInterval = 0
@@ -126,8 +127,9 @@ final class NotchPresentation {
     deinit { timer?.invalidate() }
 
     func update(screen: CGRect, animated: Bool = true) {
-        let geometryChanged = self.screen != screen || width != model.compactWidth
+        let geometryChanged = self.screen != screen || metrics != model.metrics
         self.screen = screen
+        metrics = model.metrics
         width = model.compactWidth
         if model.expanded {
             expandedHeight = surface.measure(showDetails: true)
@@ -162,7 +164,8 @@ final class NotchPresentation {
         // fixed top edge. Keep every intermediate window on the pixel grid.
         let scale = max(1, panel.backingScaleFactor)
         let height = (max(model.compactHeight, motion.height) * scale).rounded() / scale
-        let frame = CGRect(x: screen.midX - width / 2, y: screen.maxY - height, width: width, height: height)
+        let frame = CGRect(x: screen.midX + metrics.centerOffset - width / 2,
+                           y: screen.maxY - height, width: width, height: height)
         surface.expansion = min(1, max(0, (height - model.compactHeight) / max(1, expandedHeight - model.compactHeight)))
         if !motion.isMoving && !model.expanded { _ = surface.measure(showDetails: false) }
         if panel.frame != frame { panel.setFrame(frame, display: false) }
