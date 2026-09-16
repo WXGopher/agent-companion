@@ -16,6 +16,8 @@ func freeFixture(_ pointer: UnsafeMutablePointer<CChar>?) { free(pointer) }
 @main
 struct LayoutTests {
     @MainActor static func main() throws {
+        // Preserve the last completed scenario if a native assertion aborts CI.
+        setbuf(stdout, nil)
         if CommandLine.arguments.count == 4, CommandLine.arguments[1] == "--write-dock-preference" {
             let store = DockPreferenceStore(domain: CommandLine.arguments[2])
             precondition(DockPreferences(store: store).setVisible(CommandLine.arguments[3] == "true"))
@@ -138,8 +140,15 @@ struct LayoutTests {
         for expanded in [false, true] {
             model.expanded = expanded
             presentation.update(screen: external, animated: false)
+            var previousScreen = external
             for (screen, metrics) in layouts {
+                let geometryChanged = previousScreen != screen || model.metrics != metrics
                 model.metrics = metrics
+                presentation.update(screen: screen)
+                if geometryChanged {
+                    precondition(!presentation.isAnimating, "A display change animated with the previous geometry")
+                }
+                previousScreen = screen
                 for count in [0, 9, 10, 99, 120] {
                     model.snapshot.activeCount = count
                     model.snapshot.completedCount = count
@@ -154,7 +163,14 @@ struct LayoutTests {
                                      "The notch covers menu-bar space outside the camera gap")
                     }
                 }
-                precondition(!presentation.isAnimating, "Display changes kept animating with old dimensions")
+                // Published counter updates can invalidate SwiftUI's measured
+                // height on a later layout pass. They are content updates, not
+                // display changes, and may finish a normal height animation.
+                let deadline = Date().addingTimeInterval(2)
+                while presentation.isAnimating && Date() < deadline {
+                    RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+                }
+                precondition(!presentation.isAnimating, "Content layout did not settle after updating counts")
                 if !expanded { precondition(panel.frame.height == metrics.compactHeight) }
             }
         }
