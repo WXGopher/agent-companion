@@ -35,6 +35,7 @@ final class NotchController: NSObject, NSApplicationDelegate {
     private var changes: AnyCancellable?
     private var hoverWork: DispatchWorkItem?
     private var pinned = false
+    private var hoverDismissed = false
     private var quitting = false
     private var selectedScreen: NSScreen?
 
@@ -43,6 +44,7 @@ final class NotchController: NSObject, NSApplicationDelegate {
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "Show Codex tasks", action: #selector(showTasks), keyEquivalent: "0").target = self
+        appMenu.addItem(withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: ",").target = self
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Quit Agent Companion", action: #selector(quit), keyEquivalent: "q").target = self
         appItem.submenu = appMenu
@@ -82,6 +84,7 @@ final class NotchController: NSObject, NSApplicationDelegate {
             guard let self else { return event }
             if event.type == .keyDown && event.keyCode == 53 { collapse(); return nil }
             if (event.type == .leftMouseDown || event.type == .rightMouseDown) && event.window === panel {
+                hoverWork?.cancel()
                 pinned = true
                 panel.makeKeyAndOrderFront(nil)
             }
@@ -109,7 +112,7 @@ final class NotchController: NSObject, NSApplicationDelegate {
 
     private func layout() {
         guard let screen = selectedScreen, let panel, let host else { return }
-        let width: CGFloat = model.expanded ? 432 : model.compactWidth
+        let width = model.compactWidth
         // Intrinsic size follows rows/messages. Never leave an invisible expanded
         // window over the user's apps after collapse.
         let height = model.expanded ? max(model.compactHeight, host.fittingSize.height) : model.compactHeight
@@ -120,9 +123,14 @@ final class NotchController: NSObject, NSApplicationDelegate {
 
     private func hover(_ inside: Bool) {
         hoverWork?.cancel()
-        if pinned { return }
+        let pointerInside = panel.frame.contains(NSEvent.mouseLocation)
+        if !pointerInside { hoverDismissed = false }
+        // Replacing tracking areas while resizing can produce stale enter/exit
+        // events. Check the pointer again before either opening or dismissing.
+        guard !pinned, inside == pointerInside, !inside || !hoverDismissed else { return }
         let work = DispatchWorkItem { [weak self] in
-            if inside { self?.expand(activate: false) } else { self?.collapse() }
+            guard let self, !pinned, panel.frame.contains(NSEvent.mouseLocation) == inside else { return }
+            if inside { expand(activate: false) } else { collapse() }
         }
         hoverWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + (inside ? 0.22 : 0.40), execute: work)
@@ -130,6 +138,7 @@ final class NotchController: NSObject, NSApplicationDelegate {
 
     private func expand(activate: Bool) {
         hoverWork?.cancel()
+        hoverDismissed = false
         if !model.expanded { model.showingCompleted = false }
         pinned = pinned || activate
         if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
@@ -150,9 +159,13 @@ final class NotchController: NSObject, NSApplicationDelegate {
         model.expanded = false
         panel.resignKey()
         layout()
+        // Esc or the collapse button must stay dismissed while the pointer is
+        // still over the compact strip. Hover is re-armed after it leaves.
+        hoverDismissed = panel.frame.contains(NSEvent.mouseLocation)
     }
 
     @objc private func showTasks() { expand(activate: true) }
+    @objc private func showSettings() { model.openSettings() }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         expand(activate: true)

@@ -33,9 +33,18 @@ struct LayoutTests {
         ], weekly: WeeklyUsage(usedPercent: 32, resetsAt: Date().timeIntervalSince1970 + 340000, expired: false), loading: false)
         precondition(model.visibleTasks.count == 2 && model.weeklyText == "32%")
         try render(model, name: "compact-external", output: output, height: 28...28)
+        model.expanded = true
+        try render(model, name: "active-external", output: output, height: 300...480)
+        model.expanded = false
         model.cameraWidth = 184
         model.compactHeight = 32
         try render(model, name: "compact-notched", output: output, height: 32...32)
+        precondition(model.compactWidth == 292, "Compact wings grew beyond the two counters and usage label")
+        model.snapshot.activeCount = 120
+        model.snapshot.completedCount = 101
+        try render(model, name: "large-counts", output: output, height: 32...32)
+        model.snapshot.activeCount = 2
+        model.snapshot.completedCount = 1
         model.expanded = true
         try render(model, name: "active", output: output, height: 300...420)
         model.showingCompleted = true
@@ -44,7 +53,7 @@ struct LayoutTests {
         model.showingCompleted = false
         model.failedTask = model.snapshot.tasks[0]
         model.message = "Could not select the original terminal tab. Allow Agent Companion in System Settings → Privacy & Security → Automation, or copy the resume command."
-        try render(model, name: "jump-error", output: output, height: 400...550)
+        try render(model, name: "jump-error", output: output, height: 400...650)
         model.message = nil
         model.failedTask = nil
         model.snapshot = CodexSnapshot(loading: false)
@@ -57,7 +66,7 @@ struct LayoutTests {
         model.snapshot = CodexSnapshot(loading: true)
         try render(model, name: "loading", output: output, height: 300...430)
         verifyResize()
-        print("PASS: 8 native SwiftUI layouts; filters, usage states, errors and live expand/collapse sizing")
+        print("PASS: 10 native SwiftUI layouts; filters, usage states, errors and constant-width expand/collapse sizing")
     }
 
     @MainActor private static func verifyResize() {
@@ -71,7 +80,7 @@ struct LayoutTests {
         model.expanded = true
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))
         let expanded = host.fittingSize
-        precondition(expanded.width == 432 && expanded.height > 300, "Expanded hosting view did not resize: \(expanded)")
+        precondition(expanded.width == model.compactWidth && expanded.height > 300, "Expansion changed the top-edge width: \(expanded)")
         window.setContentSize(expanded)
         model.expanded = false
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))
@@ -94,7 +103,7 @@ struct LayoutTests {
         window.contentView = host
         host.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-        precondition(size.width == (model.expanded ? 432 : model.compactWidth), "Unexpected width for \(name): \(size)")
+        precondition(size.width == model.compactWidth, "Unexpected width for \(name): \(size)")
         precondition(height.contains(size.height), "Unexpected height for \(name): \(size)")
         guard let image = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { fatalError("Could not render \(name)") }
         host.cacheDisplay(in: host.bounds, to: image)
