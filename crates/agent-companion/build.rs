@@ -5,8 +5,15 @@ fn main() {
     } else {
         "ui/codex-tui.slint"
     };
-    slint_build::compile(entry).expect("the Slint markup failed to compile");
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+    let macos = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos");
+    let config = slint_build::CompilerConfiguration::new();
+    let config = if macos {
+        config.with_style("cupertino".into())
+    } else {
+        config
+    };
+    slint_build::compile_with_config(entry, config).expect("the Slint markup failed to compile");
+    if macos {
         native_macos();
     }
 }

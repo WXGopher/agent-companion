@@ -11,18 +11,18 @@ private final class NotchPanel: NSPanel {
 }
 
 private final class NotchHostingView: NSHostingView<CompanionView> {
-    var hover: ((Bool) -> Void)?
+    var hover: (() -> Void)?
     private var tracking: NSTrackingArea?
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func updateTrackingAreas() {
+        super.updateTrackingAreas()
         if let tracking { removeTrackingArea(tracking) }
         let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
         addTrackingArea(area)
         tracking = area
-        super.updateTrackingAreas()
     }
-    override func mouseEntered(with event: NSEvent) { hover?(true) }
-    override func mouseExited(with event: NSEvent) { hover?(false) }
+    override func mouseEntered(with event: NSEvent) { super.mouseEntered(with: event); hover?() }
+    override func mouseExited(with event: NSEvent) { super.mouseExited(with: event); hover?() }
 }
 
 final class NotchController: NSObject, NSApplicationDelegate {
@@ -33,9 +33,14 @@ final class NotchController: NSObject, NSApplicationDelegate {
     private var localMonitor: Any?
     private var observers: [NSObjectProtocol] = []
     private var changes: AnyCancellable?
-    private var hoverWork: DispatchWorkItem?
-    private var pinned = false
-    private var hoverDismissed = false
+    private lazy var hover = NotchHover(
+        containsPointer: { [weak self] in
+            guard let self, let panel, panel.isVisible, let screen = selectedScreen else { return false }
+            return NotchHoverRegion.contains(NSEvent.mouseLocation, panel: panel.frame, screen: screen.frame)
+        },
+        expand: { [weak self] in self?.expand(activate: false) },
+        collapse: { [weak self] in self?.collapse() }
+    )
     private var quitting = false
     private var selectedScreen: NSScreen?
 
@@ -61,10 +66,11 @@ final class NotchController: NSObject, NSApplicationDelegate {
         panel.hidesOnDeactivate = false
         panel.isMovable = false
         panel.isReleasedWhenClosed = false
+        panel.acceptsMouseMovedEvents = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         host = NotchHostingView(rootView: CompanionView(model: model))
         host.sizingOptions = [.intrinsicContentSize]
-        host.hover = { [weak self] inside in self?.hover(inside) }
+        host.hover = { [weak self] in self?.hover.update() }
         panel.contentView = host
         model.expand = { [weak self] in self?.expand(activate: true) }
         model.collapse = { [weak self] in self?.collapse() }
@@ -76,16 +82,18 @@ final class NotchController: NSObject, NSApplicationDelegate {
         observers.append(NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in self?.selectScreen() })
         observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in self?.selectScreen() })
         observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in self?.selectScreen(); self?.model.refresh() })
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-            guard let self, !panel.frame.contains(NSEvent.mouseLocation) else { return }
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDown, .rightMouseDown]) { [weak self] event in
+            guard let self else { return }
+            if event.type == .mouseMoved { hover.update(); return }
+            guard !panel.frame.contains(NSEvent.mouseLocation) else { return }
             collapse()
         }
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown]) { [weak self] event in
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDown, .rightMouseDown, .keyDown]) { [weak self] event in
             guard let self else { return event }
+            if event.type == .mouseMoved { hover.update(); return event }
             if event.type == .keyDown && event.keyCode == 53 { collapse(); return nil }
             if (event.type == .leftMouseDown || event.type == .rightMouseDown) && event.window === panel {
-                hoverWork?.cancel()
-                pinned = true
+                hover.pin()
                 panel.makeKeyAndOrderFront(nil)
             }
             return event
@@ -93,10 +101,14 @@ final class NotchController: NSObject, NSApplicationDelegate {
         selectScreen()
         panel.orderFrontRegardless()
         model.start()
+        hover.start()
     }
 
     private func selectScreen() {
-        selectedScreen = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }) ?? NSScreen.main ?? NSScreen.screens.first
+        // AppKit orders the configured primary display first. NSScreen.main
+        // follows the key window instead, and a camera notch may be secondary.
+        // Re-read this list on every display change, including hot-plugging.
+        selectedScreen = NSScreen.screens.first
         guard let screen = selectedScreen else { panel?.orderOut(nil); return }
         let cameraHeight = screen.safeAreaInsets.top
         if cameraHeight > 0, let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
@@ -108,6 +120,7 @@ final class NotchController: NSObject, NSApplicationDelegate {
         }
         layout()
         panel.orderFrontRegardless()
+        hover.update()
     }
 
     private func layout() {
@@ -116,31 +129,16 @@ final class NotchController: NSObject, NSApplicationDelegate {
         // Intrinsic size follows rows/messages. Never leave an invisible expanded
         // window over the user's apps after collapse.
         let height = model.expanded ? max(model.compactHeight, host.fittingSize.height) : model.compactHeight
-        let top = model.hasCamera ? screen.frame.maxY : screen.visibleFrame.maxY - 4
+        // Overlay the menu bar on every display. visibleFrame excludes it and
+        // would leave the strip floating below the menu bar on ordinary screens.
+        let top = screen.frame.maxY
         let frame = NSRect(x: screen.frame.midX - width / 2, y: top - height, width: width, height: height)
         if panel.frame != frame { panel.setFrame(frame, display: true) }
     }
 
-    private func hover(_ inside: Bool) {
-        hoverWork?.cancel()
-        let pointerInside = panel.frame.contains(NSEvent.mouseLocation)
-        if !pointerInside { hoverDismissed = false }
-        // Replacing tracking areas while resizing can produce stale enter/exit
-        // events. Check the pointer again before either opening or dismissing.
-        guard !pinned, inside == pointerInside, !inside || !hoverDismissed else { return }
-        let work = DispatchWorkItem { [weak self] in
-            guard let self, !pinned, panel.frame.contains(NSEvent.mouseLocation) == inside else { return }
-            if inside { expand(activate: false) } else { collapse() }
-        }
-        hoverWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + (inside ? 0.22 : 0.40), execute: work)
-    }
-
     private func expand(activate: Bool) {
-        hoverWork?.cancel()
-        hoverDismissed = false
+        if activate { hover.pin() }
         if !model.expanded { model.showingCompleted = false }
-        pinned = pinned || activate
         if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             model.expanded = true
         } else {
@@ -151,8 +149,6 @@ final class NotchController: NSObject, NSApplicationDelegate {
     }
 
     private func collapse() {
-        hoverWork?.cancel()
-        pinned = false
         model.message = nil
         model.failedTask = nil
         // A jump in progress may complete after dismissal, without stealing focus.
@@ -161,7 +157,7 @@ final class NotchController: NSObject, NSApplicationDelegate {
         layout()
         // Esc or the collapse button must stay dismissed while the pointer is
         // still over the compact strip. Hover is re-armed after it leaves.
-        hoverDismissed = panel.frame.contains(NSEvent.mouseLocation)
+        hover.dismiss()
     }
 
     @objc private func showTasks() { expand(activate: true) }
@@ -175,7 +171,7 @@ final class NotchController: NSObject, NSApplicationDelegate {
     @objc private func quit() {
         guard !quitting else { return }
         quitting = true
-        hoverWork?.cancel()
+        hover.stop()
         model.stop()
         changes?.cancel()
         if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
@@ -203,7 +199,7 @@ final class NotchController: NSObject, NSApplicationDelegate {
 @_cdecl("agent_companion_run_notch")
 public func runAgentCompanionNotch() -> Int32 {
     let app = NSApplication.shared
-    app.setActivationPolicy(.accessory)
+    DockPreferences.shared.start()
     let delegate = NotchController()
     app.delegate = delegate
     withExtendedLifetime(delegate) { app.run() }

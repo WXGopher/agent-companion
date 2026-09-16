@@ -80,6 +80,8 @@ final class CompanionModel: ObservableObject {
     var quit: (() -> Void)?
     private var timer: Timer?
     private var settingsProcess: Process?
+    private var settingsApplication: NSRunningApplication?
+    private var openingSettings = false
     private var presentationRevision: UInt64 = 0
     private let openTask: (CodexTask, String, @escaping (String?) -> Void) -> Void
 
@@ -100,9 +102,13 @@ final class CompanionModel: ObservableObject {
     }
     var compactWidth: CGFloat { hasCamera ? cameraWidth + 2 * (sideWidth + 6) : 216 }
     func countText(_ count: Int) -> String { count > 99 ? "99+" : "\(count)" }
+    var weeklyRemainingPercent: Int? {
+        guard let usage = snapshot.weekly, !usage.expired else { return nil }
+        return 100 - min(100, max(0, usage.usedPercent))
+    }
     var weeklyText: String {
-        guard let usage = snapshot.weekly, !usage.expired else { return "—" }
-        return "\(usage.usedPercent)%"
+        guard let remaining = weeklyRemainingPercent else { return "—" }
+        return "\(remaining)%"
     }
     var visibleTasks: [CodexTask] {
         snapshot.tasks.filter { showingCompleted ? !$0.isActive : $0.isActive }
@@ -126,15 +132,45 @@ final class CompanionModel: ObservableObject {
     }
 
     func openSettings() {
+        if let application = settingsApplication, !application.isTerminated {
+            application.activate(options: [.activateAllWindows])
+            collapse?()
+            return
+        }
+        guard !openingSettings else { return }
         if let process = settingsProcess, process.isRunning {
             NSRunningApplication(processIdentifier: process.processIdentifier)?.activate(options: [.activateAllWindows])
             collapse?()
             return
         }
         guard let executable = Bundle.main.executableURL else { return }
+        var environment = ProcessInfo.processInfo.environment
+        environment[DockPreferences.editorParentKey] = String(ProcessInfo.processInfo.processIdentifier)
+        if Bundle.main.bundleURL.pathExtension == "app" {
+            // Register the accessory editor with Launch Services so its window
+            // can be activated even though it has no Dock tile of its own.
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.createsNewApplicationInstance = true
+            configuration.arguments = ["codex-tui"]
+            configuration.environment = environment
+            openingSettings = true
+            let revision = presentationRevision
+            NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { [weak self] application, error in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.openingSettings = false
+                    self.settingsApplication = application
+                    guard self.presentationRevision == revision else { return }
+                    if let error { self.message = "Could not open settings: \(error.localizedDescription)" }
+                    else { self.collapse?() }
+                }
+            }
+            return
+        }
         let process = Process()
         process.executableURL = executable
         process.arguments = ["codex-tui"]
+        process.environment = environment
         do {
             try process.run()
             settingsProcess = process
