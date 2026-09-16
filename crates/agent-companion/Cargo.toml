@@ -44,3 +44,6 @@ slint-build.workspace = true
 serde_json.workspace = true
 slint = { workspace = true, features = ["unstable-winit-030"] }
 tempfile.workspace = true
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2-app-kit = { version = "0.2.2", features = ["NSColor", "NSResponder", "NSView", "NSWindow"] }
