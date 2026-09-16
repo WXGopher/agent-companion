@@ -72,7 +72,42 @@ struct LayoutTests {
         try render(model, name: "loading", output: output, height: 300...430)
         verifyResize()
         verifyTerminalTargets()
+        verifyNavigationLifecycle()
         print("PASS: 11 native SwiftUI layouts; filters, usage states, errors and constant-width expand/collapse sizing")
+    }
+
+    @MainActor private static func verifyNavigationLifecycle() {
+        var pending: ((String?) -> Void)?
+        let model = CompanionModel { _, _, completion in pending = completion }
+        let task = CodexTask(id: "1b966260-04f3-4281-9179-219ee11f60a0", title: "Navigation fixture", project: "fixture", cwd: nil, client: "cli", state: "running", updatedAt: 0, transcriptPath: nil)
+        var collapses = 0
+        model.collapse = { [weak model] in
+            collapses += 1
+            model?.expanded = false
+            model?.message = nil
+            model?.failedTask = nil
+        }
+        model.expanded = true
+        model.jump(to: task)
+        precondition(model.jumpingID == task.id)
+        model.expanded = false
+        model.expanded = true
+        pending?(nil)
+        precondition(model.expanded && collapses == 0 && model.jumpingID == nil,
+                     "An old jump dismissed the newly reopened panel")
+        model.jump(to: task)
+        model.expanded = false
+        model.expanded = true
+        pending?("An old navigation error")
+        precondition(model.message == nil && model.failedTask == nil && model.jumpingID == nil,
+                     "A dismissed jump left an error in a new presentation")
+        model.jump(to: task)
+        pending?("The original terminal could not be located.")
+        precondition(model.message != nil && model.failedTask?.id == task.id && model.expanded)
+        model.jump(to: task)
+        pending?(nil)
+        precondition(!model.expanded && collapses == 1 && model.jumpingID == nil)
+        print("Navigation lifecycle: success/error recovery and stale completion isolation passed")
     }
 
     private static func verifyTerminalTargets() {
