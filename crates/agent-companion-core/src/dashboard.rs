@@ -58,6 +58,7 @@ pub struct Dashboard {
     home: PathBuf,
     sessions: SessionCache,
     last_sessions: Vec<SessionState>,
+    sessions_scanned_at: Option<u64>,
     usage: Option<CodexUsage>,
     usage_error: Option<String>,
     usage_scanned_at: Option<u64>,
@@ -69,6 +70,7 @@ impl Dashboard {
             home,
             sessions: SessionCache::default(),
             last_sessions: vec![],
+            sessions_scanned_at: None,
             usage: None,
             usage_error: None,
             usage_scanned_at: None,
@@ -80,9 +82,23 @@ impl Dashboard {
         let error = match self.sessions.scan(&self.home, now) {
             Ok(sessions) => {
                 self.last_sessions = sessions;
+                self.sessions_scanned_at = Some(now);
                 None
             }
-            Err(error) => Some(format!("Could not read Codex sessions: {error}")),
+            Err(error) => {
+                // Liveness was only observed during the last successful scan.
+                // After a short grace period, let cached events expire normally
+                // instead of keeping an inaccessible session active forever.
+                if self
+                    .sessions_scanned_at
+                    .is_none_or(|at| now.saturating_sub(at) >= 30)
+                {
+                    for session in &mut self.last_sessions {
+                        session.observed_alive = false;
+                    }
+                }
+                Some(format!("Could not read Codex sessions: {error}"))
+            }
         };
         self.last_sessions
             .retain(|session| !session.is_stale(now, STALE_AFTER_SECS));
@@ -234,6 +250,30 @@ mod tests {
         let expired = dashboard.poll(start + 1000);
         assert!(expired.tasks.is_empty());
         assert!(expired.weekly.unwrap().expired);
+    }
+
+    #[test]
+    fn persistent_read_failure_does_not_keep_old_liveness_forever() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dashboard = Dashboard::new(dir.path().to_owned());
+        assert!(dashboard.poll(1000).error.is_none());
+        let mut session = SessionState::new("old-live-task", HookSource::Codex, 100);
+        session.observed_alive = true;
+        dashboard.last_sessions.push(session);
+        // A regular file in place of the directory reliably fails on both
+        // platforms, including test runners allowed to bypass file permissions.
+        let sessions = dir.path().join("sessions");
+        std::fs::write(&sessions, "not a directory").unwrap();
+        let transient = dashboard.poll(1010);
+        assert!(transient.error.is_some());
+        assert_eq!(transient.active_count, 1);
+        let persistent = dashboard.poll(1030);
+        assert!(persistent.error.is_some());
+        assert_eq!(persistent.active_count, 0);
+        assert!(persistent.tasks.is_empty());
+        std::fs::remove_file(sessions).unwrap();
+        // Usage retries on its own 30-second interval.
+        assert!(dashboard.poll(1060).error.is_none());
     }
 
     #[test]

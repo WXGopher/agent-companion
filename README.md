@@ -9,9 +9,11 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="GPL-3.0-only"></a>
 </p>
 
+**下载 / Download v0.3.0:** [macOS Apple Silicon](https://github.com/WXGopher/agent-companion/releases/download/v0.3.0/agent-companion-v0.3.0-macos-arm64.zip) · [Windows x86_64](https://github.com/WXGopher/agent-companion/releases/download/v0.3.0/agent-companion-v0.3.0-windows-x86_64.zip) · [发布说明 / Release notes](https://github.com/WXGopher/agent-companion/releases/tag/v0.3.0)
+
 ## 中文
 
-**Windows + macOS Apple Silicon。** Agent Companion（原 Atoll）在 Windows 任务栏和 macOS 窄刘海显示 Codex 任务与额度，并提供独立的 Codex CLI 原生状态栏编辑器。
+**Windows + macOS Apple Silicon。** Agent Companion（原 Atoll）在 Windows 任务栏和 macOS 窄刘海显示 Codex 任务与额度。展开刘海即可进入设置，定制 Codex CLI 状态栏；也可单独打开编辑器。
 
 | 平台 | 本版功能 | 启动方式 |
 | --- | --- | --- |
@@ -33,9 +35,11 @@
 
 ### macOS 安装
 
-从 Releases 下载 `agent-companion-v0.3.0-macos-arm64.zip`，解压并将 **Agent Companion.app** 拖到“应用程序”。需要 macOS 14 或更新版本。本版没有 Developer ID 签名或 Apple 公证。首次打开若被系统拦截，按 [Apple 官方步骤](https://support.apple.com/en-us/102445)，在“系统设置 → 隐私与安全性”中选择“仍要打开”。
+下载上方 **macOS Apple Silicon** 压缩包，解压并将 **Agent Companion.app** 拖到“应用程序”。需要 macOS 14 或更新版本。本版没有 Developer ID 签名或 Apple 公证。首次打开若被系统拦截，按 [Apple 官方步骤](https://support.apple.com/en-us/102445)，在“系统设置 → 隐私与安全性”中选择“仍要打开”。
 
-在终端可直接运行 `/Applications/Agent Companion.app/Contents/MacOS/agent-companion codex-tui`（路径含空格时请加引号）。窗口显示本次实际配置路径，读取进程的 `CODEX_HOME`，缺省为 `~/.codex/config.toml`。Finder 启动不读取 shell 初始化脚本；若只在 shell 中设置了 `CODEX_HOME`，请从该终端启动应用。
+**从旧版本升级：** 先退出旧刘海及设置窗口，再替换“应用程序”中的 app 并重新打开。已有 Codex 配置继续保留。v0.2.x 默认打开编辑器；v0.3.0 默认打开刘海，编辑器移到展开后的 **Settings**。macOS 暂无自动更新或开机启动设置。
+
+在终端可直接运行 `"/Applications/Agent Companion.app/Contents/MacOS/agent-companion" codex-tui`。窗口显示本次实际配置路径，读取进程的 `CODEX_HOME`，缺省为 `~/.codex/config.toml`。Finder 启动不读取 shell 初始化脚本；若只在 shell 中设置了 `CODEX_HOME`，请从该终端启动应用。
 
 **保存后无需常驻。** 状态栏由 Codex 自己显示；关闭编辑器后重新启动 Codex CLI 即可加载。以下任务栏、hooks、通知和启动器说明仅适用于 Windows。
 
@@ -67,7 +71,7 @@ Agent Companion 以 Codex 为支持和验证对象，通过 hooks、本地会话
 <img src="docs/readout.png" width="96" alt="垂直任务栏中的额度控件">
 <img src="docs/card.png" width="440" alt="Claude Code 工具审批卡片">
 
-当前源码版本为 v0.3.0。项目仍在早期开发，部分截图来自较早版本，具体外观以当前程序为准。Codex CLI 提问接入与桌面分页历史读取为实验性功能，桌面原生问题仍在 Codex 中作答。
+当前版本为 v0.3.0。项目仍在早期开发，部分 Windows 截图来自较早版本，具体外观以当前程序为准。Codex CLI 提问接入与桌面分页历史读取为实验性功能，桌面原生问题仍在 Codex 中作答。macOS 核心窗口流程已有实机检查；全屏、物理显示器切换和 Terminal.app 跳转仍未覆盖，详见[验证范围](docs/MACOS_NOTCH.md)。Windows 本轮验证构建和自动测试，未在 macOS 上宣称桌面实测。
 
 ### 安装与使用
 
@@ -83,6 +87,8 @@ Agent Companion 以 Codex 为支持和验证对象，通过 hooks、本地会话
 ```powershell
 .\agent-companion.exe setup status codex
 ```
+
+升级时先退出旧 Agent Companion，从新解压目录重新执行安装命令；会保留配置并更新受管理 hooks。若只需状态栏编辑器，直接运行 `agent-companion.exe codex-tui` 即可。
 
 随后在 Codex 中运行 `/hooks` 审阅并信任新增配置，再开启新会话。Agent Companion 不会代替你完成信任审核。安装命令及审批协议已在 Codex CLI 0.154.0 的环境中验证；配置格式见 [Codex hooks 文档](https://learn.chatgpt.com/docs/hooks)。
 
@@ -193,10 +199,10 @@ cargo test -p agent-companion --test display_lifecycle -- --ignored --nocapture
 
 已安装 Agent Companion 且系统允许通知时，可执行 `cargo test -p agent-companion native_completion_reaches -- --ignored --nocapture` 验证真实通知投递；测试会移除自己发送的通知。
 
-正式发布通过 [GitHub Actions](.github/workflows/release.yml) 构建。macOS 压缩包包含 `Agent Companion.app`，Windows 压缩包包含三个 Windows 程序；两者附 README 和许可证，并提供统一 `SHA256SUMS.txt` 与构建来源证明。可用 GitHub CLI 验证：
+正式发布通过 [GitHub Actions](.github/workflows/release.yml) 构建并运行两平台测试，包含 macOS 原生界面检查。先生成草稿，校验下载产物后公开，步骤见[发布流程](docs/RELEASING.md)。macOS 压缩包包含 `Agent Companion.app`，Windows 压缩包包含三个 Windows 程序；两者附 README、许可证及第三方声明，并提供统一 `SHA256SUMS.txt` 与构建来源证明。下载两个 ZIP 和校验文件后，在 macOS 运行 `shasum -a 256 -c SHA256SUMS.txt`；也可用 GitHub CLI 单独验证来源：
 
 ```powershell
-gh attestation verify agent-companion-v0.3.0-windows-x86_64.zip --repo WXGopher/agent-companion
+gh attestation verify agent-companion-v0.3.0-windows-x86_64.zip --repo WXGopher/agent-companion --source-ref refs/tags/v0.3.0 --deny-self-hosted-runners
 ```
 
 F01–F03 的交付范围与后续更新、远端会话候选项，见对照 open-vibe-island 整理的 [功能路线图](docs/ROADMAP.md)。更多代理、通知偏好和界面语言切换本轮不做。维护事项单列在 [已知问题](docs/KNOWN_ISSUES.md)。
@@ -211,7 +217,7 @@ Agent Companion 复用 [open-vibe-island](https://github.com/Octane0411/open-vib
 
 ## English
 
-**Windows + macOS Apple Silicon.** Agent Companion (formerly Atoll) shows Codex tasks and usage in the Windows taskbar and a compact macOS notch, with an independent native Codex CLI status bar editor.
+**Windows + macOS Apple Silicon.** Agent Companion (formerly Atoll) shows Codex tasks and usage in the Windows taskbar and a compact macOS notch. Expand the notch and open Settings to customize the Codex CLI status bar, or launch the editor independently.
 
 | Platform | Scope | Launch |
 | --- | --- | --- |
@@ -233,7 +239,9 @@ Reads local Codex sessions, paginated history and usage without making model req
 
 ### macOS installation
 
-Download `agent-companion-v0.3.0-macos-arm64.zip` from Releases and drag **Agent Companion.app** into Applications. Requires macOS 14 or newer. This release has no Developer ID signature or Apple notarization. If macOS blocks the first launch, follow [Apple's instructions](https://support.apple.com/en-us/102445) to choose **Open Anyway** in System Settings → Privacy & Security.
+Download the **macOS Apple Silicon** archive above and drag **Agent Companion.app** into Applications. Requires macOS 14 or newer. This release has no Developer ID signature or Apple notarization. If macOS blocks the first launch, follow [Apple's instructions](https://support.apple.com/en-us/102445) to choose **Open Anyway** in System Settings → Privacy & Security.
+
+**Upgrading:** quit the old notch and Settings window before replacing the app in Applications, then reopen it. Your Codex configuration is retained. v0.2.x opened the editor by default; v0.3.0 opens the notch, with customization under **Settings**. Automatic updates and launch-at-login settings are not included on macOS yet.
 
 From a terminal, run `"/Applications/Agent Companion.app/Contents/MacOS/agent-companion" codex-tui`. The window shows the resolved config path: `$CODEX_HOME/config.toml`, defaulting to `~/.codex/config.toml`. Finder uses its process environment and does not source shell startup files; launch from your terminal when `CODEX_HOME` is set only in that shell.
 
@@ -267,7 +275,7 @@ Agent Companion focuses on Codex, using hooks, local session logs and an optiona
 <img src="docs/readout.png" width="96" alt="Quota readout in a vertical taskbar">
 <img src="docs/card.png" width="440" alt="Claude Code tool approval card">
 
-The current source version is v0.3.0. The project is in early development and some screenshots show earlier versions. Codex CLI question integration and desktop paginated-history reads are experimental; desktop questions still require answering in Codex.
+The current version is v0.3.0. The project is in early development and some Windows screenshots show earlier versions. Codex CLI question integration and desktop paginated-history reads are experimental; desktop questions still require answering in Codex. Core macOS window flows have been checked on a real desktop; fullscreen, physical display changes and Terminal.app navigation remain outside the completed [verification scope](docs/MACOS_NOTCH.md). This release verifies Windows builds and automated tests, without claiming manual Windows desktop checks from macOS.
 
 ### Install and use
 
@@ -283,6 +291,8 @@ The first command copies `agent-companion.exe`, `agent-companion-hook.exe` and `
 ```powershell
 .\agent-companion.exe setup status codex
 ```
+
+To upgrade, quit the old Agent Companion and rerun installation from the newly extracted directory. Configuration is retained and managed hooks are updated. For the editor alone, run `agent-companion.exe codex-tui`.
 
 Then use `/hooks` in Codex to review and trust the new definitions, and start a new session. Agent Companion does not bypass this review. Installation commands and approval protocol were checked in an environment with Codex CLI 0.154.0; see the [Codex hooks documentation](https://learn.chatgpt.com/docs/hooks).
 
@@ -315,7 +325,7 @@ Check or remove hooks for either agent:
 
 ### Customize the Codex CLI status bar
 
-Open **Settings → Codex TUI → Customize status bar**. Checked components appear in the preview; unchecked components are hidden. The catalog and default preview were checked against `/statusline` in Codex CLI **0.154.0**. Values are illustrative; Codex omits unavailable data and fits the footer to its terminal width.
+On macOS, expand the notch and click the **Settings** gear. On Windows, open **Settings → Codex TUI → Customize status bar**. Both platforms also support `agent-companion codex-tui`. Checked components appear in the preview; unchecked components are hidden. The catalog and default preview were checked against `/statusline` in Codex CLI **0.154.0**. Values are illustrative; Codex omits unavailable data and fits the footer to its terminal width.
 
 **Apply** saves `tui.status_line` in `$CODEX_HOME/config.toml` (normally `~/.codex/config.toml`). An empty selection hides the footer. Existing component order is preserved, new components follow it, and toggling off/on within a draft restores the original position. Restart Codex CLI to load the saved configuration; use `codex resume` to continue an existing session. Project, profile and command-line overrides may take precedence.
 
@@ -390,10 +400,10 @@ cargo test -p agent-companion --test display_lifecycle -- --ignored --nocapture
 
 With Agent Companion installed and Windows notifications enabled, run `cargo test -p agent-companion native_completion_reaches -- --ignored --nocapture` to verify real delivery; the test removes its own notification afterwards.
 
-The macOS ZIP contains `Agent Companion.app`; the Windows ZIP contains the three Windows executables. Both include the README and license. Release archives are built by [GitHub Actions](.github/workflows/release.yml). Each archive has a `SHA256SUMS.txt` checksum alongside it and a build provenance attestation. Verify the attestation with the GitHub CLI:
+The macOS ZIP contains `Agent Companion.app`; the Windows ZIP contains the three Windows executables. Both include the README, license and third-party notices. [GitHub Actions](.github/workflows/release.yml) builds and tests both platforms, including the native macOS UI checks, then creates a draft. Downloaded packages are verified before publication; see the [release process](docs/RELEASING.md). Download both ZIPs and `SHA256SUMS.txt`, then run `shasum -a 256 -c SHA256SUMS.txt` on macOS. Each archive also has a build provenance attestation, verifiable independently with the GitHub CLI:
 
 ```powershell
-gh attestation verify agent-companion-v0.3.0-windows-x86_64.zip --repo WXGopher/agent-companion
+gh attestation verify agent-companion-v0.3.0-windows-x86_64.zip --repo WXGopher/agent-companion --source-ref refs/tags/v0.3.0 --deny-self-hosted-runners
 ```
 
 See the [feature roadmap](docs/ROADMAP.md) for gaps compared with open-vibe-island, including the delivered F01–F03 scope and candidate update/remote-session features; more agents, notification preferences and language switching are not planned. Maintenance work is tracked separately in [known issues](docs/KNOWN_ISSUES.md).
