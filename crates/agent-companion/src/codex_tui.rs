@@ -126,7 +126,12 @@ impl Editor {
             .window
             .set_catalog_version(config::CATALOG_VERSION.into());
         #[cfg(target_os = "macos")]
-        editor.window.set_mono_font("Menlo".into());
+        {
+            editor.window.set_mono_font("Menlo".into());
+            editor
+                .window
+                .set_window_title("Agent Companion · Settings".into());
+        }
         let weak = Rc::downgrade(&editor);
         editor.window.on_toggle(move |id, enabled| {
             if let Some(editor) = weak.upgrade() {

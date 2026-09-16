@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Codex CLI status bar editor, with Windows agent monitoring and approvals."
+description = "Codex task and usage companion for macOS and Windows, with a CLI status bar editor."
 
 [[bin]]
 name = "agent-companion"
@@ -28,6 +28,9 @@ futures-util = { version = "0.3", features = ["sink"] }
 tokio-tungstenite = "0.28"
 tray-icon.workspace = true
 windows.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+agent-companion-core = { workspace = true, features = ["desktop-history"] }
 
 [build-dependencies]
 slint-build.workspace = true

@@ -8,6 +8,7 @@
 
 pub mod codex;
 pub mod compat;
+pub mod dashboard;
 pub mod install;
 pub mod pipe;
 pub mod protocol;
