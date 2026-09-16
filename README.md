@@ -9,7 +9,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="GPL-3.0-only"></a>
 </p>
 
-**下载 / Download v0.3.0:** [macOS Apple Silicon](https://github.com/WXGopher/agent-companion/releases/download/v0.3.0/agent-companion-v0.3.0-macos-arm64.zip) · [Windows x86_64](https://github.com/WXGopher/agent-companion/releases/download/v0.3.0/agent-companion-v0.3.0-windows-x86_64.zip) · [发布说明 / Release notes](https://github.com/WXGopher/agent-companion/releases/tag/v0.3.0)
+**下载 / Download v0.3.1:** [macOS Apple Silicon](https://github.com/WXGopher/agent-companion/releases/download/v0.3.1/agent-companion-v0.3.1-macos-arm64.zip) · [Windows x86_64](https://github.com/WXGopher/agent-companion/releases/download/v0.3.1/agent-companion-v0.3.1-windows-x86_64.zip) · [发布说明 / Release notes](https://github.com/WXGopher/agent-companion/releases/tag/v0.3.1)
 
 ## 中文
 
@@ -22,22 +22,25 @@
 
 ### macOS 窄刘海
 
-- 左侧两个数字分别表示**活动任务**与**最近十五分钟结束的任务**；右侧 `32% wk` 表示 Codex 原生周额度已使用 32%。没有读数或读数已过重置时间时显示 `—`。
-- 悬停展开预览，移开收起；点击后保持展开，按 Esc 或点击外部收起。展开默认显示活动任务，可切换 Finished 查看完成、停止和失败的任务。
+- 左侧两个数字分别表示**活动任务**与**最近十五分钟结束的任务**；右侧 `68% left` 表示 Codex 周额度还剩 68%。展开后的额度卡片和进度条也显示剩余量，由原生已用比例换算。没有读数或读数已过重置时间时显示 `—`。
+- 鼠标移到刘海附近约 0.18 秒即自动展开，无需点击，也不抢键盘焦点；判定包含屏幕最顶边，并在左右各留 12 点、下方留 8 点容错，显示宽度不变。移开约 0.35 秒后收起。点击后保持展开，按 Esc 或点击外部收起。展开默认显示活动任务，可切换 Finished 查看完成、停止和失败的任务。
 - 点击任务返回对应 Codex 桌面对话。CLI 根据存活进程定位 Terminal/iTerm2 的原标签页；首次可能需要在系统 Automation 设置中授权。其他终端尽力唤起宿主应用，定位失败时可复制 `codex resume` 命令。
-- 有物理刘海时贴合摄像头区域；普通显示器使用菜单栏下方的 216 × 28 窄条。支持屏幕变化与不同桌面空间。
-- 展开面板保持与收起时相同的宽度，只向下展开；摄像头两侧只保留任务数和周用量。
-- **Settings（设置）** 打开 TUI 定制窗口；再次点击会回到已打开的设置；电源按钮或右键菜单退出刘海。刘海需要运行才能更新任务，保存后的 CLI 状态栏配置无需常驻。
+- 刘海跟随 macOS 设置的**主显示器**，连接、断开显示器或更换主屏后自动重新定位。主屏有物理刘海时贴合摄像头区域；普通主屏使用 216 × 28 窄条，居中覆盖菜单栏并紧贴屏幕顶边，展开时保持顶边和宽度不变。支持不同桌面空间。
+- 展开面板保持与收起时相同的宽度，只向下展开；摄像头两侧只保留任务数和周剩余额度。
+- **Settings（设置）** 打开 TUI 定制窗口：macOS 风格开关、卡片分组和跟随系统的浅色／深色外观；左侧选择组件，右侧固定显示实时预览，底部 **Apply changes** 保存。再次点击会回到已打开的设置；电源按钮或右键菜单退出刘海。刘海需要运行才能更新任务，保存后的 CLI 状态栏配置无需常驻。
+- 默认不显示 Dock 图标，打开设置也不会额外占位。需要时可在设置中开启 **Show in Dock**，立即生效并记住选择；此开关自动保存，不需要点击 TUI 的 Apply。
 
 只读取本地 Codex 会话、分页历史和额度，不发起模型请求。macOS 不启动 hooks、审批服务或其他代理，不包含宠物、主题编辑或 Intel Mac 支持。
 
 <p align="center"><img src="docs/macos-notch.png" width="432" alt="macOS Codex 刘海展开界面，合成数据渲染"></p>
 
+<p align="center"><img src="docs/macos-settings.png" width="760" alt="macOS 设置：卡片分组、Dock 开关、组件选择和固定实时预览"></p>
+
 ### macOS 安装
 
 下载上方 **macOS Apple Silicon** 压缩包，解压并将 **Agent Companion.app** 拖到“应用程序”。需要 macOS 14 或更新版本。本版没有 Developer ID 签名或 Apple 公证。首次打开若被系统拦截，按 [Apple 官方步骤](https://support.apple.com/en-us/102445)，在“系统设置 → 隐私与安全性”中选择“仍要打开”。
 
-**从旧版本升级：** 先退出旧刘海及设置窗口，再替换“应用程序”中的 app 并重新打开。已有 Codex 配置继续保留。v0.2.x 默认打开编辑器；v0.3.0 默认打开刘海，编辑器移到展开后的 **Settings**。macOS 暂无自动更新或开机启动设置。
+**从旧版本升级：** 先退出旧刘海及设置窗口，再替换“应用程序”中的 app 并重新打开。已有 Codex 配置继续保留。v0.2.x 默认打开编辑器；从 v0.3.0 起默认打开刘海，编辑器移到展开后的 **Settings**。macOS 暂无自动更新或开机启动设置。
 
 在终端可直接运行 `"/Applications/Agent Companion.app/Contents/MacOS/agent-companion" codex-tui`。窗口显示本次实际配置路径，读取进程的 `CODEX_HOME`，缺省为 `~/.codex/config.toml`。Finder 启动不读取 shell 初始化脚本；若只在 shell 中设置了 `CODEX_HOME`，请从该终端启动应用。
 
@@ -71,7 +74,7 @@ Agent Companion 以 Codex 为支持和验证对象，通过 hooks、本地会话
 <img src="docs/readout.png" width="96" alt="垂直任务栏中的额度控件">
 <img src="docs/card.png" width="440" alt="Claude Code 工具审批卡片">
 
-当前版本为 v0.3.0。项目仍在早期开发，部分 Windows 截图来自较早版本，具体外观以当前程序为准。Codex CLI 提问接入与桌面分页历史读取为实验性功能，桌面原生问题仍在 Codex 中作答。macOS 核心窗口流程已有实机检查；全屏、物理显示器切换和 Terminal.app 跳转仍未覆盖，详见[验证范围](docs/MACOS_NOTCH.md)。Windows 本轮验证构建和自动测试，未在 macOS 上宣称桌面实测。
+当前版本为 v0.3.1。项目仍在早期开发，部分 Windows 截图来自较早版本，具体外观以当前程序为准。Codex CLI 提问接入与桌面分页历史读取为实验性功能，桌面原生问题仍在 Codex 中作答。macOS 核心窗口流程已有实机检查；全屏、物理显示器切换和 Terminal.app 跳转仍未覆盖，详见[验证范围](docs/MACOS_NOTCH.md)。Windows 本轮验证构建和自动测试，未在 macOS 上宣称桌面实测。
 
 ### 安装与使用
 
@@ -204,7 +207,7 @@ cargo test -p agent-companion --test display_lifecycle -- --ignored --nocapture
 正式发布通过 [GitHub Actions](.github/workflows/release.yml) 构建并运行两平台测试，包含 macOS 原生界面检查。先生成草稿，校验下载产物后公开，步骤见[发布流程](docs/RELEASING.md)。macOS 压缩包包含 `Agent Companion.app`，Windows 压缩包包含三个 Windows 程序；两者附 README、许可证及第三方声明，并提供统一 `SHA256SUMS.txt` 与构建来源证明。下载两个 ZIP 和校验文件后，在 macOS 运行 `shasum -a 256 -c SHA256SUMS.txt`；也可用 GitHub CLI 单独验证来源：
 
 ```powershell
-gh attestation verify agent-companion-v0.3.0-windows-x86_64.zip --repo WXGopher/agent-companion --source-ref refs/tags/v0.3.0 --deny-self-hosted-runners
+gh attestation verify agent-companion-v0.3.1-windows-x86_64.zip --repo WXGopher/agent-companion --source-ref refs/tags/v0.3.1 --deny-self-hosted-runners
 ```
 
 F01–F03 的交付范围与后续更新、远端会话候选项，见对照 open-vibe-island 整理的 [功能路线图](docs/ROADMAP.md)。更多代理、通知偏好和界面语言切换本轮不做。维护事项单列在 [已知问题](docs/KNOWN_ISSUES.md)。
@@ -228,22 +231,25 @@ Agent Companion 复用 [open-vibe-island](https://github.com/Octane0411/open-vib
 
 ### Compact macOS notch
 
-- The two numbers on the left show **active tasks** and **tasks finished within the last 15 minutes**. `32% wk` on the right means 32% of the native Codex weekly allowance is used. Missing or expired readings show `—`.
-- Hover to preview, move away to collapse, or click to keep the list open. Escape or an outside click collapses it. The list opens on Active; Finished includes completed, stopped and failed tasks.
+- The two numbers on the left show **active tasks** and **tasks finished within the last 15 minutes**. `68% left` on the right means 68% of the Codex weekly allowance remains. The expanded quota card and bar also show the remaining allowance, calculated from the native used percentage. Missing or expired readings show `—`.
+- Hover near the notch for about 0.18 seconds to expand automatically without clicking or taking keyboard focus. The hover area includes the very top screen edge, with a 12-point margin on either side and 8 points below; the visible width stays unchanged. Moving away collapses it after about 0.35 seconds; click to keep the list open. Escape or an outside click collapses it. The list opens on Active; Finished includes completed, stopped and failed tasks.
 - Click to return to the exact Codex desktop conversation. Live CLI processes can select their original Terminal/iTerm2 tab; macOS may request Automation permission on first use. Other terminal hosts are activated when identifiable, with a copyable `codex resume` command if precise navigation is unavailable.
-- The surface fits around a physical camera notch. Displays without a notch use a 216 × 28 strip below the menu bar. Display and desktop Space changes are handled automatically.
+- The surface follows the **primary display configured in macOS**, repositioning when displays connect, disconnect or change primary role. It fits around a physical camera notch on that display, or uses a 216 × 28 strip centered over the menu bar, flush with the top edge of an ordinary display. Expansion preserves that top edge and width. Desktop Space changes are handled automatically.
 - The task panel expands downward at the same width as the compact notch, preserving menu bar space.
-- **Settings** opens Codex CLI status bar customization. Reopening settings brings the existing window forward. The power button or context menu quits the notch. The notch runs to keep tasks updated; saved CLI status bar settings need no background process.
+- **Settings** opens Codex CLI status bar customization with macOS-style controls, grouped cards and system light/dark appearance. Choose components on the left, keep the live preview visible on the right, then save with **Apply changes**. Reopening settings brings the existing window forward. The power button or context menu quits the notch. The notch runs to keep tasks updated; saved CLI status bar settings need no background process.
+- The Dock icon is hidden by default, including while Settings is open. Enable **Show in Dock** in Settings to show it immediately and remember the choice. This preference saves automatically, independently of the TUI Apply button.
 
 Reads local Codex sessions, paginated history and usage without making model requests. The macOS surface has no hooks, approvals, other agents, pets, theme editor or Intel support.
 
 <p align="center"><img src="docs/macos-notch.png" width="432" alt="Expanded macOS Codex notch, rendered with synthetic data"></p>
 
+<p align="center"><img src="docs/macos-settings.png" width="760" alt="macOS settings with grouped cards, Dock switch, component choices and a persistent live preview"></p>
+
 ### macOS installation
 
 Download the **macOS Apple Silicon** archive above and drag **Agent Companion.app** into Applications. Requires macOS 14 or newer. This release has no Developer ID signature or Apple notarization. If macOS blocks the first launch, follow [Apple's instructions](https://support.apple.com/en-us/102445) to choose **Open Anyway** in System Settings → Privacy & Security.
 
-**Upgrading:** quit the old notch and Settings window before replacing the app in Applications, then reopen it. Your Codex configuration is retained. v0.2.x opened the editor by default; v0.3.0 opens the notch, with customization under **Settings**. Automatic updates and launch-at-login settings are not included on macOS yet.
+**Upgrading:** quit the old notch and Settings window before replacing the app in Applications, then reopen it. Your Codex configuration is retained. v0.2.x opened the editor by default; v0.3.x opens the notch, with customization under **Settings**. Automatic updates and launch-at-login settings are not included on macOS yet.
 
 From a terminal, run `"/Applications/Agent Companion.app/Contents/MacOS/agent-companion" codex-tui`. The window shows the resolved config path: `$CODEX_HOME/config.toml`, defaulting to `~/.codex/config.toml`. Finder uses its process environment and does not source shell startup files; launch from your terminal when `CODEX_HOME` is set only in that shell.
 
@@ -277,7 +283,7 @@ Agent Companion focuses on Codex, using hooks, local session logs and an optiona
 <img src="docs/readout.png" width="96" alt="Quota readout in a vertical taskbar">
 <img src="docs/card.png" width="440" alt="Claude Code tool approval card">
 
-The current version is v0.3.0. The project is in early development and some Windows screenshots show earlier versions. Codex CLI question integration and desktop paginated-history reads are experimental; desktop questions still require answering in Codex. Core macOS window flows have been checked on a real desktop; fullscreen, physical display changes and Terminal.app navigation remain outside the completed [verification scope](docs/MACOS_NOTCH.md). This release verifies Windows builds and automated tests, without claiming manual Windows desktop checks from macOS.
+The current version is v0.3.1. The project is in early development and some Windows screenshots show earlier versions. Codex CLI question integration and desktop paginated-history reads are experimental; desktop questions still require answering in Codex. Core macOS window flows have been checked on a real desktop; fullscreen, physical display changes and Terminal.app navigation remain outside the completed [verification scope](docs/MACOS_NOTCH.md). This release verifies Windows builds and automated tests, without claiming manual Windows desktop checks from macOS.
 
 ### Install and use
 
@@ -407,7 +413,7 @@ With Agent Companion installed and Windows notifications enabled, run `cargo tes
 The macOS ZIP contains `Agent Companion.app`; the Windows ZIP contains the three Windows executables. Both include the README, license and third-party notices. [GitHub Actions](.github/workflows/release.yml) builds and tests both platforms, including the native macOS UI checks, then creates a draft. Downloaded packages are verified before publication; see the [release process](docs/RELEASING.md). Download both ZIPs and `SHA256SUMS.txt`, then run `shasum -a 256 -c SHA256SUMS.txt` on macOS. Each archive also has a build provenance attestation, verifiable independently with the GitHub CLI:
 
 ```powershell
-gh attestation verify agent-companion-v0.3.0-windows-x86_64.zip --repo WXGopher/agent-companion --source-ref refs/tags/v0.3.0 --deny-self-hosted-runners
+gh attestation verify agent-companion-v0.3.1-windows-x86_64.zip --repo WXGopher/agent-companion --source-ref refs/tags/v0.3.1 --deny-self-hosted-runners
 ```
 
 See the [feature roadmap](docs/ROADMAP.md) for gaps compared with open-vibe-island, including the delivered F01–F03 scope and candidate update/remote-session features; more agents, notification preferences and language switching are not planned. Maintenance work is tracked separately in [known issues](docs/KNOWN_ISSUES.md).

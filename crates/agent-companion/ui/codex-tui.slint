@@ -1,11 +1,8 @@
 import { Button, CheckBox, ScrollView, VerticalBox, HorizontalBox } from "std-widgets.slint";
-
-export struct StatusComponent {
-    id: string,
-    label: string,
-    description: string,
-    selected: bool,
-}
+import { MacSettings } from "macos-settings.slint";
+import { StatusComponent } from "status-component.slint";
+export { StatusComponent }
+export { Palette } from "std-widgets.slint";
 
 component ComponentOption inherits Rectangle {
     in property <StatusComponent> item;
@@ -37,10 +34,10 @@ component ComponentOption inherits Rectangle {
 export component CodexTuiWindow inherits Window {
     in property <string> window-title: "Agent Companion · Codex TUI";
     title: root.window-title;
-    preferred-width: 740px;
-    preferred-height: 720px;
-    min-width: 620px;
-    min-height: 620px;
+    preferred-width: root.macos-preferences ? 920px : 740px;
+    preferred-height: root.macos-preferences ? 760px : 720px;
+    min-width: root.macos-preferences ? 820px : 620px;
+    min-height: root.macos-preferences ? 660px : 620px;
     in property <[StatusComponent]> left-components;
     in property <[StatusComponent]> right-components;
     in property <string> preview;
@@ -53,11 +50,36 @@ export component CodexTuiWindow inherits Window {
     in property <bool> error;
     in property <string> config-path;
     in property <string> catalog-version;
+    in property <bool> macos-preferences;
+    in property <bool> show-dock-icon;
+    in property <bool> dock-error;
+    callback toggle-dock-icon(bool);
     callback toggle(string, bool);
     callback apply();
     callback restore-defaults();
 
-    VerticalBox {
+    if root.macos-preferences: MacSettings {
+        left-components: root.left-components;
+        right-components: root.right-components;
+        preview: root.preview;
+        mono-font: root.mono-font;
+        selected-count: root.selected-count;
+        ready: root.ready;
+        dirty: root.dirty;
+        custom: root.custom;
+        message: root.message;
+        error: root.error;
+        config-path: root.config-path;
+        catalog-version: root.catalog-version;
+        show-dock-icon: root.show-dock-icon;
+        dock-error: root.dock-error;
+        toggle-dock-icon(visible) => { root.toggle-dock-icon(visible); }
+        toggle(id, enabled) => { root.toggle(id, enabled); }
+        apply => { root.apply(); }
+        restore-defaults => { root.restore-defaults(); }
+    }
+
+    if !root.macos-preferences: VerticalBox {
         padding: 20px;
         spacing: 12px;
         VerticalLayout {
