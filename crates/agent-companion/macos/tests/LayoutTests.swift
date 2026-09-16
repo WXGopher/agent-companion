@@ -81,6 +81,10 @@ struct LayoutTests {
         model.snapshot = CodexSnapshot(loading: true)
         try render(model, name: "loading", output: output, height: 300...430)
         verifyResize()
+        try verifyMorphing(output: output)
+        let cameraOutput = output.appendingPathComponent("camera-morph")
+        try FileManager.default.createDirectory(at: cameraOutput, withIntermediateDirectories: true)
+        try verifyMorphing(output: cameraOutput, camera: true)
         verifyTerminalTargets()
         verifyNavigationLifecycle()
         verifyHoverLifecycle()
@@ -320,6 +324,113 @@ struct LayoutTests {
         let collapsed = host.fittingSize
         precondition(collapsed == CGSize(width: 216, height: 28), "Collapsed hosting view kept an invisible hit area: \(collapsed)")
         window.close()
+    }
+
+    @MainActor private static func verifyMorphing(output: URL, camera: Bool = false) throws {
+        let model = CompanionModel()
+        model.cameraWidth = camera ? 184 : 0
+        model.compactHeight = camera ? 32 : 28
+        model.snapshot = CodexSnapshot(activeCount: 2, completedCount: 1, loading: false)
+        let panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.isReleasedWhenClosed = false
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        var reducedMotion = false
+        let presentation = NotchPresentation(panel: panel, model: model, reduceMotion: { reducedMotion })
+        defer { presentation.stop(); panel.close() }
+        // An offscreen native panel exercises actual resizing/clipping without
+        // moving the user's cursor, taking focus, or touching their sessions.
+        let screen = CGRect(x: -10000, y: -10000, width: 1920, height: 1080)
+        presentation.update(screen: screen, animated: false)
+        let compact = panel.frame
+        let content = presentation.surface.subviews[0]
+        precondition(compact.height == model.compactHeight && compact.width == model.compactWidth)
+        func checkAnchor() {
+            precondition(abs(panel.frame.maxY - screen.maxY) < 0.01, "The notch detached from the menu bar during animation")
+            precondition(panel.frame.width == compact.width && panel.frame.midX == screen.midX, "Expansion occupied more menu-bar space")
+            precondition(content === presentation.surface.subviews[0] && content.frame.minY == 0,
+                         "The compact strip was replaced or moved during animation")
+            precondition(panel.frame.height >= compact.height)
+        }
+        @discardableResult func capture(_ name: String, header expected: [UInt8]? = nil) throws -> [UInt8] {
+            let surface = presentation.surface
+            guard let image = surface.bitmapImageRepForCachingDisplay(in: surface.bounds) else { fatalError("No animated frame") }
+            surface.cacheDisplay(in: surface.bounds, to: image)
+            let png = image.representation(using: .png, properties: [:])!
+            try png.write(to: output.appendingPathComponent(name + ".png"))
+            let pixels = NSBitmapImageRep(data: png)!
+            // Compare actual rendered counter pixels, not only view frames:
+            // a fade or a vertically centered SwiftUI root would otherwise pass.
+            let scale = CGFloat(pixels.pixelsWide) / surface.bounds.width
+            var header: [UInt8] = []
+            for y in stride(from: 2, to: Int(model.compactHeight * scale) - 2, by: 4) {
+                for x in stride(from: Int(28 * scale), to: pixels.pixelsWide - Int(28 * scale), by: 4) {
+                    let color = pixels.colorAt(x: x, y: y)!.usingColorSpace(.deviceRGB)!
+                    header += [color.redComponent, color.greenComponent, color.blueComponent, color.alphaComponent]
+                        .map { UInt8((min(1, max(0, $0)) * 255).rounded()) }
+                }
+            }
+            if let expected {
+                precondition(zip(header, expected).allSatisfy { abs(Int($0) - Int($1)) <= 2 },
+                             "The compact counters moved or faded in \(name)")
+            }
+            return header
+        }
+        let header = try capture("morph-compact")
+        model.expanded = true
+        presentation.update(screen: screen)
+        precondition(panel.frame == compact, "Opening jumped straight to the expanded window")
+        var previous = compact.height
+        var intermediateFrames = 0
+        for index in 0..<14 {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.04))
+            checkAnchor()
+            precondition(panel.frame.height >= previous, "Opening shrank or flashed the strip")
+            if presentation.isAnimating && panel.frame.height > compact.height { intermediateFrames += 1 }
+            previous = panel.frame.height
+            if index < 6 { try capture("morph-expand-\(index)", header: header) }
+        }
+        precondition(!presentation.isAnimating && intermediateFrames >= 3 && panel.frame.height > 300,
+                     "Expansion did not complete through intermediate frames: height \(panel.frame.height), frames \(intermediateFrames), moving \(presentation.isAnimating)")
+        let fullHeight = panel.frame.height
+        model.expanded = false
+        presentation.update(screen: screen)
+        precondition(panel.frame.height == fullHeight, "Closing discarded the task content before shrinking")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.08))
+        checkAnchor()
+        precondition(panel.frame.height < fullHeight && panel.frame.height > compact.height)
+        try capture("morph-closing", header: header)
+        let interrupted = panel.frame
+        model.expanded = true
+        presentation.update(screen: screen)
+        precondition(panel.frame == interrupted, "Re-entering during collapse snapped back to an endpoint")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.65))
+        checkAnchor()
+        precondition(!presentation.isAnimating && abs(panel.frame.height - fullHeight) < 0.01)
+        model.expanded = false
+        presentation.update(screen: screen)
+        previous = panel.frame.height
+        for _ in 0..<14 {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.04))
+            checkAnchor()
+            precondition(panel.frame.height <= previous, "Closing reversed direction")
+            previous = panel.frame.height
+        }
+        precondition(panel.frame == compact && !presentation.isAnimating,
+                     "Closing left an invisible expanded hit area")
+        try capture("morph-closed", header: header)
+        model.expanded = true
+        reducedMotion = true
+        presentation.update(screen: screen)
+        precondition(panel.frame.height == fullHeight && !presentation.isAnimating, "Reduced-motion sizing did not finish immediately")
+        reducedMotion = false
+        model.expanded = false
+        presentation.update(screen: screen)
+        let movedScreen = screen.offsetBy(dx: -1920, dy: 800)
+        presentation.update(screen: movedScreen, animated: false)
+        precondition(panel.frame.maxY == movedScreen.maxY && panel.frame.height == compact.height && !presentation.isAnimating,
+                     "A display change continued an animation on the old screen")
+        print("Native morph: stable strip/top/width, continuous frames, reversible close, exact hit area, reduced motion and display changes passed")
     }
 
     @MainActor private static func render(_ model: CompanionModel, name: String, output: URL, height: ClosedRange<CGFloat>) throws {

@@ -3,22 +3,26 @@ import SwiftUI
 
 struct CompanionView: View {
     @ObservedObject var model: CompanionModel
+    var showsDetails: Bool? = nil
+    var drawsBackground = true
     @State private var hoveredTask: String?
 
     var body: some View {
         VStack(spacing: 0) {
             compact
-            if model.expanded { expanded.transition(.opacity.combined(with: .move(edge: .top))) }
+            if showsDetails ?? model.expanded {
+                expanded
+                    .allowsHitTesting(model.expanded)
+                    .accessibilityHidden(!model.expanded)
+            }
         }
         .frame(width: model.compactWidth)
         .background {
-            if model.hasCamera {
-                NotchShape(topCornerRadius: 6, bottomCornerRadius: model.expanded ? 24 : 10)
-                    .fill(.black)
-            } else {
-                RoundedRectangle(cornerRadius: model.expanded ? 22 : 14).fill(.black)
+            if drawsBackground {
+                NotchOutline(hasCamera: model.hasCamera, expansion: model.expanded ? 1 : 0).fill(.black)
             }
         }
+        .frame(maxHeight: .infinity, alignment: .top)
         .foregroundStyle(.white)
         .preferredColorScheme(.dark)
         .onExitCommand { model.collapse?() }

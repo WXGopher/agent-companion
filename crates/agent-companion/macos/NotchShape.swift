@@ -6,6 +6,18 @@
 
 import SwiftUI
 
+struct NotchOutline: Shape {
+    var hasCamera: Bool
+    var expansion: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        if hasCamera {
+            return NotchShape(topCornerRadius: 6, bottomCornerRadius: 10 + 14 * expansion).path(in: rect)
+        }
+        return RoundedRectangle(cornerRadius: 14 + 8 * expansion).path(in: rect)
+    }
+}
+
 struct NotchShape: Shape {
     var topCornerRadius: CGFloat
     var bottomCornerRadius: CGFloat
