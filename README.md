@@ -9,7 +9,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="GPL-3.0-only"></a>
 </p>
 
-**下载 / Download v0.3.4:** [macOS Apple Silicon](https://github.com/WXGopher/agent-companion/releases/download/v0.3.4/agent-companion-v0.3.4-macos-arm64.zip) · [Windows x86_64](https://github.com/WXGopher/agent-companion/releases/download/v0.3.4/agent-companion-v0.3.4-windows-x86_64.zip) · [发布说明 / Release notes](https://github.com/WXGopher/agent-companion/releases/tag/v0.3.4)
+**下载 / Download v0.3.5:** [macOS Apple Silicon](https://github.com/WXGopher/agent-companion/releases/download/v0.3.5/agent-companion-v0.3.5-macos-arm64.zip) · [Windows x86_64](https://github.com/WXGopher/agent-companion/releases/download/v0.3.5/agent-companion-v0.3.5-windows-x86_64.zip) · [发布说明 / Release notes](https://github.com/WXGopher/agent-companion/releases/tag/v0.3.5)
 
 ## 中文
 
@@ -74,7 +74,7 @@ Agent Companion 以 Codex 为支持和验证对象，通过 hooks、本地会话
 <img src="docs/readout.png" width="96" alt="垂直任务栏中的额度控件">
 <img src="docs/card.png" width="440" alt="Claude Code 工具审批卡片">
 
-当前版本为 v0.3.4。项目仍在早期开发，部分 Windows 截图来自较早版本，具体外观以当前程序为准。Codex CLI 提问接入与桌面分页历史读取为实验性功能，桌面原生问题仍在 Codex 中作答。macOS 核心窗口流程已有实机检查；全屏、物理显示器切换和 Terminal.app 跳转仍未覆盖，详见[验证范围](docs/MACOS_NOTCH.md)。Windows 本轮验证构建和自动测试，未在 macOS 上宣称桌面实测。
+当前版本为 v0.3.5。项目仍在早期开发，部分 Windows 截图来自较早版本，具体外观以当前程序为准。Codex CLI 提问接入与桌面分页历史读取为实验性功能，桌面原生问题仍在 Codex 中作答。macOS 核心窗口流程已有实机检查；全屏、物理显示器切换和 Terminal.app 跳转仍未覆盖，详见[验证范围](docs/MACOS_NOTCH.md)。Windows 本轮验证构建和自动测试，未在 macOS 上宣称桌面实测。
 
 ### 安装与使用
 
@@ -207,7 +207,7 @@ cargo test -p agent-companion --test display_lifecycle -- --ignored --nocapture
 正式发布通过 [GitHub Actions](.github/workflows/release.yml) 构建并运行两平台测试，包含 macOS 原生界面检查。先生成草稿，校验下载产物后公开，步骤见[发布流程](docs/RELEASING.md)。macOS 压缩包包含 `Agent Companion.app`，Windows 压缩包包含三个 Windows 程序；两者附 README、许可证及第三方声明，并提供统一 `SHA256SUMS.txt` 与构建来源证明。下载两个 ZIP 和校验文件后，在 macOS 运行 `shasum -a 256 -c SHA256SUMS.txt`；也可用 GitHub CLI 单独验证来源：
 
 ```powershell
-gh attestation verify agent-companion-v0.3.4-windows-x86_64.zip --repo WXGopher/agent-companion --source-ref refs/tags/v0.3.4 --deny-self-hosted-runners
+gh attestation verify agent-companion-v0.3.5-windows-x86_64.zip --repo WXGopher/agent-companion --source-ref refs/tags/v0.3.5 --deny-self-hosted-runners
 ```
 
 F01–F03 的交付范围与后续更新、远端会话候选项，见对照 open-vibe-island 整理的 [功能路线图](docs/ROADMAP.md)。更多代理、通知偏好和界面语言切换本轮不做。维护事项单列在 [已知问题](docs/KNOWN_ISSUES.md)。
@@ -283,7 +283,7 @@ Agent Companion focuses on Codex, using hooks, local session logs and an optiona
 <img src="docs/readout.png" width="96" alt="Quota readout in a vertical taskbar">
 <img src="docs/card.png" width="440" alt="Claude Code tool approval card">
 
-The current version is v0.3.4. The project is in early development and some Windows screenshots show earlier versions. Codex CLI question integration and desktop paginated-history reads are experimental; desktop questions still require answering in Codex. Core macOS window flows have been checked on a real desktop; fullscreen, physical display changes and Terminal.app navigation remain outside the completed [verification scope](docs/MACOS_NOTCH.md). This release verifies Windows builds and automated tests, without claiming manual Windows desktop checks from macOS.
+The current version is v0.3.5. The project is in early development and some Windows screenshots show earlier versions. Codex CLI question integration and desktop paginated-history reads are experimental; desktop questions still require answering in Codex. Core macOS window flows have been checked on a real desktop; fullscreen, physical display changes and Terminal.app navigation remain outside the completed [verification scope](docs/MACOS_NOTCH.md). This release verifies Windows builds and automated tests, without claiming manual Windows desktop checks from macOS.
 
 ### Install and use
 
@@ -413,7 +413,7 @@ With Agent Companion installed and Windows notifications enabled, run `cargo tes
 The macOS ZIP contains `Agent Companion.app`; the Windows ZIP contains the three Windows executables. Both include the README, license and third-party notices. [GitHub Actions](.github/workflows/release.yml) builds and tests both platforms, including the native macOS UI checks, then creates a draft. Downloaded packages are verified before publication; see the [release process](docs/RELEASING.md). Download both ZIPs and `SHA256SUMS.txt`, then run `shasum -a 256 -c SHA256SUMS.txt` on macOS. Each archive also has a build provenance attestation, verifiable independently with the GitHub CLI:
 
 ```powershell
-gh attestation verify agent-companion-v0.3.4-windows-x86_64.zip --repo WXGopher/agent-companion --source-ref refs/tags/v0.3.4 --deny-self-hosted-runners
+gh attestation verify agent-companion-v0.3.5-windows-x86_64.zip --repo WXGopher/agent-companion --source-ref refs/tags/v0.3.5 --deny-self-hosted-runners
 ```
 
 See the [feature roadmap](docs/ROADMAP.md) for gaps compared with open-vibe-island, including the delivered F01–F03 scope and candidate update/remote-session features; more agents, notification preferences and language switching are not planned. Maintenance work is tracked separately in [known issues](docs/KNOWN_ISSUES.md).
