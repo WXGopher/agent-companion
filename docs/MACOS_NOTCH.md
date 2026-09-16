@@ -14,24 +14,26 @@
 - Rust 继续读取本地会话与额度；SwiftUI/AppKit 提供刘海、任务面板和系统跳转。
 - Swift 原生层静态链接进主程序，使用同一个 `Agent Companion.app`；状态栏编辑器继续使用 Slint。
 - 原生刘海形状与窗口行为参考 Open Island `b50f87aa7d58af1478837d48909eb68baa37f9b9`，复用部分保留出处与 GPL 声明。
-- 完成数沿用 Windows 的最近十五分钟会话窗口；有存活证据的长任务持续保留。
+- 完成数沿用 Windows 的最近十五分钟会话窗口；有存活证据的长任务持续保留。读取持续失败超过 30 秒后，缓存不再视为当前存活证据，按事件时间正常过期。
 - 首先完成 GUI 和可观测的本地状态；不通过启动新模型任务来刷新额度。
 
 ## 交付记录
 
-- v0.2.0 已发布，新增刘海作为后续版本实现。
+- v0.2.x 提供独立编辑器；v0.3.0 将窄刘海与编辑器设置入口合并。
 - Windows 以编译通过为交付要求。
 
-## 验证（v0.3.0 开发版）
+## 验证（v0.3.0）
 
 - 本地 macOS arm64 debug/release 构建通过，Mach-O 最低系统版本与 app 元数据均为 macOS 14.0。
 - 打包时对整个 app 做 ad-hoc 完整性签名并执行 `codesign --verify --strict`，封装资源后再生成 ZIP 和校验和；不使用 Developer ID，不做公证。
-- Clippy 无警告；共享后端 `--features server` 175 项通过，2 项显式忽略；macOS 默认公共逻辑 169 项和编辑器 2 项通过。
+- Clippy 无警告；共享后端 `--features server` 176 项通过，2 项显式忽略；macOS 默认公共逻辑 170 项和编辑器 2 项通过。
 - 新增原生离屏检查使用实际 SwiftUI/AppKit 视图：窄条、物理刘海、活动（普通屏与刘海屏）、大计数、结束、跳转失败、空数据、读取失败、加载中；检查展开/收起时同宽及实际高度。通过 `cargo test` 自动接入现有 macOS CI。
-- Windows GNU 交叉编译三个可执行文件通过。Windows MSVC 与 macOS arm64 的构建、Clippy 和测试均已在 [GitHub CI](https://github.com/WXGopher/agent-companion/actions/runs/35001046723) 通过；不宣称 Windows 桌面行为在本机实测。
+- Windows GNU 交叉编译三个可执行文件通过。Windows MSVC 与 macOS arm64 的构建、Clippy 和测试由 [PR #1 的 CI](https://github.com/WXGopher/agent-companion/pull/1/checks) 覆盖；不宣称 Windows 桌面行为在本机实测。
 - 测试数据均为合成会话，不向模型发起任务、不修改真实 Codex 配置。
 - 2026-09-16 解锁后已完成真实窗口检查：窄条计数与周用量、同宽展开、Active/Finished 快捷键、长列表滚动、Esc 收起、找不到原终端的错误提示、设置入口、Apply 保存、关闭设置后刘海继续运行，以及按钮/快捷键退出。使用隔离的合成会话和配置。
 - 修复收起时因窗口尺寸变化产生的过期悬停事件，避免 Esc 后立即重新展开。另已用真实 Codex CLI 会话验证 iTerm2 3.6.11 独立会话进程的定位：跳转脚本返回 tty 匹配成功，面板正常收起。桌面接口禁止读取 iTerm2 窗口，因此没有直接核对终端前台选中状态。物理显示器切换、全屏及 Terminal.app 跳转仍需另外核验。
+- 发布前检查补上两项回归：持续读取失败时旧任务不会无限保留“存活”状态；关闭并重新展开后，旧跳转的成功或错误回调不会干扰新面板。成功跳转收起和失败恢复入口仍正常。
+- 发布工作流包含同一套原生 UI 测试，先上传草稿安装包，再验证下载文件、校验和及来源后公开；详见[发布流程](RELEASING.md)。
 
 ## 实机验收入口
 

@@ -66,7 +66,9 @@ struct CodexSnapshot: Decodable {
 final class CompanionModel: ObservableObject {
     static let accent = Color(red: 0.45, green: 0.90, blue: 0.74)
     @Published var snapshot = CodexSnapshot()
-    @Published var expanded = false
+    @Published var expanded = false {
+        didSet { if expanded != oldValue { presentationRevision &+= 1 } }
+    }
     @Published var showingCompleted = false
     @Published var cameraWidth: CGFloat = 0
     @Published var compactHeight: CGFloat = 28
@@ -78,6 +80,12 @@ final class CompanionModel: ObservableObject {
     var quit: (() -> Void)?
     private var timer: Timer?
     private var settingsProcess: Process?
+    private var presentationRevision: UInt64 = 0
+    private let openTask: (CodexTask, String, @escaping (String?) -> Void) -> Void
+
+    init(openTask: @escaping (CodexTask, String, @escaping (String?) -> Void) -> Void = TerminalJump.open) {
+        self.openTask = openTask
+    }
 
     var hasCamera: Bool { cameraWidth > 0 }
     // Keep both sides equally wide so the clear gap stays over the camera.
@@ -139,10 +147,12 @@ final class CompanionModel: ObservableObject {
             message = "Codex.app is not installed. Start Codex CLI in your terminal to see its tasks here."
             return
         }
+        let revision = presentationRevision
         NSWorkspace.shared.openApplication(at: url, configuration: .init()) { [weak self] _, error in
             DispatchQueue.main.async {
-                if let error { self?.message = "Could not open Codex: \(error.localizedDescription)" }
-                else { self?.collapse?() }
+                guard let self, self.presentationRevision == revision else { return }
+                if let error { self.message = "Could not open Codex: \(error.localizedDescription)" }
+                else { self.collapse?() }
             }
         }
     }
@@ -152,9 +162,13 @@ final class CompanionModel: ObservableObject {
         jumpingID = task.id
         message = nil
         failedTask = nil
-        TerminalJump.open(task, codexHome: snapshot.codexHome) { [weak self] error in
+        let revision = presentationRevision
+        openTask(task, snapshot.codexHome) { [weak self] error in
             guard let self else { return }
             jumpingID = nil
+            // A slow terminal/Automation response belongs to the presentation
+            // that started it, not a panel the user has dismissed or reopened.
+            guard presentationRevision == revision else { return }
             if let error {
                 message = error
                 failedTask = task
