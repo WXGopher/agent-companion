@@ -35,6 +35,9 @@ pub fn prepare_editor() -> Result<(), slint::PlatformError> {
     slint::BackendSelector::new()
         .backend_name("winit".into())
         .with_winit_event_loop_builder(builder)
+        // Slint defaults to a transparent native window. Painting the content
+        // alone leaves AppKit's title bar clear; settings need an opaque frame.
+        .with_winit_window_attributes_hook(|attributes| attributes.with_transparent(false))
         .select()
 }
 
