@@ -75,6 +75,8 @@ Agent Companion 以 Codex 为支持和验证对象，通过 hooks、本地会话
 
 ### 安装与使用
 
+Windows 版本需要 [Microsoft Visual C++ v14 x64 运行库](https://aka.ms/vc14/vc_redist.x64.exe)。首次安装请先安装或更新此运行库；程序依赖 `VCRUNTIME140.dll`，ZIP 不包含运行库安装器。版本与系统要求见 [Microsoft 官方说明](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)。
+
 从 [GitHub Releases](https://github.com/WXGopher/agent-companion/releases) 下载最新 Windows x86_64 压缩包，解压后在该目录运行：
 
 ```powershell
@@ -278,6 +280,8 @@ Agent Companion focuses on Codex, using hooks, local session logs and an optiona
 The current version is v0.3.0. The project is in early development and some Windows screenshots show earlier versions. Codex CLI question integration and desktop paginated-history reads are experimental; desktop questions still require answering in Codex. Core macOS window flows have been checked on a real desktop; fullscreen, physical display changes and Terminal.app navigation remain outside the completed [verification scope](docs/MACOS_NOTCH.md). This release verifies Windows builds and automated tests, without claiming manual Windows desktop checks from macOS.
 
 ### Install and use
+
+Windows requires the [Microsoft Visual C++ v14 x64 Redistributable](https://aka.ms/vc14/vc_redist.x64.exe). Install or update it before first use. The executables depend on `VCRUNTIME140.dll`; the ZIP does not bundle the runtime installer. See [Microsoft's version and system requirements](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist).
 
 Download the latest Windows x86_64 archive from [GitHub Releases](https://github.com/WXGopher/agent-companion/releases), extract it, and run these commands from that directory:
 
