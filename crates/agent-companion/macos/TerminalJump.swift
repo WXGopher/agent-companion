@@ -65,10 +65,21 @@ enum TerminalJump {
         }
     }
 
-    private struct TerminalTarget {
+    struct TerminalTarget {
         let tty: String
         let bundle: String
         let appPID: pid_t
+    }
+
+    struct ProcessRow {
+        let parent: Int32
+        let tty: String
+        let executable: String
+    }
+
+    struct HostApp {
+        let pid: Int32
+        let bundle: String
     }
 
     /// Only inspect process IDs, ancestry, tty and executable names. Never read
@@ -86,12 +97,27 @@ enum TerminalJump {
         guard !writers.isEmpty else { return nil }
         let listing = run("/bin/ps", ["-axo", "pid=,ppid=,tty=,comm="], timeout: 3)
         guard listing.status == 0 else { return nil }
-        var processes: [Int32: (parent: Int32, tty: String, executable: String)] = [:]
+        var processes: [Int32: ProcessRow] = [:]
         for line in listing.text.split(separator: "\n") {
             let fields = line.split(maxSplits: 3, whereSeparator: { $0.isWhitespace })
             guard fields.count == 4, let pid = Int32(fields[0]), let parent = Int32(fields[1]) else { continue }
-            processes[pid] = (parent, String(fields[2]), String(fields[3]))
+            processes[pid] = ProcessRow(parent: parent, tty: String(fields[2]), executable: String(fields[3]))
         }
+        let iTerm = NSRunningApplication.runningApplications(withBundleIdentifier: "com.googlecode.iterm2").first
+        return processTarget(writers: writers, processes: processes, detachedITerm: iTerm.map {
+            HostApp(pid: $0.processIdentifier, bundle: "com.googlecode.iterm2")
+        }) { pid in
+            guard let app = NSRunningApplication(processIdentifier: pid), let bundle = app.bundleIdentifier,
+                  bundle != Bundle.main.bundleIdentifier, bundle != "com.openai.codex" else { return nil }
+            return HostApp(pid: pid, bundle: bundle)
+        }
+    }
+
+    /// Newer iTerm versions keep sessions in a detached iTermServer process,
+    /// so their parent chain ends at launchd instead of the GUI application.
+    /// The live writer's tty still selects the exact session in the script.
+    static func processTarget(writers: Set<Int32>, processes: [Int32: ProcessRow],
+                              detachedITerm: HostApp?, application: (Int32) -> HostApp?) -> TerminalTarget? {
         for writer in writers.sorted() {
             guard let origin = processes[writer], URL(fileURLWithPath: origin.executable).lastPathComponent.lowercased().contains("codex") else { continue }
             var pid = writer
@@ -99,10 +125,11 @@ enum TerminalJump {
             for _ in 0..<24 {
                 guard let process = processes[pid] else { break }
                 if tty == "??" { tty = process.tty }
-                if let app = NSRunningApplication(processIdentifier: pid), let bundle = app.bundleIdentifier,
-                   bundle != Bundle.main.bundleIdentifier, bundle != "com.openai.codex" {
+                let detachedServer = process.executable.contains("/iTerm2/")
+                    && URL(fileURLWithPath: process.executable).lastPathComponent.hasPrefix("iTermServer-")
+                if let app = application(pid) ?? (detachedServer ? detachedITerm : nil) {
                     guard tty != "??" && !tty.isEmpty else { break }
-                    return TerminalTarget(tty: tty.hasPrefix("/dev/") ? tty : "/dev/\(tty)", bundle: bundle, appPID: pid)
+                    return TerminalTarget(tty: tty.hasPrefix("/dev/") ? tty : "/dev/\(tty)", bundle: app.bundle, appPID: app.pid)
                 }
                 if process.parent <= 1 || process.parent == pid { break }
                 pid = process.parent
