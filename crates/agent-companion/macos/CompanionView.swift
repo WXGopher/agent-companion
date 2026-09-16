@@ -40,7 +40,7 @@ struct CompanionView: View {
             else { Spacer(minLength: 20) }
             Button { model.expand?() } label: {
                 HStack(spacing: 4) {
-                    Text(model.weeklyText).monospacedDigit().fontWeight(.semibold)
+                    Text(model.weeklyText).monospacedDigit().fontWeight(.semibold).lineLimit(1).fixedSize()
                     Text("wk").font(.system(size: 9)).foregroundStyle(.white.opacity(0.5))
                 }
                 .frame(width: model.sideWidth)
@@ -66,7 +66,7 @@ struct CompanionView: View {
     private func count(_ count: Int, symbol: String, tint: Color) -> some View {
         HStack(spacing: 3) {
             Image(systemName: symbol).font(.system(size: 8, weight: .semibold)).foregroundStyle(tint)
-            Text(model.countText(count)).monospacedDigit().fontWeight(.semibold)
+            Text(model.countText(count)).monospacedDigit().fontWeight(.semibold).lineLimit(1).fixedSize()
         }
     }
 
@@ -112,10 +112,11 @@ struct CompanionView: View {
                             .buttonStyle(.plain).accessibilityLabel("Dismiss message")
                     }
                     if let task = model.failedTask {
-                        HStack {
-                            Button("Try again") { model.jump(to: task) }
-                            if task.resumeCommand != nil { Button("Copy resume command") { model.copyResume(task) } }
-                        }.buttonStyle(.bordered).controlSize(.small)
+                        ViewThatFits(in: .horizontal) {
+                            HStack { recoveryButtons(task) }
+                            VStack(alignment: .leading, spacing: 6) { recoveryButtons(task) }
+                        }
+                        .buttonStyle(.bordered).controlSize(.small)
                     }
                 }
                 .padding(10).background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
@@ -212,6 +213,11 @@ struct CompanionView: View {
             Button("Open session") { model.jump(to: task) }
             if task.resumeCommand != nil { Button("Copy resume command") { model.copyResume(task) } }
         }
+    }
+
+    @ViewBuilder private func recoveryButtons(_ task: CodexTask) -> some View {
+        Button("Try again") { model.jump(to: task) }
+        if task.resumeCommand != nil { Button("Copy resume command") { model.copyResume(task) } }
     }
 
     private func age(_ timestamp: TimeInterval) -> String {

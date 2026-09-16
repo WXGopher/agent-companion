@@ -54,6 +54,11 @@ struct LayoutTests {
         model.failedTask = model.snapshot.tasks[0]
         model.message = "Could not select the original terminal tab. Allow Agent Companion in System Settings → Privacy & Security → Automation, or copy the resume command."
         try render(model, name: "jump-error", output: output, height: 400...650)
+        model.cameraWidth = 0
+        model.compactHeight = 28
+        try render(model, name: "jump-error-external", output: output, height: 400...750)
+        model.cameraWidth = 184
+        model.compactHeight = 32
         model.message = nil
         model.failedTask = nil
         model.snapshot = CodexSnapshot(loading: false)
@@ -67,7 +72,7 @@ struct LayoutTests {
         try render(model, name: "loading", output: output, height: 300...430)
         verifyResize()
         verifyTerminalTargets()
-        print("PASS: 10 native SwiftUI layouts; filters, usage states, errors and constant-width expand/collapse sizing")
+        print("PASS: 11 native SwiftUI layouts; filters, usage states, errors and constant-width expand/collapse sizing")
     }
 
     private static func verifyTerminalTargets() {
