@@ -41,22 +41,31 @@ struct LayoutTests {
         model.expanded = true
         try render(model, name: "active-external", output: output, height: 300...480)
         model.expanded = false
-        model.cameraWidth = 184
-        model.compactHeight = 32
-        try render(model, name: "compact-notched", output: output, height: 32...32)
-        precondition(model.compactWidth == 292, "Compact wings grew beyond the two counters and usage label")
+        model.metrics = cameraMetrics()
+        try render(model, name: "compact-notched", output: output, height: 56...56)
+        precondition(model.compactWidth == 178, "The panel extends beyond the physical camera gap")
         let weekly = model.snapshot.weekly
         model.snapshot.weekly = WeeklyUsage(usedPercent: 0, resetsAt: weekly?.resetsAt, expired: false)
         precondition(model.weeklyText == "100%")
-        try render(model, name: "compact-full-quota", output: output, height: 32...32)
+        try render(model, name: "compact-full-quota", output: output, height: 56...56)
         model.snapshot.weekly = weekly
         model.snapshot.activeCount = 120
         model.snapshot.completedCount = 101
-        try render(model, name: "large-counts", output: output, height: 32...32)
+        try render(model, name: "large-counts", output: output, height: 56...56)
+        precondition(model.compactWidth == 178, "Large counts grew into the menu bar")
+        model.expanded = true
+        let largeCountsSize = try render(model, name: "large-counts-expanded", output: output, height: 300...440)
         model.snapshot.activeCount = 2
         model.snapshot.completedCount = 1
-        model.expanded = true
-        try render(model, name: "active", output: output, height: 300...420)
+        let activeSize = try render(model, name: "active", output: output, height: 300...420)
+        precondition(largeCountsSize == activeSize, "Large counts wrapped the tabs instead of fitting the compact layout")
+        model.metrics = cameraMetrics(width: 156, height: 28)
+        try render(model, name: "active-small-camera", output: output, height: 280...410)
+        model.metrics = cameraMetrics(width: 220)
+        try render(model, name: "active-wide-camera", output: output, height: 350...490)
+        model.metrics = NotchMetrics(screen: CGRect(x: 0, y: 0, width: 1280, height: 800))
+        try render(model, name: "active-small-external", output: output, height: 300...420)
+        model.metrics = cameraMetrics()
         model.showingCompleted = true
         precondition(model.visibleTasks.count == 1)
         try render(model, name: "finished", output: output, height: 230...370)
@@ -64,11 +73,9 @@ struct LayoutTests {
         model.failedTask = model.snapshot.tasks[0]
         model.message = "Could not select the original terminal tab. Allow Agent Companion in System Settings → Privacy & Security → Automation, or copy the resume command."
         try render(model, name: "jump-error", output: output, height: 400...650)
-        model.cameraWidth = 0
-        model.compactHeight = 28
+        model.metrics = NotchMetrics()
         try render(model, name: "jump-error-external", output: output, height: 400...750)
-        model.cameraWidth = 184
-        model.compactHeight = 32
+        model.metrics = cameraMetrics()
         model.message = nil
         model.failedTask = nil
         model.snapshot = CodexSnapshot(loading: false)
@@ -80,6 +87,7 @@ struct LayoutTests {
         try render(model, name: "read-error", output: output, height: 330...480)
         model.snapshot = CodexSnapshot(loading: true)
         try render(model, name: "loading", output: output, height: 300...430)
+        verifyDisplaySizing()
         verifyResize()
         try verifyMorphing(output: output)
         let cameraOutput = output.appendingPathComponent("camera-morph")
@@ -90,7 +98,76 @@ struct LayoutTests {
         verifyHoverLifecycle()
         verifyScreenEdgeHover()
         try verifyDockPreferencePersistence()
-        print("PASS: 12 native SwiftUI layouts; filters, remaining quota, errors and constant-width expand/collapse sizing")
+        print("PASS: 16 native SwiftUI layouts; filters, remaining quota, errors and constant-width expand/collapse sizing")
+    }
+
+    private static func cameraMetrics(
+        screen: CGRect = CGRect(x: -1470, y: 124, width: 1470, height: 956),
+        width: CGFloat = 179, height: CGFloat = 32, offset: CGFloat = 0
+    ) -> NotchMetrics {
+        let left = CGRect(x: screen.minX, y: screen.maxY - height,
+                          width: (screen.width - width) / 2 + offset, height: height)
+        let right = CGRect(x: left.maxX + width, y: left.minY,
+                           width: screen.maxX - left.maxX - width, height: height)
+        return NotchMetrics(screen: screen, safeTop: height, topLeft: left, topRight: right)
+    }
+
+    @MainActor private static func verifyDisplaySizing() {
+        // Logical-point fixtures include the actual 1470-point MacBook geometry,
+        // a shifted/asymmetric gap, and a different scaled-resolution setting.
+        let external = CGRect(x: -10000, y: -10000, width: 1920, height: 1080)
+        let builtin = CGRect(x: -11470, y: -9876, width: 1470, height: 956)
+        let camera = cameraMetrics(screen: builtin)
+        precondition(camera.width == 178 && camera.cameraHeight == 32 && camera.compactHeight == 56)
+        precondition(camera.contentScale == 178 / 216)
+        let small = CGRect(x: -10000, y: -10000, width: 1280, height: 800)
+        precondition(NotchMetrics(screen: small).width == 180)
+        let model = CompanionModel()
+        let panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.isReleasedWhenClosed = false
+        let presentation = NotchPresentation(panel: panel, model: model, reduceMotion: { false })
+        defer { presentation.stop(); panel.close() }
+        let layouts: [(CGRect, NotchMetrics)] = [
+            (external, NotchMetrics(screen: external)),
+            (builtin, camera),
+            (builtin, cameraMetrics(screen: builtin, width: 179, height: 38)),
+            (builtin, cameraMetrics(screen: builtin, width: 179, height: 38, offset: 11)),
+            (small, cameraMetrics(screen: small, width: 156, height: 28)),
+            (external, NotchMetrics(screen: external))
+        ]
+        for expanded in [false, true] {
+            model.expanded = expanded
+            presentation.update(screen: external, animated: false)
+            for (screen, metrics) in layouts {
+                model.metrics = metrics
+                for count in [0, 9, 10, 99, 120] {
+                    model.snapshot.activeCount = count
+                    model.snapshot.completedCount = count
+                    presentation.update(screen: screen)
+                    RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+                    precondition(panel.frame.width == metrics.width, "Display changes retained the old width")
+                    precondition(panel.frame.midX == screen.midX + metrics.centerOffset && panel.frame.maxY == screen.maxY,
+                                 "The notch did not follow the new display's camera position: \(panel.frame), screen \(screen), metrics \(metrics)")
+                    if metrics.hasCamera {
+                        let leftEdge = screen.midX + metrics.centerOffset - metrics.width / 2
+                        precondition(panel.frame.minX == leftEdge && panel.frame.maxX == leftEdge + metrics.width,
+                                     "The notch covers menu-bar space outside the camera gap")
+                    }
+                }
+                precondition(!presentation.isAnimating, "Display changes kept animating with old dimensions")
+                if !expanded { precondition(panel.frame.height == metrics.compactHeight) }
+            }
+        }
+        // Disconnect while closing; the new screen must snap to its own compact
+        // geometry, without leaving the old display's large invisible hit area.
+        model.expanded = false
+        presentation.update(screen: external)
+        model.metrics = camera
+        presentation.update(screen: builtin)
+        precondition(panel.frame.size == CGSize(width: 178, height: 56) && !presentation.isAnimating)
+        precondition(NotchMetrics(screen: builtin, safeTop: 32).cameraHeight == 0,
+                     "Missing camera metadata must fall back to a compact ordinary strip")
+        print("Display sizing: disconnect/reconnect, compact/expanded, camera gap, large counts, scaled resolution and offset origins passed")
     }
 
     private static func verifyScreenEdgeHover() {
@@ -112,6 +189,17 @@ struct LayoutTests {
         precondition(NotchHoverRegion.contains(CGPoint(x: -960, y: 0),
             panel: compact.offsetBy(dx: offset.x, dy: offset.y),
             screen: screen.offsetBy(dx: offset.x, dy: offset.y)))
+
+        let cameraPanel = CGRect(x: 870.5, y: 1024, width: 179, height: 56)
+        for point in [CGPoint(x: 960, y: 1080), CGPoint(x: 870.5, y: 1080),
+                      CGPoint(x: 862.5, y: 1047), CGPoint(x: 1057.5, y: 1035)] {
+            precondition(NotchHoverRegion.contains(point, panel: cameraPanel, screen: screen, cameraHeight: 32),
+                         "The camera strip lost its top edge or lower hover margin")
+        }
+        for point in [CGPoint(x: 870, y: 1080), CGPoint(x: 1050, y: 1060), CGPoint(x: 862.5, y: 1048)] {
+            precondition(!NotchHoverRegion.contains(point, panel: cameraPanel, screen: screen, cameraHeight: 32),
+                         "Hovering a menu icon beside the camera opened the panel")
+        }
 
         var pointer = CGPoint(x: 40, y: 1080)
         var frame = compact
@@ -328,8 +416,7 @@ struct LayoutTests {
 
     @MainActor private static func verifyMorphing(output: URL, camera: Bool = false) throws {
         let model = CompanionModel()
-        model.cameraWidth = camera ? 184 : 0
-        model.compactHeight = camera ? 32 : 28
+        model.metrics = camera ? cameraMetrics() : NotchMetrics()
         model.snapshot = CodexSnapshot(activeCount: 2, completedCount: 1, loading: false)
         let panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.isReleasedWhenClosed = false
@@ -433,7 +520,7 @@ struct LayoutTests {
         print("Native morph: stable strip/top/width, continuous frames, reversible close, exact hit area, reduced motion and display changes passed")
     }
 
-    @MainActor private static func render(_ model: CompanionModel, name: String, output: URL, height: ClosedRange<CGFloat>) throws {
+    @discardableResult @MainActor private static func render(_ model: CompanionModel, name: String, output: URL, height: ClosedRange<CGFloat>) throws -> CGSize {
         let view = CompanionView(model: model).fixedSize()
         // An offscreen hosting window includes macOS's native ScrollView, which
         // SwiftUI ImageRenderer intentionally omits from its drawing output.
@@ -454,5 +541,6 @@ struct LayoutTests {
         try image.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("\(name).png"))
         window.close()
         print("\(name): \(size.width) × \(size.height)")
+        return size
     }
 }
