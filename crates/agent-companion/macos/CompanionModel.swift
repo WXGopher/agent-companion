@@ -83,8 +83,12 @@ final class CompanionModel: ObservableObject {
     // Keep both sides equally wide so the clear gap stays over the camera.
     // Grow only when larger counts need the space, not when the list opens.
     var sideWidth: CGFloat {
-        let digits = countText(snapshot.activeCount).count + countText(snapshot.completedCount).count
-        return max(48, ceil(CGFloat(digits) * 7.3 + 29))
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
+        let labels = [countText(snapshot.activeCount), countText(snapshot.completedCount)]
+        let textWidth = labels.reduce(CGFloat.zero) { width, label in
+            width + (label as NSString).size(withAttributes: [.font: font]).width
+        }
+        return max(48, ceil(textWidth + 29))
     }
     var compactWidth: CGFloat { hasCamera ? cameraWidth + 2 * (sideWidth + 6) : 216 }
     func countText(_ count: Int) -> String { count > 99 ? "99+" : "\(count)" }
