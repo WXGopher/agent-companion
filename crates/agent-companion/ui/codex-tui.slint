@@ -35,7 +35,8 @@ component ComponentOption inherits Rectangle {
 }
 
 export component CodexTuiWindow inherits Window {
-    title: "Agent Companion · Codex TUI";
+    in property <string> window-title: "Agent Companion · Codex TUI";
+    title: root.window-title;
     preferred-width: 740px;
     preferred-height: 720px;
     min-width: 620px;

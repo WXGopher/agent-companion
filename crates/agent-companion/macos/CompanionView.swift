@@ -10,10 +10,10 @@ struct CompanionView: View {
             compact
             if model.expanded { expanded.transition(.opacity.combined(with: .move(edge: .top))) }
         }
-        .frame(width: model.expanded ? 432 : model.compactWidth)
+        .frame(width: model.compactWidth)
         .background {
             if model.hasCamera {
-                NotchShape(topCornerRadius: model.expanded ? 18 : 6, bottomCornerRadius: model.expanded ? 24 : 10)
+                NotchShape(topCornerRadius: 6, bottomCornerRadius: model.expanded ? 24 : 10)
                     .fill(.black)
             } else {
                 RoundedRectangle(cornerRadius: model.expanded ? 22 : 14).fill(.black)
@@ -25,33 +25,39 @@ struct CompanionView: View {
     }
 
     private var compact: some View {
-        Button { model.expand?() } label: {
-            HStack(spacing: 0) {
+        HStack(spacing: 0) {
+            Button { model.expand?() } label: {
                 HStack(spacing: 7) {
                     count(model.snapshot.activeCount, symbol: "circle.inset.filled", tint: CompanionModel.accent)
                     count(model.snapshot.completedCount, symbol: "checkmark", tint: .white.opacity(0.7))
                 }
-                .frame(width: 76, alignment: .center)
-                if model.hasCamera { Color.clear.frame(width: model.cameraWidth) }
-                else { Spacer(minLength: 20) }
+                .frame(width: model.sideWidth, alignment: .center)
+                .frame(height: model.compactHeight)
+                .contentShape(Rectangle())
+            }
+            .accessibilityLabel("Codex: \(model.snapshot.activeCount) active, \(model.snapshot.completedCount) recently finished")
+            if model.hasCamera { Color.clear.frame(width: model.cameraWidth) }
+            else { Spacer(minLength: 20) }
+            Button { model.expand?() } label: {
                 HStack(spacing: 4) {
                     Text(model.weeklyText).monospacedDigit().fontWeight(.semibold)
                     Text("wk").font(.system(size: 9)).foregroundStyle(.white.opacity(0.5))
                 }
-                .frame(width: 76)
+                .frame(width: model.sideWidth)
+                .frame(height: model.compactHeight)
+                .contentShape(Rectangle())
             }
-            .font(.system(size: 12))
-            .padding(.horizontal, 8)
-            .frame(width: model.compactWidth, height: model.compactHeight)
-            .contentShape(Rectangle())
+            .accessibilityLabel("Weekly usage \(model.weeklyText). Open Codex tasks")
         }
+        .font(.system(size: 12))
+        .padding(.horizontal, 6)
+        .frame(width: model.compactWidth, height: model.compactHeight)
         .buttonStyle(.plain)
-        .accessibilityLabel("Codex: \(model.snapshot.activeCount) active, \(model.snapshot.completedCount) recently finished, weekly usage \(model.weeklyText)")
         .accessibilityHint("Open task list")
         .help("\(model.snapshot.activeCount) active · \(model.snapshot.completedCount) finished in the last 15 minutes · \(model.weeklyText) weekly used")
         .contextMenu {
             Button("Show tasks") { model.expand?() }
-            Button("Codex status bar editor…") { model.openEditor() }
+            Button("Settings…") { model.openSettings() }
             Divider()
             Button("Quit Agent Companion") { model.quit?() }
         }
@@ -60,7 +66,7 @@ struct CompanionView: View {
     private func count(_ count: Int, symbol: String, tint: Color) -> some View {
         HStack(spacing: 3) {
             Image(systemName: symbol).font(.system(size: 8, weight: .semibold)).foregroundStyle(tint)
-            Text(count > 99 ? "99+" : "\(count)").monospacedDigit().fontWeight(.semibold)
+            Text(model.countText(count)).monospacedDigit().fontWeight(.semibold)
         }
     }
 
@@ -80,7 +86,6 @@ struct CompanionView: View {
                 tab("Active", count: model.snapshot.activeCount, completed: false)
                 tab("Finished", count: model.snapshot.completedCount, completed: true)
                 Spacer()
-                if model.showingCompleted { Text("Last 15 min").font(.system(size: 10)).foregroundStyle(.secondary) }
             }
             if let error = model.snapshot.error { notice(error, symbol: "exclamationmark.triangle") }
             if model.snapshot.loading {
@@ -117,8 +122,8 @@ struct CompanionView: View {
             }
             Divider().overlay(.white.opacity(0.06))
             HStack {
-                Button { model.openEditor() } label: { Label("Status bar", systemImage: "slider.horizontal.3") }
-                    .help("Edit Codex CLI status bar…")
+                Button { model.openSettings() } label: { Label("Settings", systemImage: "gearshape") }
+                    .help("Customize the Codex CLI status bar…")
                 Spacer()
                 Button("Open Codex") { model.openCodex() }
                 Button { model.quit?() } label: { Image(systemName: "power") }
@@ -126,7 +131,7 @@ struct CompanionView: View {
             }
             .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 24).padding(.top, 12).padding(.bottom, 20)
+        .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 16)
     }
 
     private var weekly: some View {

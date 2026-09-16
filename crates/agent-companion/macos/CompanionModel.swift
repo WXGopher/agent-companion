@@ -77,9 +77,17 @@ final class CompanionModel: ObservableObject {
     var collapse: (() -> Void)?
     var quit: (() -> Void)?
     private var timer: Timer?
+    private var settingsProcess: Process?
 
     var hasCamera: Bool { cameraWidth > 0 }
-    var compactWidth: CGFloat { hasCamera ? cameraWidth + 168 : 216 }
+    // Keep both sides equally wide so the clear gap stays over the camera.
+    // Grow only when larger counts need the space, not when the list opens.
+    var sideWidth: CGFloat {
+        let digits = countText(snapshot.activeCount).count + countText(snapshot.completedCount).count
+        return max(48, ceil(CGFloat(digits) * 7.3 + 29))
+    }
+    var compactWidth: CGFloat { hasCamera ? cameraWidth + 2 * (sideWidth + 6) : 216 }
+    func countText(_ count: Int) -> String { count > 99 ? "99+" : "\(count)" }
     var weeklyText: String {
         guard let usage = snapshot.weekly, !usage.expired else { return "—" }
         return "\(usage.usedPercent)%"
@@ -105,13 +113,21 @@ final class CompanionModel: ObservableObject {
         }
     }
 
-    func openEditor() {
+    func openSettings() {
+        if let process = settingsProcess, process.isRunning {
+            NSRunningApplication(processIdentifier: process.processIdentifier)?.activate(options: [.activateAllWindows])
+            collapse?()
+            return
+        }
         guard let executable = Bundle.main.executableURL else { return }
         let process = Process()
         process.executableURL = executable
         process.arguments = ["codex-tui"]
-        do { try process.run(); collapse?() }
-        catch { message = "Could not open the status bar editor: \(error.localizedDescription)" }
+        do {
+            try process.run()
+            settingsProcess = process
+            collapse?()
+        } catch { message = "Could not open settings: \(error.localizedDescription)" }
     }
 
     func openCodex() {
