@@ -66,7 +66,29 @@ struct LayoutTests {
         model.snapshot = CodexSnapshot(loading: true)
         try render(model, name: "loading", output: output, height: 300...430)
         verifyResize()
+        verifyTerminalTargets()
         print("PASS: 10 native SwiftUI layouts; filters, usage states, errors and constant-width expand/collapse sizing")
+    }
+
+    private static func verifyTerminalTargets() {
+        let rows: [Int32: TerminalJump.ProcessRow] = [
+            30: .init(parent: 20, tty: "ttys004", executable: "/usr/local/bin/codex"),
+            20: .init(parent: 10, tty: "ttys004", executable: "-zsh"),
+            10: .init(parent: 1, tty: "??", executable: "/synthetic/Library/Application Support/iTerm2/iTermServer-3.6.11"),
+            40: .init(parent: 20, tty: "ttys004", executable: "/usr/bin/cat")
+        ]
+        let detached = TerminalJump.processTarget(writers: [30], processes: rows,
+            detachedITerm: .init(pid: 99, bundle: "com.googlecode.iterm2"), application: { _ in nil })
+        precondition(detached?.tty == "/dev/ttys004" && detached?.appPID == 99)
+        let terminal = TerminalJump.processTarget(writers: [30], processes: rows, detachedITerm: nil) { pid in
+            pid == 10 ? .init(pid: 10, bundle: "com.apple.Terminal") : nil
+        }
+        precondition(terminal?.bundle == "com.apple.Terminal" && terminal?.tty == "/dev/ttys004")
+        precondition(TerminalJump.processTarget(writers: [40], processes: rows,
+            detachedITerm: .init(pid: 99, bundle: "com.googlecode.iterm2"), application: { _ in nil }) == nil)
+        precondition(TerminalJump.processTarget(writers: [30], processes: rows,
+            detachedITerm: nil, application: { _ in nil }) == nil)
+        print("Terminal targets: GUI ancestry and detached iTerm server passed")
     }
 
     @MainActor private static func verifyResize() {
