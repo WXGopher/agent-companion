@@ -20,7 +20,8 @@ final class NotchController: NSObject, NSApplicationDelegate {
     private lazy var hover = NotchHover(
         containsPointer: { [weak self] in
             guard let self, let panel, panel.isVisible, let screen = selectedScreen else { return false }
-            return NotchHoverRegion.contains(NSEvent.mouseLocation, panel: panel.frame, screen: screen.frame)
+            return NotchHoverRegion.contains(NSEvent.mouseLocation, panel: panel.frame,
+                                             screen: screen.frame, cameraHeight: model.metrics.cameraHeight)
         },
         expand: { [weak self] in self?.expand(activate: false) },
         collapse: { [weak self] in self?.collapse() }
@@ -92,14 +93,7 @@ final class NotchController: NSObject, NSApplicationDelegate {
         // Re-read this list on every display change, including hot-plugging.
         selectedScreen = NSScreen.screens.first
         guard let screen = selectedScreen else { panel?.orderOut(nil); return }
-        let cameraHeight = screen.safeAreaInsets.top
-        if cameraHeight > 0, let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
-            model.cameraWidth = max(0, screen.frame.width - left.width - right.width) + 4
-            model.compactHeight = cameraHeight
-        } else {
-            model.cameraWidth = 0
-            model.compactHeight = 28
-        }
+        model.metrics = NotchMetrics(screen: screen)
         layout(animated: false)
         panel.orderFrontRegardless()
         hover.update()

@@ -4,8 +4,12 @@ import Foundation
 /// Hover gets a little more room without enlarging the visible/clickable panel.
 /// Closed bounds include the screen's very top edge, unlike CGRect.contains.
 enum NotchHoverRegion {
-    static func contains(_ point: CGPoint, panel: CGRect, screen: CGRect) -> Bool {
+    static func contains(_ point: CGPoint, panel: CGRect, screen: CGRect, cameraHeight: CGFloat = 0) -> Bool {
         guard !panel.isEmpty, !screen.isEmpty else { return false }
+        // Do not open while pointing at menu icons beside the hardware notch.
+        // The forgiving side margin still applies to the visible strip below it.
+        if cameraHeight > 0 && point.y >= screen.maxY - cameraHeight,
+           point.x < panel.minX || point.x > panel.maxX { return false }
         let area = panel.insetBy(dx: -12, dy: -8).intersection(screen)
         guard !area.isEmpty else { return false }
         return point.x >= area.minX && point.x <= area.maxX
