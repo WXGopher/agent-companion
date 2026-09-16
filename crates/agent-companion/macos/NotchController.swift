@@ -101,7 +101,8 @@ final class NotchController: NSObject, NSApplicationDelegate {
 
     private func layout(animated: Bool = true) {
         guard let screen = selectedScreen else { return }
-        presentation.update(screen: screen.frame, animated: animated)
+        presentation.update(screen: screen.frame, availableHeight: screen.frame.maxY - screen.visibleFrame.minY,
+                            animated: animated)
     }
 
     private func expand(activate: Bool) {

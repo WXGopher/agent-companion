@@ -38,15 +38,17 @@ private final class NotchContentView: NSHostingView<CompanionView> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
-/// The content always has its natural height and stays pinned to the top.
+/// Content stays at its measured height (bounded by the screen) and pinned to the top.
 /// Only this clipped, opaque silhouette grows; SwiftUI never replaces/fades
 /// the compact strip or compresses the task layout into an intermediate size.
 final class NotchSurfaceView: NSView {
     let model: CompanionModel
     private let host: NotchContentView
+    private let measurement: NotchContentView
     private let outline = CAShapeLayer()
     private var tracking: NSTrackingArea?
     private var showsDetails = false
+    private var detailsHeight: CGFloat?
     private var contentHeight: CGFloat = 0
     var hover: (() -> Void)?
     var expansion: CGFloat = 0
@@ -55,6 +57,7 @@ final class NotchSurfaceView: NSView {
     init(model: CompanionModel) {
         self.model = model
         host = NotchContentView(rootView: CompanionView(model: model, showsDetails: false, drawsBackground: false))
+        measurement = NotchContentView(rootView: CompanionView(model: model, showsDetails: false, drawsBackground: false))
         super.init(frame: .zero)
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
@@ -62,19 +65,27 @@ final class NotchSurfaceView: NSView {
         // Measure SwiftUI inside a plain clipping view. It is deliberately not
         // the window's contentView, so its intrinsic size cannot resize the panel.
         host.sizingOptions = [.intrinsicContentSize]
+        measurement.sizingOptions = [.intrinsicContentSize]
         host.autoresizingMask = []
         addSubview(host)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func measure(showDetails: Bool) -> CGFloat {
-        if showsDetails != showDetails {
+    func measure(showDetails: Bool, maximumHeight: CGFloat) -> CGFloat {
+        // Measure an unbounded copy without removing/recreating the visible
+        // scroll view. Refreshes must preserve its scroll position and focus.
+        measurement.rootView = CompanionView(model: model, showsDetails: showDetails, drawsBackground: false)
+        measurement.layoutSubtreeIfNeeded()
+        let naturalHeight = max(model.compactHeight, measurement.fittingSize.height)
+        contentHeight = min(maximumHeight, naturalHeight)
+        let limit = showDetails && naturalHeight > maximumHeight ? contentHeight - model.compactHeight : nil
+        if showsDetails != showDetails || detailsHeight != limit {
             showsDetails = showDetails
-            host.rootView = CompanionView(model: model, showsDetails: showDetails, drawsBackground: false)
+            detailsHeight = limit
+            host.rootView = CompanionView(model: model, showsDetails: showDetails, drawsBackground: false, detailsHeight: limit)
         }
         host.layoutSubtreeIfNeeded()
-        contentHeight = max(model.compactHeight, host.fittingSize.height)
         needsLayout = true
         return contentHeight
     }
@@ -110,6 +121,7 @@ final class NotchPresentation {
     private var screen: CGRect = .zero
     private var width: CGFloat = 0
     private var metrics = NotchMetrics()
+    private var maximumHeight: CGFloat = 0
     private var expandedHeight: CGFloat = 0
     private var timer: Timer?
     private var lastFrame: TimeInterval = 0
@@ -126,13 +138,15 @@ final class NotchPresentation {
 
     deinit { timer?.invalidate() }
 
-    func update(screen: CGRect, animated: Bool = true) {
-        let geometryChanged = self.screen != screen || metrics != model.metrics
+    func update(screen: CGRect, availableHeight: CGFloat? = nil, animated: Bool = true) {
+        let limit = max(model.compactHeight, min(screen.height, availableHeight ?? screen.height) - 8)
+        let geometryChanged = self.screen != screen || metrics != model.metrics || maximumHeight != limit
         self.screen = screen
         metrics = model.metrics
+        maximumHeight = limit
         width = model.compactWidth
         if model.expanded {
-            expandedHeight = surface.measure(showDetails: true)
+            expandedHeight = surface.measure(showDetails: true, maximumHeight: maximumHeight)
         }
         let target = model.expanded ? expandedHeight : model.compactHeight
         motion.retarget(target, animated: animated && !geometryChanged && !reduceMotion())
@@ -163,11 +177,11 @@ final class NotchPresentation {
         // Fractional backing pixels can shift the text raster even with a
         // fixed top edge. Keep every intermediate window on the pixel grid.
         let scale = max(1, panel.backingScaleFactor)
-        let height = (max(model.compactHeight, motion.height) * scale).rounded() / scale
+        let height = (min(maximumHeight, max(model.compactHeight, motion.height)) * scale).rounded(.down) / scale
         let frame = CGRect(x: screen.midX + metrics.centerOffset - width / 2,
                            y: screen.maxY - height, width: width, height: height)
         surface.expansion = min(1, max(0, (height - model.compactHeight) / max(1, expandedHeight - model.compactHeight)))
-        if !motion.isMoving && !model.expanded { _ = surface.measure(showDetails: false) }
+        if !motion.isMoving && !model.expanded { _ = surface.measure(showDetails: false, maximumHeight: maximumHeight) }
         if panel.frame != frame { panel.setFrame(frame, display: false) }
         surface.needsLayout = true
         surface.layoutSubtreeIfNeeded()

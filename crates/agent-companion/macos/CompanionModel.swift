@@ -105,8 +105,13 @@ final class CompanionModel: ObservableObject {
     }
 
     func start() {
+        guard timer == nil else { return }
         refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refresh() }
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.refresh() }
+        // Scrolling and native menus use AppKit's event-tracking mode.
+        // Keep task counts and quota live while those controls are in use.
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
     }
     func stop() { timer?.invalidate(); timer = nil }
 
