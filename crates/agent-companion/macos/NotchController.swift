@@ -3,32 +3,16 @@
 // See THIRD_PARTY_NOTICES.md for the pinned source and license.
 import AppKit
 import Combine
-import SwiftUI
 
 private final class NotchPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 }
 
-private final class NotchHostingView: NSHostingView<CompanionView> {
-    var hover: (() -> Void)?
-    private var tracking: NSTrackingArea?
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let tracking { removeTrackingArea(tracking) }
-        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
-        addTrackingArea(area)
-        tracking = area
-    }
-    override func mouseEntered(with event: NSEvent) { super.mouseEntered(with: event); hover?() }
-    override func mouseExited(with event: NSEvent) { super.mouseExited(with: event); hover?() }
-}
-
 final class NotchController: NSObject, NSApplicationDelegate {
     private let model = CompanionModel()
     private var panel: NotchPanel!
-    private var host: NotchHostingView!
+    private var presentation: NotchPresentation!
     private var globalMonitor: Any?
     private var localMonitor: Any?
     private var observers: [NSObjectProtocol] = []
@@ -68,10 +52,8 @@ final class NotchController: NSObject, NSApplicationDelegate {
         panel.isReleasedWhenClosed = false
         panel.acceptsMouseMovedEvents = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
-        host = NotchHostingView(rootView: CompanionView(model: model))
-        host.sizingOptions = [.intrinsicContentSize]
-        host.hover = { [weak self] in self?.hover.update() }
-        panel.contentView = host
+        presentation = NotchPresentation(panel: panel, model: model)
+        presentation.surface.hover = { [weak self] in self?.hover.update() }
         model.expand = { [weak self] in self?.expand(activate: true) }
         model.collapse = { [weak self] in self?.collapse() }
         model.quit = { [weak self] in self?.quit() }
@@ -118,32 +100,20 @@ final class NotchController: NSObject, NSApplicationDelegate {
             model.cameraWidth = 0
             model.compactHeight = 28
         }
-        layout()
+        layout(animated: false)
         panel.orderFrontRegardless()
         hover.update()
     }
 
-    private func layout() {
-        guard let screen = selectedScreen, let panel, let host else { return }
-        let width = model.compactWidth
-        // Intrinsic size follows rows/messages. Never leave an invisible expanded
-        // window over the user's apps after collapse.
-        let height = model.expanded ? max(model.compactHeight, host.fittingSize.height) : model.compactHeight
-        // Overlay the menu bar on every display. visibleFrame excludes it and
-        // would leave the strip floating below the menu bar on ordinary screens.
-        let top = screen.frame.maxY
-        let frame = NSRect(x: screen.frame.midX - width / 2, y: top - height, width: width, height: height)
-        if panel.frame != frame { panel.setFrame(frame, display: true) }
+    private func layout(animated: Bool = true) {
+        guard let screen = selectedScreen else { return }
+        presentation.update(screen: screen.frame, animated: animated)
     }
 
     private func expand(activate: Bool) {
         if activate { hover.pin() }
         if !model.expanded { model.showingCompleted = false }
-        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            model.expanded = true
-        } else {
-            withAnimation(.easeOut(duration: 0.18)) { model.expanded = true }
-        }
+        model.expanded = true
         layout()
         if activate { panel.makeKeyAndOrderFront(nil) }
     }
@@ -171,6 +141,7 @@ final class NotchController: NSObject, NSApplicationDelegate {
     @objc private func quit() {
         guard !quitting else { return }
         quitting = true
+        presentation.stop()
         hover.stop()
         model.stop()
         changes?.cancel()
