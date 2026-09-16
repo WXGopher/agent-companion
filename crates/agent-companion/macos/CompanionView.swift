@@ -5,6 +5,7 @@ struct CompanionView: View {
     @ObservedObject var model: CompanionModel
     var showsDetails: Bool? = nil
     var drawsBackground = true
+    var detailsHeight: CGFloat? = nil
     @State private var hoveredTask: String?
 
     private func scaled(_ value: CGFloat) -> CGFloat { value * model.metrics.contentScale }
@@ -32,38 +33,34 @@ struct CompanionView: View {
     }
 
     private var compact: some View {
-        VStack(spacing: 0) {
-            // Keep the menu-bar band entirely inside the physical camera gap.
-            // Counters sit just below it instead of growing wings over menus.
-            if model.hasCamera { Color.clear.frame(height: model.metrics.cameraHeight) }
-            HStack(spacing: 0) {
-                Button { model.expand?() } label: {
+        Button { model.expand?() } label: {
+            VStack(spacing: 0) {
+                // Keep the menu-bar band entirely inside the physical camera gap.
+                // Counters sit just below it instead of growing wings over menus.
+                if model.hasCamera { Color.clear.frame(height: model.metrics.cameraHeight) }
+                HStack(spacing: 0) {
                     HStack(spacing: compactScaled(7)) {
                         count(model.snapshot.activeCount, symbol: "circle.inset.filled", tint: CompanionModel.accent)
                         count(model.snapshot.completedCount, symbol: "checkmark", tint: .white.opacity(0.7))
                     }
-                    .frame(height: model.metrics.statsHeight)
-                    .contentShape(Rectangle())
-                }
-                .accessibilityLabel("Codex: \(model.snapshot.activeCount) active, \(model.snapshot.completedCount) recently finished")
-                Spacer(minLength: compactScaled(8))
-                Button { model.expand?() } label: {
+                    Spacer(minLength: compactScaled(8))
                     HStack(spacing: compactScaled(3)) {
                         Text(model.weeklyText).monospacedDigit().fontWeight(.semibold).lineLimit(1).fixedSize()
                         if model.weeklyRemainingPercent != nil {
                             Text("left").font(.system(size: compactScaled(9))).foregroundStyle(.white.opacity(0.5)).fixedSize()
                         }
                     }
-                    .frame(height: model.metrics.statsHeight)
-                    .contentShape(Rectangle())
                 }
-                .accessibilityLabel("Weekly quota remaining: \(model.weeklyText). Open Codex tasks")
+                .frame(height: model.metrics.statsHeight)
+                .padding(.horizontal, compactScaled(10))
             }
-            .padding(.horizontal, compactScaled(10))
+            .font(.system(size: compactScaled(12)))
+            .frame(width: model.compactWidth, height: model.compactHeight)
+            .contentShape(Rectangle())
         }
-        .font(.system(size: compactScaled(12)))
-        .frame(width: model.compactWidth, height: model.compactHeight)
         .buttonStyle(.plain)
+        .accessibilityIdentifier("notch-summary")
+        .accessibilityLabel("Codex: \(model.snapshot.activeCount) active, \(model.snapshot.completedCount) recently finished. Weekly quota remaining: \(model.weeklyText)")
         .accessibilityHint("Open task list")
         .help("\(model.snapshot.activeCount) active · \(model.snapshot.completedCount) finished in the last 15 minutes · Weekly quota remaining: \(model.weeklyText)")
         .contextMenu {
@@ -82,6 +79,24 @@ struct CompanionView: View {
     }
 
     private var expanded: some View {
+        VStack(alignment: .leading, spacing: scaled(13)) {
+            if detailsHeight != nil {
+                ScrollView {
+                    expandedContent
+                }
+                .scrollIndicators(.visible)
+                .frame(maxHeight: .infinity)
+            } else {
+                expandedContent
+            }
+            Divider().overlay(.white.opacity(0.06))
+            footer
+        }
+        .padding(.horizontal, scaled(16)).padding(.top, scaled(12)).padding(.bottom, scaled(16))
+        .frame(height: detailsHeight)
+    }
+
+    private var expandedContent: some View {
         VStack(alignment: .leading, spacing: scaled(13)) {
             HStack(alignment: .center, spacing: scaled(8)) {
                 VStack(alignment: .leading, spacing: scaled(3)) {
@@ -132,20 +147,21 @@ struct CompanionView: View {
                 }
                 .padding(scaled(10)).background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: scaled(10)))
             }
-            Divider().overlay(.white.opacity(0.06))
-            VStack(alignment: .leading, spacing: scaled(10)) {
-                HStack {
-                    Button { model.openSettings() } label: { Label("Settings", systemImage: "gearshape").fixedSize() }
-                        .help("Customize the Codex CLI status bar…")
-                    Spacer(minLength: 0)
-                    Button { model.quit?() } label: { Image(systemName: "power") }
-                        .help("Quit Agent Companion").accessibilityLabel("Quit Agent Companion")
-                }
-                Button { model.openCodex() } label: { Label("Open Codex", systemImage: "arrow.up.forward.app").fixedSize() }
-            }
-            .buttonStyle(.plain).font(.system(size: scaled(11))).foregroundStyle(.secondary)
         }
-        .padding(.horizontal, scaled(16)).padding(.top, scaled(12)).padding(.bottom, scaled(16))
+    }
+
+    private var footer: some View {
+        VStack(alignment: .leading, spacing: scaled(10)) {
+            HStack {
+                Button { model.openSettings() } label: { Label("Settings", systemImage: "gearshape").fixedSize() }
+                    .help("Customize the Codex CLI status bar…")
+                Spacer(minLength: 0)
+                Button { model.quit?() } label: { Image(systemName: "power") }
+                    .help("Quit Agent Companion").accessibilityLabel("Quit Agent Companion")
+            }
+            Button { model.openCodex() } label: { Label("Open Codex", systemImage: "arrow.up.forward.app").fixedSize() }
+        }
+        .buttonStyle(.plain).font(.system(size: scaled(11))).foregroundStyle(.secondary)
     }
 
     private var weekly: some View {
@@ -231,7 +247,11 @@ struct CompanionView: View {
 
     @ViewBuilder private func recoveryButtons(_ task: CodexTask) -> some View {
         Button("Try again") { model.jump(to: task) }
-        if task.resumeCommand != nil { Button("Copy resume command") { model.copyResume(task) } }
+        if task.resumeCommand != nil {
+            Button("Copy command") { model.copyResume(task) }
+                .accessibilityLabel("Copy resume command")
+                .help("Copy the command to resume this Codex session")
+        }
     }
 
     private func age(_ timestamp: TimeInterval) -> String {
