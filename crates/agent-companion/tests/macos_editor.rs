@@ -20,7 +20,14 @@ fn main() {
 
 #[cfg(target_os = "macos")]
 fn check_editor_startup() {
-    use slint::{ComponentHandle, language::ColorScheme, winit_030::WinitWindowAccessor};
+    use slint::{
+        ComponentHandle,
+        language::ColorScheme,
+        winit_030::{
+            WinitWindowAccessor,
+            winit::raw_window_handle::{HasWindowHandle, RawWindowHandle},
+        },
+    };
     use std::{sync::mpsc, time::Duration};
 
     let (finished, deadline) = mpsc::channel();
@@ -49,6 +56,20 @@ fn check_editor_startup() {
         let mut created = false;
         window.window().with_winit_window(|native| {
             created = native.is_visible() == Some(true);
+            let RawWindowHandle::AppKit(handle) = native.window_handle().unwrap().as_raw() else {
+                panic!("The settings window is not an AppKit window");
+            };
+            // A Slint snapshot covers only content, so it misses a clear native
+            // title bar. Inspect the actual window backing the current view.
+            // SAFETY: winit owns this live NSView, and this timer runs on the
+            // AppKit main thread while the native window is borrowed.
+            unsafe {
+                let view = handle.ns_view.cast::<objc2_app_kit::NSView>().as_ref();
+                let frame = view.window().expect("The view has no native window");
+                assert!(frame.isOpaque(), "The settings frame must be opaque");
+                assert_eq!(frame.backgroundColor().alphaComponent(), 1.0);
+                assert!(!frame.titlebarAppearsTransparent());
+            }
         });
         assert!(created, "The settings window was not created and shown");
         let pixels = window.window().take_snapshot().unwrap();
@@ -97,6 +118,6 @@ fn check_editor_startup() {
     finished.send(()).unwrap();
     watchdog.join().unwrap();
     println!(
-        "PASS: native Slint settings renders light/dark, minimum size, live draft and save error; no Codex config writes"
+        "PASS: opaque AppKit settings frame; Slint light/dark, minimum size, live draft and save error; no Codex config writes"
     );
 }
