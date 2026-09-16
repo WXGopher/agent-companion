@@ -11,6 +11,46 @@ static SNAPSHOT: OnceLock<Mutex<Snapshot>> = OnceLock::new();
 
 unsafe extern "C" {
     fn agent_companion_run_notch() -> i32;
+    fn agent_companion_prepare_editor() -> bool;
+    fn agent_companion_start_editor_preferences();
+    fn agent_companion_dock_visible() -> bool;
+    fn agent_companion_set_dock_visible(visible: bool) -> bool;
+}
+
+/// Configure Slint before it creates its AppKit event loop, including when
+/// launched as a bare CLI binary without an Info.plist.
+pub fn prepare_editor() -> Result<(), slint::PlatformError> {
+    use slint::winit_030::winit::{
+        event_loop::EventLoop,
+        platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS},
+    };
+    // SAFETY: standalone editor startup runs on the process main thread.
+    let visible = unsafe { agent_companion_prepare_editor() };
+    let mut builder = EventLoop::with_user_event();
+    builder.with_activation_policy(if visible {
+        ActivationPolicy::Regular
+    } else {
+        ActivationPolicy::Accessory
+    });
+    slint::BackendSelector::new()
+        .backend_name("winit".into())
+        .with_winit_event_loop_builder(builder)
+        .select()
+}
+
+pub fn dock_visible() -> bool {
+    // SAFETY: called by the editor on its main UI thread.
+    unsafe { agent_companion_dock_visible() }
+}
+
+pub fn start_editor_preferences() {
+    // SAFETY: invoked by a Slint timer after its main-thread event loop starts.
+    unsafe { agent_companion_start_editor_preferences() }
+}
+
+pub fn set_dock_visible(visible: bool) -> bool {
+    // SAFETY: called by the editor on its main UI thread.
+    unsafe { agent_companion_set_dock_visible(visible) }
 }
 
 /// Swift owns the returned allocation until it calls the paired release.
