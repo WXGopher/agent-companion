@@ -33,7 +33,7 @@
 
 开发版的 **Usage** 页面显示 Codex 订阅的额度窗口、重置时间、累计 Token、单日峰值、最近七个有记录日期的用量、连续使用天数及最长任务时间。顶部固定显示 **Tasks / Usage**，随时一键切回任务；也可点击周额度卡片进入用量，宽度不变。展开字体和间距缩小，大号 Token 数字调至约 13.5 pt。复用 Codex 的 ChatGPT 登录，无需 API Key。仅在用量页按需读取，五分钟内切换页面复用缓存，页面打开期间每五分钟自动刷新，也可手动刷新。查询不启动模型推理，不产生推理 Token 消耗。没有数据时显示 `—`；Token 总数与订阅剩余额度是不同指标，服务端数据可能延迟，也不提供账号级输入／缓存／输出拆分。详见[订阅用量说明](docs/MACOS_NOTCH.md#订阅用量开发中未发布)。
 
-任务状态与默认周额度来自本地 Codex 会话和分页历史；开发版的订阅用量通过 Codex 官方账号接口联网读取，不发起模型请求。macOS 不启动 hooks、审批服务或其他代理，不包含宠物、主题编辑或 Intel Mac 支持。
+任务状态与默认周额度来自本地 Codex 会话和分页历史；开发版菜单栏额度在启动时读取，之后每 **2 分钟**检查本地记录。任务刷新和 Usage 页的五分钟联网刷新保持各自间隔，订阅用量通过 Codex 官方账号读取接口获取，不发起模型请求。macOS 不启动 hooks、审批服务或其他代理，不包含宠物、主题编辑或 Intel Mac 支持。
 
 <p align="center"><img src="docs/macos-notch.png" width="356" alt="MacBook Codex 刘海展开界面，数字位于摄像头两侧的菜单栏内，合成数据渲染"></p>
 
@@ -247,7 +247,7 @@ Agent Companion 复用 [open-vibe-island](https://github.com/Octane0411/open-vib
 
 The development **Usage** page shows subscription allowance windows and reset times, lifetime and peak daily tokens, the seven most recent reported days, usage streaks and longest turn. The pinned **Tasks / Usage** tabs provide one-click navigation, including while scrolling. The weekly card also opens Usage; the notch keeps its width. Expanded typography and spacing are smaller, with token highlights around 13.5 pt. It reuses your Codex ChatGPT login without an API key. Reads happen on demand while viewing Usage; completed results are reused across page switches for five minutes. Automatic refresh runs every five minutes while visible, with manual refresh available. These statistics reads do not start model inference or consume inference tokens. Missing values stay `—`. Token counts do not measure remaining allowance; reporting may be delayed and account-wide input/cached/output breakdowns are not provided. See [subscription usage details](docs/MACOS_NOTCH.md#订阅用量开发中未发布).
 
-Task state and default weekly quota come from local Codex sessions and history. The development subscription view reads the official Codex account service online without making model requests. The macOS surface has no hooks, approvals, other agents, pets, theme editor or Intel support.
+Task state and default weekly quota come from local Codex sessions and history. In the development version, menu-bar quota is read at startup and then every **two minutes** from local records. Task polling and the Usage page's five-minute online refresh keep their separate schedules. Subscription statistics use official Codex account reads without making model requests. The macOS surface has no hooks, approvals, other agents, pets, theme editor or Intel support.
 
 <p align="center"><img src="docs/macos-notch.png" width="356" alt="Expanded MacBook Codex notch with indicators beside the camera in the menu bar, rendered with synthetic data"></p>
 
