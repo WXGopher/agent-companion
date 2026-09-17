@@ -33,6 +33,10 @@ struct LayoutTests {
         _ = NSApplication.shared
         let output = URL(fileURLWithPath: CommandLine.arguments[1])
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        if CommandLine.arguments.contains("--task-tabs") {
+            try TaskTabTests.run(output: output)
+            return
+        }
         let model = CompanionModel()
         if ProcessInfo.processInfo.environment["AGENT_COMPANION_TEST_SNAPSHOT"] != nil {
             model.refresh()
@@ -107,7 +111,8 @@ struct LayoutTests {
         model.metrics = cameraMetrics()
         model.showingCompleted = true
         precondition(model.visibleTasks.count == 1)
-        try render(model, name: "finished", output: output, height: 230...370)
+        let finishedSize = try render(model, name: "finished", output: output, height: 300...440)
+        precondition(finishedSize == activeSize, "Task tabs must share the same panel size")
         model.showingCompleted = false
         model.failedTask = model.snapshot.tasks[0]
         model.message = "Could not select the original terminal tab. Allow Agent Companion in System Settings → Privacy & Security → Automation, or copy the resume command."
@@ -128,6 +133,7 @@ struct LayoutTests {
         try render(model, name: "loading", output: output, height: 300...480)
         verifyDisplaySizing()
         verifyResize()
+        try TaskTabTests.run(output: output)
         try verifyBoundedContent(output: output)
         verifySnapshotRefresh()
         try verifyMorphing(output: output)
