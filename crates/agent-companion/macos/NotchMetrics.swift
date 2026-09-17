@@ -28,7 +28,7 @@ struct NotchMetrics: Equatable {
             cameraHeight = ceil(safeTop)
             // The model adds only the width needed by the current numbers.
             // Keep the closed panel within the menu bar vertically.
-            let side = ceil(40 * min(1, cameraHeight / 32))
+            let side = ceil(24 * min(1, cameraHeight / 32))
             width = cameraWidth + 2 * side
             centerOffset = (minX + maxX) / 2 - screen.midX
         } else {

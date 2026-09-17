@@ -178,7 +178,7 @@ final class NotchPresentation {
         // fixed top edge. Keep every intermediate window on the pixel grid.
         let scale = max(1, panel.backingScaleFactor)
         let height = (min(maximumHeight, max(model.compactHeight, motion.height)) * scale).rounded(.down) / scale
-        let frame = CGRect(x: screen.midX + metrics.centerOffset - width / 2,
+        let frame = CGRect(x: screen.midX + model.centerOffset - width / 2,
                            y: screen.maxY - height, width: width, height: height)
         surface.expansion = min(1, max(0, (height - model.compactHeight) / max(1, expandedHeight - model.compactHeight)))
         if !motion.isMoving && !model.expanded { _ = surface.measure(showDetails: false, maximumHeight: maximumHeight) }
