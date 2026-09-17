@@ -181,21 +181,29 @@ struct SubscriptionUsageView: View {
 
     private func dailyChart(_ days: [SubscriptionTokens.Day]) -> some View {
         let peak = Double(max(1, days.map(\.tokens).max() ?? 1))
+        let chronologicalDays = Array(days.reversed())
         return HStack(alignment: .bottom, spacing: s(5)) {
-            ForEach(days.reversed()) { day in
-                VStack(spacing: s(4)) {
-                    ZStack(alignment: .bottom) {
-                        RoundedRectangle(cornerRadius: s(2)).fill(.white.opacity(0.05))
-                        RoundedRectangle(cornerRadius: s(2)).fill(CompanionModel.accent.opacity(0.75))
-                            .frame(height: s(38) * CGFloat(Double(day.tokens) / peak))
-                    }.frame(height: s(38))
-                    Text(String(day.startDate.suffix(2))).font(.system(size: f(8))).foregroundStyle(.secondary)
-                }
-                .help(day.startDate + ": " + UsageNumber.full(day.tokens) + " tokens")
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(day.startDate + ": " + UsageNumber.full(day.tokens) + " tokens")
+            ForEach(chronologicalDays) { day in
+                dailyBar(day, peak: peak)
             }
         }
+    }
+
+    // Keep each bar separately type-checked for the macOS 14 CI toolchain.
+    private func dailyBar(_ day: SubscriptionTokens.Day, peak: Double) -> some View {
+        let height: CGFloat = s(38) * CGFloat(Double(day.tokens) / peak)
+        let label = day.startDate + ": " + UsageNumber.full(day.tokens) + " tokens"
+        return VStack(spacing: s(4)) {
+            ZStack(alignment: .bottom) {
+                RoundedRectangle(cornerRadius: s(2)).fill(.white.opacity(0.05))
+                RoundedRectangle(cornerRadius: s(2)).fill(CompanionModel.accent.opacity(0.75))
+                    .frame(height: height)
+            }.frame(height: s(38))
+            Text(String(day.startDate.suffix(2))).font(.system(size: f(8))).foregroundStyle(.secondary)
+        }
+        .help(label)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
     }
 
     private func dayCount(_ value: Int64?) -> String {
