@@ -9,7 +9,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="GPL-3.0-only"></a>
 </p>
 
-**下载 / Download v0.3.10:** [macOS Apple Silicon](https://github.com/WXGopher/agent-companion/releases/download/v0.3.10/agent-companion-v0.3.10-macos-arm64.zip) · [Windows x86_64](https://github.com/WXGopher/agent-companion/releases/download/v0.3.10/agent-companion-v0.3.10-windows-x86_64.zip) · [发布说明 / Release notes](https://github.com/WXGopher/agent-companion/releases/tag/v0.3.10)
+**下载 / Download v0.3.9:** [macOS Apple Silicon](https://github.com/WXGopher/agent-companion/releases/download/v0.3.9/agent-companion-v0.3.9-macos-arm64.zip) · [Windows x86_64](https://github.com/WXGopher/agent-companion/releases/download/v0.3.9/agent-companion-v0.3.9-windows-x86_64.zip) · [发布说明 / Release notes](https://github.com/WXGopher/agent-companion/releases/tag/v0.3.9)
 
 ## 中文
 
@@ -23,23 +23,23 @@
 ### macOS 窄刘海
 
 - 左侧只显示**周剩余额度**，例如 `68%`，省略 `left`；右侧绿色图标和数字表示**正在工作的会话数**。有待审批或待输入的会话时显示一个橙色 `?`，这些会话不计入工作数。没有工作时显示灰色 `0`；剩余额度不超过 10% 时变为橙色，缺失或过期时显示 `—`。展开后可查看需要处理的会话和最近十五分钟结束的任务，额度卡片保留 `left` 说明。
-- 鼠标移到刘海附近约 0.18 秒即自动展开，无需点击，也不抢键盘焦点；判定包含屏幕最顶边，并在可见窄条左右各留 12 点、下方留 8 点容错，显示宽度不变；实体刘海两侧的菜单图标区域不触发展开。移开约 0.35 秒后收起。点击后保持展开，按 Esc 或点击外部收起。展开默认显示活动任务，可切换 Finished 查看完成、停止和失败的任务。Active / Finished 共用稳定的列表区域，切换时面板和底部按钮保持原位；切换后从列表顶部开始，同一标签的数据刷新保留滚动位置。
+- 鼠标移到刘海附近约 0.18 秒即自动展开，无需点击，也不抢键盘焦点；判定包含屏幕最顶边，并在可见窄条左右各留 12 点、下方留 8 点容错，显示宽度不变；实体刘海两侧的菜单图标区域不触发展开。移开约 0.35 秒后收起。点击后保持展开，按 Esc 或点击外部收起。展开默认显示活动任务，可切换 Finished 查看完成、停止和失败的任务。开发版 v0.3.10 中，Active / Finished 共用稳定的列表区域，切换时面板和底部按钮保持原位；切换后从列表顶部开始，同一标签的数据刷新保留滚动位置。
 - 点击任务返回对应 Codex 桌面对话。CLI 根据存活进程定位 Terminal/iTerm2 的原标签页；首次可能需要在系统 Automation 设置中授权。其他终端尽力唤起宿主应用，定位失败时可复制 `codex resume` 命令。
 - 刘海默认跟随 macOS 设置的**主显示器**。在 **Settings → Notch display** 中，可选择 **Follow primary display（跟随主显示器）**，或指定任意已连接的显示器；立即生效并自动保存，无需点击 Apply。指定屏断开时临时回到主屏，重新连接后自动返回指定屏；更换主屏不会覆盖指定选择。MacBook 上剩余额度位于摄像头左侧、工作数及待处理问号位于右侧，与菜单栏图标同一行；中央完整避开实体摄像头，左右按各自内容单独取最小宽度，为菜单图标留出空间。普通显示器最大为 216 × 28 点，小屏自动收窄至 180 点。每次切屏重新计算尺寸，居中贴住屏幕顶边，展开时保持顶边和宽度不变。支持不同桌面空间。
 - 刘海从原位置平滑向下延展，顶部计数与额度始终留在原位，展开保持同宽；移开后平滑回缩，途中再次进入会接着当前形状展开。系统开启“减少动态效果”时直接切换。MacBook 收起高度与摄像头所在的菜单栏区域一致，数字不会落到菜单栏下方。
 - 长错误提示和任务内容可滚动，展开高度限制在屏幕与底部 Dock 之间，设置和退出按钮保持可见。滚动或打开右键菜单时数据继续刷新，刷新不重置正文滚动位置；点击窄条中间的空白处也能展开。
-- **Settings（设置）** 打开 TUI 定制窗口：macOS 风格开关、卡片分组和跟随系统的浅色／深色外观；按 **Codex CLI** 和 **Notch & app** 分区：Codex 页顶部为横向长条实时预览，下方选择组件，底部 **Apply changes** 保存；显示器和 Dock 选项位于 Notch & app。切换分区保留未保存的组件选择。再次点击会回到已打开的设置；电源按钮或右键菜单退出刘海。刘海需要运行才能更新任务，保存后的 CLI 状态栏配置无需常驻。
+- **Settings（设置）** 打开 TUI 定制窗口：macOS 风格开关、卡片分组和跟随系统的浅色／深色外观；开发版按 **Codex CLI** 和 **Notch & app** 分区：Codex 页顶部为横向长条实时预览，下方选择组件，底部 **Apply changes** 保存；显示器和 Dock 选项位于 Notch & app。切换分区保留未保存的组件选择。再次点击会回到已打开的设置；电源按钮或右键菜单退出刘海。刘海需要运行才能更新任务，保存后的 CLI 状态栏配置无需常驻。
 - 默认不显示 Dock 图标，打开设置也不会额外占位。需要时可在设置中开启 **Show in Dock**，立即生效并记住选择；此开关自动保存，不需要点击 TUI 的 Apply。
 
-**Usage** 页面显示 Codex 订阅的额度窗口、重置时间、累计 Token、单日峰值、最近七个有记录日期的用量、连续使用天数及最长任务时间。顶部固定显示 **Tasks / Usage**，随时一键切回任务；也可点击周额度卡片进入用量，宽度不变。展开字体和间距缩小，大号 Token 数字调至约 13.5 pt。复用 Codex 的 ChatGPT 登录，无需 API Key。仅在用量页按需读取，五分钟内切换页面复用缓存，页面打开期间每五分钟自动刷新，也可手动刷新。查询不启动模型推理，不产生推理 Token 消耗。没有数据时显示 `—`；Token 总数与订阅剩余额度是不同指标，服务端数据可能延迟，也不提供账号级输入／缓存／输出拆分。详见[订阅用量说明](docs/MACOS_NOTCH.md#订阅用量v0310)。
+开发版的 **Usage** 页面显示 Codex 订阅的额度窗口、重置时间、累计 Token、单日峰值、最近七个有记录日期的用量、连续使用天数及最长任务时间。顶部固定显示 **Tasks / Usage**，随时一键切回任务；也可点击周额度卡片进入用量，宽度不变。展开字体和间距缩小，大号 Token 数字调至约 13.5 pt。复用 Codex 的 ChatGPT 登录，无需 API Key。仅在用量页按需读取，五分钟内切换页面复用缓存，页面打开期间每五分钟自动刷新，也可手动刷新。查询不启动模型推理，不产生推理 Token 消耗。没有数据时显示 `—`；Token 总数与订阅剩余额度是不同指标，服务端数据可能延迟，也不提供账号级输入／缓存／输出拆分。详见[订阅用量说明](docs/MACOS_NOTCH.md#订阅用量开发中未发布)。
 
-任务状态与默认周额度来自本地 Codex 会话和分页历史；菜单栏额度在启动时读取，之后每 **2 分钟**检查本地记录。任务刷新和 Usage 页的五分钟联网刷新保持各自间隔，订阅用量通过 Codex 官方账号读取接口获取，不发起模型请求。macOS 不启动 hooks、审批服务或其他代理，不包含宠物、主题编辑或 Intel Mac 支持。
+任务状态与默认周额度来自本地 Codex 会话和分页历史；开发版菜单栏额度在启动时读取，之后每 **2 分钟**检查本地记录。任务刷新和 Usage 页的五分钟联网刷新保持各自间隔，订阅用量通过 Codex 官方账号读取接口获取，不发起模型请求。macOS 不启动 hooks、审批服务或其他代理，不包含宠物、主题编辑或 Intel Mac 支持。
 
 <p align="center"><img src="docs/macos-notch.png" width="356" alt="MacBook Codex 刘海展开界面，数字位于摄像头两侧的菜单栏内，合成数据渲染"></p>
 
-<p align="center"><img src="docs/macos-settings.png" width="760" alt="macOS 设置：顶部横向状态栏预览与独立 Codex CLI 分区"></p>
+<p align="center"><img src="docs/macos-settings.png" width="760" alt="开发版 macOS 设置：顶部横向状态栏预览与独立 Codex CLI 分区"></p>
 
-以上截图展示 v0.3.10 的刘海与设置布局。组件只显示一行名称，悬停查看说明。[查看刘海与应用分区](docs/macos-app-settings.png) · [查看订阅用量](docs/macos-subscription-usage.png)（合成数据）。
+以上为开发中的刘海与设置布局（尚未发布）。组件只显示一行名称，悬停查看说明。[查看刘海与应用分区](docs/macos-app-settings.png) · [查看订阅用量](docs/macos-subscription-usage.png)（合成数据）。
 
 ### macOS 安装
 
@@ -79,7 +79,7 @@ Agent Companion 以 Codex 为支持和验证对象，通过 hooks、本地会话
 <img src="docs/readout.png" width="96" alt="垂直任务栏中的额度控件">
 <img src="docs/card.png" width="440" alt="Claude Code 工具审批卡片">
 
-v0.3.10 包含订阅用量页、列表切换修复和精简后的分区设置。项目仍在早期开发，部分 Windows 截图来自较早版本，具体外观以当前程序为准。Codex CLI 提问接入与桌面分页历史读取为实验性功能，桌面原生问题仍在 Codex 中作答。用户已在双屏环境确认选择内置屏后位置正常；本版增加 Active / Finished 反复切换的逐帧检查，覆盖空列表、长列表、滚动位置以及顶部和底部像素稳定性，保留既有刘海、双屏和设置回归。物理拔插、全屏和 Terminal.app 跳转仍未覆盖，详见[验证范围](docs/MACOS_NOTCH.md)。Windows 验证构建和自动测试，未在 macOS 上宣称桌面实测。
+当前已发布版本为 v0.3.9；v0.3.10 仍在开发中，包含订阅用量页、列表切换修复和精简后的分区设置，尚未发布。项目仍在早期开发，部分 Windows 截图来自较早版本，具体外观以当前程序为准。Codex CLI 提问接入与桌面分页历史读取为实验性功能，桌面原生问题仍在 Codex 中作答。用户已在双屏环境确认选择内置屏后位置正常；开发版增加 Active / Finished 反复切换的逐帧检查，覆盖空列表、长列表、滚动位置以及顶部和底部像素稳定性，保留既有刘海、双屏和设置回归。物理拔插、全屏和 Terminal.app 跳转仍未覆盖，详见[验证范围](docs/MACOS_NOTCH.md)。Windows 验证构建和自动测试，未在 macOS 上宣称桌面实测。
 
 ### 安装与使用
 
@@ -212,7 +212,7 @@ cargo test -p agent-companion --test display_lifecycle -- --ignored --nocapture
 正式发布通过 [GitHub Actions](.github/workflows/release.yml) 构建并运行两平台测试，包含 macOS 原生界面检查。先生成草稿，校验下载产物后公开，步骤见[发布流程](docs/RELEASING.md)。macOS 压缩包包含 `Agent Companion.app`，Windows 压缩包包含三个 Windows 程序；两者附 README、许可证及第三方声明，并提供统一 `SHA256SUMS.txt` 与构建来源证明。下载两个 ZIP 和校验文件后，在 macOS 运行 `shasum -a 256 -c SHA256SUMS.txt`；也可用 GitHub CLI 单独验证来源：
 
 ```powershell
-gh attestation verify agent-companion-v0.3.10-windows-x86_64.zip --repo WXGopher/agent-companion --source-ref refs/tags/v0.3.10 --deny-self-hosted-runners
+gh attestation verify agent-companion-v0.3.9-windows-x86_64.zip --repo WXGopher/agent-companion --source-ref refs/tags/v0.3.9 --deny-self-hosted-runners
 ```
 
 F01–F03 的交付范围与后续更新、远端会话候选项，见对照 open-vibe-island 整理的 [功能路线图](docs/ROADMAP.md)。更多代理、通知偏好和界面语言切换本轮不做。维护事项单列在 [已知问题](docs/KNOWN_ISSUES.md)。
@@ -237,23 +237,23 @@ Agent Companion 复用 [open-vibe-island](https://github.com/Octane0411/open-vib
 ### Compact macOS notch
 
 - The left side shows **weekly quota remaining**, such as `68%`, without `left`. A green icon and number on the right show **sessions currently working**. One orange `?` appears when any session needs approval or input; waiting sessions are excluded from the working count. Idle shows a gray `0`. Quota turns orange at 10% remaining or less; missing or expired readings show `—`. Expand for waiting sessions and tasks finished within the last 15 minutes; the quota card keeps its `left` label.
-- Hover near the notch for about 0.18 seconds to expand automatically without clicking or taking keyboard focus. The hover area includes the very top screen edge, with a 12-point margin beside the visible strip and 8 points below; the visible width stays unchanged. Menu icons beside a physical camera notch do not trigger expansion. Moving away collapses it after about 0.35 seconds; click to keep the list open. Escape or an outside click collapses it. The list opens on Active; Finished includes completed, stopped and failed tasks. Both tabs share a stable viewport, so switching keeps the panel and footer in place. A tab switch starts at the top; same-tab refreshes preserve the scroll position.
+- Hover near the notch for about 0.18 seconds to expand automatically without clicking or taking keyboard focus. The hover area includes the very top screen edge, with a 12-point margin beside the visible strip and 8 points below; the visible width stays unchanged. Menu icons beside a physical camera notch do not trigger expansion. Moving away collapses it after about 0.35 seconds; click to keep the list open. Escape or an outside click collapses it. The list opens on Active; Finished includes completed, stopped and failed tasks. In the unreleased v0.3.10 development version, both tabs share a stable viewport, so switching keeps the panel and footer in place. A tab switch starts at the top; same-tab refreshes preserve the scroll position.
 - Click to return to the exact Codex desktop conversation. Live CLI processes can select their original Terminal/iTerm2 tab; macOS may request Automation permission on first use. Other terminal hosts are activated when identifiable, with a copyable `codex resume` command if precise navigation is unavailable.
 - By default, the surface follows the **primary display configured in macOS**. In **Settings → Notch display**, choose **Follow primary display** or pin it to any connected display. Changes apply immediately and save automatically, without Apply. If the selected display disconnects, the notch temporarily falls back to the primary display and returns when the selected display reconnects. Changing the primary display does not replace a pinned choice. On a MacBook, quota remaining sits to the left of the camera, with the working count and optional question mark to the right, aligned with menu-bar icons. The middle reserves the physical camera cutout. Each side is measured independently to leave more room for adjacent menu icons. The collapsed height matches the camera/menu-bar band, with no extra row underneath. Ordinary displays use a strip up to 216 × 28 points, narrowing to 180 points on smaller screens. Dimensions are recalculated on every display change, with the surface centered and flush with the top edge. Expansion preserves that top edge and width. Desktop Space changes are handled automatically.
 - The notch smoothly extends downward from the existing strip at the same width. Counters and quota stay anchored at the top. It retracts on exit and reverses continuously if you re-enter during collapse. macOS Reduce Motion switches immediately.
 - Long errors and task content scroll within the available screen height, keeping Settings and Quit visible above the bottom Dock. Data continues refreshing during scrolling and context menus without resetting the body scroll position. Clicking the blank middle of the compact strip also opens the list.
-- **Settings** opens Codex CLI status bar customization with macOS-style controls, grouped cards and system light/dark appearance. Settings separate **Codex CLI** from **Notch & app**. The Codex page places a wide live status-bar preview above the component choices, with **Apply changes** at the bottom; display and Dock preferences live in Notch & app. Switching sections keeps your unapplied component choices. Reopening settings brings the existing window forward. The power button or context menu quits the notch. The notch runs to keep tasks updated; saved CLI status bar settings need no background process.
+- **Settings** opens Codex CLI status bar customization with macOS-style controls, grouped cards and system light/dark appearance. The development version separates **Codex CLI** from **Notch & app**. The Codex page places a wide live status-bar preview above the component choices, with **Apply changes** at the bottom; display and Dock preferences live in Notch & app. Switching sections keeps your unapplied component choices. Reopening settings brings the existing window forward. The power button or context menu quits the notch. The notch runs to keep tasks updated; saved CLI status bar settings need no background process.
 - The Dock icon is hidden by default, including while Settings is open. Enable **Show in Dock** in Settings to show it immediately and remember the choice. This preference saves automatically, independently of the TUI Apply button.
 
-The **Usage** page shows subscription allowance windows and reset times, lifetime and peak daily tokens, the seven most recent reported days, usage streaks and longest turn. The pinned **Tasks / Usage** tabs provide one-click navigation, including while scrolling. The weekly card also opens Usage; the notch keeps its width. Expanded typography and spacing are smaller, with token highlights around 13.5 pt. It reuses your Codex ChatGPT login without an API key. Reads happen on demand while viewing Usage; completed results are reused across page switches for five minutes. Automatic refresh runs every five minutes while visible, with manual refresh available. These statistics reads do not start model inference or consume inference tokens. Missing values stay `—`. Token counts do not measure remaining allowance; reporting may be delayed and account-wide input/cached/output breakdowns are not provided. See [subscription usage details](docs/MACOS_NOTCH.md#订阅用量v0310).
+The development **Usage** page shows subscription allowance windows and reset times, lifetime and peak daily tokens, the seven most recent reported days, usage streaks and longest turn. The pinned **Tasks / Usage** tabs provide one-click navigation, including while scrolling. The weekly card also opens Usage; the notch keeps its width. Expanded typography and spacing are smaller, with token highlights around 13.5 pt. It reuses your Codex ChatGPT login without an API key. Reads happen on demand while viewing Usage; completed results are reused across page switches for five minutes. Automatic refresh runs every five minutes while visible, with manual refresh available. These statistics reads do not start model inference or consume inference tokens. Missing values stay `—`. Token counts do not measure remaining allowance; reporting may be delayed and account-wide input/cached/output breakdowns are not provided. See [subscription usage details](docs/MACOS_NOTCH.md#订阅用量开发中未发布).
 
-Task state and default weekly quota come from local Codex sessions and history. Menu-bar quota is read at startup and then every **two minutes** from local records. Task polling and the Usage page's five-minute online refresh keep their separate schedules. Subscription statistics use official Codex account reads without making model requests. The macOS surface has no hooks, approvals, other agents, pets, theme editor or Intel support.
+Task state and default weekly quota come from local Codex sessions and history. In the development version, menu-bar quota is read at startup and then every **two minutes** from local records. Task polling and the Usage page's five-minute online refresh keep their separate schedules. Subscription statistics use official Codex account reads without making model requests. The macOS surface has no hooks, approvals, other agents, pets, theme editor or Intel support.
 
 <p align="center"><img src="docs/macos-notch.png" width="356" alt="Expanded MacBook Codex notch with indicators beside the camera in the menu bar, rendered with synthetic data"></p>
 
-<p align="center"><img src="docs/macos-settings.png" width="760" alt="macOS settings with a wide status-bar preview above the Codex CLI component choices"></p>
+<p align="center"><img src="docs/macos-settings.png" width="760" alt="Development macOS settings with a wide status-bar preview above the Codex CLI component choices"></p>
 
-The notch and settings screenshots show v0.3.10. Each component uses one name line with a hover description. [View the Notch & app section](docs/macos-app-settings.png) · [View subscription usage](docs/macos-subscription-usage.png) (synthetic data).
+The notch and settings screenshots show the unreleased development layout. Each component uses one name line with a hover description. [View the Notch & app section](docs/macos-app-settings.png) · [View subscription usage](docs/macos-subscription-usage.png) (synthetic data).
 
 ### macOS installation
 
@@ -293,7 +293,7 @@ Agent Companion focuses on Codex, using hooks, local session logs and an optiona
 <img src="docs/readout.png" width="96" alt="Quota readout in a vertical taskbar">
 <img src="docs/card.png" width="440" alt="Claude Code tool approval card">
 
-v0.3.10 adds subscription usage, stable task-tab switching and simplified settings. The project is in early development and some Windows screenshots show earlier versions. Codex CLI question integration and desktop paginated-history reads are experimental; desktop questions still require answering in Codex. The user confirmed correct placement after choosing the built-in display in a dual-display setup. This version adds frame-by-frame Active / Finished switching checks for empty and long lists, scroll position and stable summary/footer pixels, alongside existing notch, display and settings regressions. Physical hot-plugging, fullscreen and Terminal.app navigation remain outside the completed [verification scope](docs/MACOS_NOTCH.md). Windows validation covers compilation and automated tests, without claiming manual Windows desktop checks from macOS.
+The latest published version is v0.3.9. The v0.3.10 subscription usage view, task-tab fix and simplified settings are in development and have not been released. The project is in early development and some Windows screenshots show earlier versions. Codex CLI question integration and desktop paginated-history reads are experimental; desktop questions still require answering in Codex. The user confirmed correct placement after choosing the built-in display in a dual-display setup. The development version adds frame-by-frame Active / Finished switching checks for empty and long lists, scroll position and stable summary/footer pixels, alongside existing notch, display and settings regressions. Physical hot-plugging, fullscreen and Terminal.app navigation remain outside the completed [verification scope](docs/MACOS_NOTCH.md). Windows validation covers compilation and automated tests, without claiming manual Windows desktop checks from macOS.
 
 ### Install and use
 
@@ -423,7 +423,7 @@ With Agent Companion installed and Windows notifications enabled, run `cargo tes
 The macOS ZIP contains `Agent Companion.app`; the Windows ZIP contains the three Windows executables. Both include the README, license and third-party notices. [GitHub Actions](.github/workflows/release.yml) builds and tests both platforms, including the native macOS UI checks, then creates a draft. Downloaded packages are verified before publication; see the [release process](docs/RELEASING.md). Download both ZIPs and `SHA256SUMS.txt`, then run `shasum -a 256 -c SHA256SUMS.txt` on macOS. Each archive also has a build provenance attestation, verifiable independently with the GitHub CLI:
 
 ```powershell
-gh attestation verify agent-companion-v0.3.10-windows-x86_64.zip --repo WXGopher/agent-companion --source-ref refs/tags/v0.3.10 --deny-self-hosted-runners
+gh attestation verify agent-companion-v0.3.9-windows-x86_64.zip --repo WXGopher/agent-companion --source-ref refs/tags/v0.3.9 --deny-self-hosted-runners
 ```
 
 See the [feature roadmap](docs/ROADMAP.md) for gaps compared with open-vibe-island, including the delivered F01–F03 scope and candidate update/remote-session features; more agents, notification preferences and language switching are not planned. Maintenance work is tracked separately in [known issues](docs/KNOWN_ISSUES.md).
