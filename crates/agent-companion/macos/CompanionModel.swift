@@ -67,9 +67,15 @@ final class CompanionModel: ObservableObject {
     static let accent = Color(red: 0.45, green: 0.90, blue: 0.74)
     @Published var snapshot = CodexSnapshot()
     @Published var expanded = false {
-        didSet { if expanded != oldValue { presentationRevision &+= 1 } }
+        didSet {
+            if expanded != oldValue { presentationRevision &+= 1 }
+            if !expanded { subscriptionMonitor.stop(); usageLoading = false }
+        }
     }
     @Published var showingCompleted = false
+    @Published var showingUsage = false
+    @Published var subscriptionUsage = SubscriptionUsage()
+    @Published var usageLoading = false
     @Published var metrics = NotchMetrics()
     @Published var message: String?
     @Published var failedTask: CodexTask?
@@ -83,9 +89,16 @@ final class CompanionModel: ObservableObject {
     private var openingSettings = false
     private var presentationRevision: UInt64 = 0
     private let openTask: (CodexTask, String, @escaping (String?) -> Void) -> Void
+    private let subscriptionMonitor: SubscriptionMonitor
 
-    init(openTask: @escaping (CodexTask, String, @escaping (String?) -> Void) -> Void = TerminalJump.open) {
+    init(openTask: @escaping (CodexTask, String, @escaping (String?) -> Void) -> Void = TerminalJump.open,
+         usageReader: SubscriptionReading = CodexSubscriptionReader()) {
         self.openTask = openTask
+        subscriptionMonitor = SubscriptionMonitor(reader: usageReader)
+        subscriptionMonitor.onChange = { [weak self] value, loading in
+            if let value { self?.subscriptionUsage = value }
+            self?.usageLoading = loading
+        }
     }
 
     var hasCamera: Bool { metrics.hasCamera }
@@ -119,8 +132,21 @@ final class CompanionModel: ObservableObject {
     }
     var compactHeight: CGFloat { metrics.compactHeight }
     func countText(_ count: Int) -> String { count > 99 ? "99+" : "\(count)" }
+    var weeklyUsage: WeeklyUsage? {
+        // A fresh account read also updates the compact strip. Otherwise keep
+        // the existing local-log source, which does not require a network read.
+        if let readAt = subscriptionUsage.readAt, Date().timeIntervalSince(readAt) < 300,
+           let limits = subscriptionUsage.limits,
+           let bucket = limits.buckets.first(where: { $0.id == "codex" }),
+           let window = [bucket.value.primary, bucket.value.secondary].compactMap({ $0 })
+               .first(where: { $0.windowDurationMins == 10080 }) {
+            return WeeklyUsage(usedPercent: window.usedPercent, resetsAt: window.resetsAt,
+                               expired: window.remaining() == nil)
+        }
+        return snapshot.weekly
+    }
     var weeklyRemainingPercent: Int? {
-        guard let usage = snapshot.weekly, !usage.expired else { return nil }
+        guard let usage = weeklyUsage, !usage.expired else { return nil }
         return 100 - min(100, max(0, usage.usedPercent))
     }
     var weeklyText: String {
@@ -140,7 +166,27 @@ final class CompanionModel: ObservableObject {
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
     }
-    func stop() { timer?.invalidate(); timer = nil }
+    func stop() {
+        timer?.invalidate(); timer = nil
+        subscriptionMonitor.stop()
+        usageLoading = false
+    }
+
+    func showUsage() {
+        expand?()
+        showingUsage = true
+        refreshUsage()
+    }
+
+    func showTasks() {
+        showingUsage = false
+        subscriptionMonitor.stop()
+        usageLoading = false
+    }
+
+    func refreshUsage(force: Bool = false) {
+        subscriptionMonitor.refresh(codexHome: snapshot.codexHome, force: force)
+    }
 
     func refresh() {
         guard let pointer = readSnapshot() else { return }
@@ -151,6 +197,7 @@ final class CompanionModel: ObservableObject {
             snapshot.error = "Could not read the local Codex dashboard. Try reopening Agent Companion."
             snapshot.loading = false
         }
+        if expanded && showingUsage { refreshUsage() }
     }
 
     func openSettings() {

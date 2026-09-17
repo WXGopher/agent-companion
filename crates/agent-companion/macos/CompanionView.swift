@@ -8,7 +8,10 @@ struct CompanionView: View {
     var detailsHeight: CGFloat? = nil
     @State private var hoveredTask: String?
 
-    private func scaled(_ value: CGFloat) -> CGFloat { value * model.metrics.contentScale }
+    // Snap layout dimensions to points so fractional density scaling cannot
+    // change the viewport's rounding when an empty/populated tab is selected.
+    private func scaled(_ value: CGFloat) -> CGFloat { (value * model.metrics.detailScale).rounded() }
+    private func fontSize(_ value: CGFloat) -> CGFloat { max(9, value * model.metrics.detailScale) }
     private func compactScaled(_ value: CGFloat) -> CGFloat { value * min(1, model.compactWidth / 179) }
     private var taskViewportHeight: CGFloat {
         let active = model.snapshot.tasks.filter { $0.isActive }.count
@@ -59,7 +62,8 @@ struct CompanionView: View {
         .accessibilityHint("Open task list")
         .help(model.summaryDescription + " · \(model.snapshot.completedCount) finished in the last 15 minutes")
         .contextMenu {
-            Button("Show tasks") { model.expand?() }
+            Button("Show tasks") { model.showTasks(); model.expand?() }
+            Button("Subscription usage") { model.showUsage() }
             Button("Settings…") { model.openSettings() }
             Divider()
             Button("Quit Agent Companion") { model.quit?() }
@@ -121,6 +125,7 @@ struct CompanionView: View {
 
     private var expanded: some View {
         VStack(alignment: .leading, spacing: scaled(13)) {
+            pageNavigation
             if detailsHeight != nil {
                 ScrollView {
                     expandedContent
@@ -134,21 +139,62 @@ struct CompanionView: View {
             footer
         }
         .padding(.horizontal, scaled(16)).padding(.top, scaled(12)).padding(.bottom, scaled(16))
+        .frame(maxWidth: .infinity)
         .frame(height: detailsHeight)
     }
 
     private var expandedContent: some View {
-        VStack(alignment: .leading, spacing: scaled(13)) {
-            HStack(alignment: .center, spacing: scaled(8)) {
-                VStack(alignment: .leading, spacing: scaled(3)) {
-                    Text("Codex").font(.system(size: scaled(20), weight: .semibold))
-                    Text("Your tasks, at a glance").font(.system(size: scaled(11))).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button { model.collapse?() } label: { Image(systemName: "chevron.up").frame(width: scaled(26), height: scaled(26)) }
-                    .buttonStyle(.plain).foregroundStyle(.secondary).help("Collapse (Esc)").accessibilityLabel("Collapse task list")
+        Group {
+            if model.showingUsage {
+                SubscriptionUsageView(usage: model.subscriptionUsage, loading: model.usageLoading,
+                                      scale: model.metrics.detailScale, refresh: { model.refreshUsage(force: true) })
+            } else {
+                taskContent
             }
-            weekly
+        }
+    }
+
+    private var pageNavigation: some View {
+        HStack(spacing: scaled(8)) {
+            HStack(spacing: scaled(2)) {
+                pageTab("Tasks", usage: false)
+                pageTab("Usage", usage: true)
+            }
+            .padding(scaled(3))
+            .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: scaled(9)))
+            Button { model.collapse?() } label: {
+                Image(systemName: "chevron.up").font(.system(size: fontSize(11), weight: .medium))
+                    .frame(width: scaled(26), height: scaled(26))
+            }
+            .buttonStyle(.plain).foregroundStyle(.secondary).help("Collapse (Esc)")
+            .accessibilityLabel("Collapse panel")
+        }
+    }
+
+    private func pageTab(_ title: String, usage: Bool) -> some View {
+        let selected = model.showingUsage == usage
+        return Button {
+            guard !selected else { return }
+            if usage { model.showUsage() } else { model.showTasks() }
+        } label: {
+            Text(title).font(.system(size: fontSize(12), weight: .medium))
+                .foregroundStyle(selected ? CompanionModel.accent : .white.opacity(0.6))
+                .frame(maxWidth: .infinity, minHeight: scaled(26))
+                .contentShape(Rectangle())
+                .background(.white.opacity(selected ? 0.10 : 0), in: RoundedRectangle(cornerRadius: scaled(6)))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(usage ? "notch-usage-tab" : "notch-tasks-tab")
+        .accessibilityLabel(usage ? "Subscription usage" : "Task list")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .help(usage ? "Subscription usage (⌘3)" : "Task list (⌘0)")
+    }
+
+    private var taskContent: some View {
+        VStack(alignment: .leading, spacing: scaled(13)) {
+            Button { model.showUsage() } label: { weekly }
+                .buttonStyle(.plain).help("View subscription limits and token activity")
+                .accessibilityLabel("Weekly quota, \(model.weeklyText). View subscription usage")
             HStack(spacing: scaled(8)) {
                 tab("Active", count: model.snapshot.activeCount, completed: false)
                 tab("Finished", count: model.snapshot.completedCount, completed: true)
@@ -186,7 +232,7 @@ struct CompanionView: View {
             if let message = model.message {
                 VStack(alignment: .leading, spacing: scaled(7)) {
                     HStack(alignment: .top, spacing: scaled(8)) {
-                        Text(message).font(.system(size: scaled(11))).fixedSize(horizontal: false, vertical: true)
+                        Text(message).font(.system(size: fontSize(11))).fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: scaled(4))
                         Button { model.message = nil; model.failedTask = nil } label: { Image(systemName: "xmark") }
                             .buttonStyle(.plain).accessibilityLabel("Dismiss message")
@@ -196,7 +242,7 @@ struct CompanionView: View {
                             HStack(spacing: scaled(8)) { recoveryButtons(task) }
                             VStack(alignment: .leading, spacing: scaled(6)) { recoveryButtons(task) }
                         }
-                        .buttonStyle(.bordered).controlSize(.small).font(.system(size: scaled(11)))
+                        .buttonStyle(.bordered).controlSize(.small).font(.system(size: fontSize(11)))
                     }
                 }
                 .padding(scaled(10)).background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: scaled(10)))
@@ -215,16 +261,16 @@ struct CompanionView: View {
             }
             Button { model.openCodex() } label: { Label("Open Codex", systemImage: "arrow.up.forward.app").fixedSize() }
         }
-        .buttonStyle(.plain).font(.system(size: scaled(11))).foregroundStyle(.secondary)
+        .buttonStyle(.plain).font(.system(size: fontSize(11))).foregroundStyle(.secondary)
     }
 
     private var weekly: some View {
         VStack(alignment: .leading, spacing: scaled(7)) {
             HStack(spacing: scaled(8)) {
-                Text("Weekly quota").font(.system(size: scaled(11))).foregroundStyle(.secondary)
+                Text("Weekly quota").font(.system(size: fontSize(11))).foregroundStyle(.secondary)
                 Spacer()
                 Text(model.weeklyText + (model.weeklyRemainingPercent == nil ? "" : " left"))
-                    .font(.system(size: scaled(12), weight: .medium)).monospacedDigit()
+                    .font(.system(size: fontSize(12), weight: .medium)).monospacedDigit()
             }
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
@@ -235,12 +281,12 @@ struct CompanionView: View {
                     }
                 }
             }.frame(height: scaled(3)).accessibilityHidden(true)
-            if let usage = model.snapshot.weekly, !usage.expired, let resets = usage.resetsAt {
+            if let usage = model.weeklyUsage, !usage.expired, let resets = usage.resetsAt {
                 Text("Resets \(Date(timeIntervalSince1970: resets).formatted(date: .abbreviated, time: .shortened))")
-                    .font(.system(size: scaled(10))).foregroundStyle(.secondary)
+                    .font(.system(size: fontSize(10))).foregroundStyle(.secondary)
             } else {
-                Text(model.snapshot.weekly?.expired == true ? "Waiting for a new Codex usage reading after reset." : "Usage appears after Codex records a rate limit reading.")
-                    .font(.system(size: scaled(10))).foregroundStyle(.secondary)
+                Text(model.weeklyUsage?.expired == true ? "Waiting for a new Codex usage reading after reset." : "Usage appears after Codex records a rate limit reading.")
+                    .font(.system(size: fontSize(10))).foregroundStyle(.secondary)
             }
         }
         .padding(scaled(12)).background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: scaled(12)))
@@ -252,7 +298,7 @@ struct CompanionView: View {
                 Text(title)
                 Text(model.countText(count)).monospacedDigit().foregroundStyle(model.showingCompleted == completed ? CompanionModel.accent : .white.opacity(0.55))
             }
-            .font(.system(size: scaled(11), weight: .medium)).fixedSize()
+            .font(.system(size: fontSize(11), weight: .medium)).fixedSize()
             .padding(.horizontal, scaled(8)).padding(.vertical, scaled(7))
             .background(.white.opacity(model.showingCompleted == completed ? 0.11 : 0.035), in: Capsule())
         }
@@ -265,9 +311,9 @@ struct CompanionView: View {
     private func taskRow(_ task: CodexTask) -> some View {
         Button { model.jump(to: task) } label: {
             HStack(spacing: scaled(10)) {
-                Image(systemName: task.symbol).foregroundStyle(task.tint).font(.system(size: scaled(13))).frame(width: scaled(18))
+                Image(systemName: task.symbol).foregroundStyle(task.tint).font(.system(size: fontSize(13))).frame(width: scaled(18))
                 VStack(alignment: .leading, spacing: scaled(5)) {
-                    Text(task.title).font(.system(size: scaled(12), weight: .medium)).lineLimit(1)
+                    Text(task.title).font(.system(size: fontSize(12), weight: .medium)).lineLimit(1)
                     HStack(spacing: scaled(5)) {
                         if model.compactWidth >= 260 {
                             Text(task.project).lineLimit(1)
@@ -276,10 +322,10 @@ struct CompanionView: View {
                         Text(task.status).lineLimit(1).fixedSize()
                         Spacer(minLength: scaled(4))
                         Text(age(task.updatedAt)).monospacedDigit().fixedSize()
-                    }.font(.system(size: scaled(10))).foregroundStyle(.secondary)
+                    }.font(.system(size: fontSize(10))).foregroundStyle(.secondary)
                 }
                 if model.jumpingID == task.id { ProgressView().controlSize(.mini) }
-                else { Image(systemName: "arrow.up.right").font(.system(size: scaled(10))).foregroundStyle(.secondary) }
+                else { Image(systemName: "arrow.up.right").font(.system(size: fontSize(10))).foregroundStyle(.secondary) }
             }
             .padding(.horizontal, scaled(10)).frame(height: scaled(54))
             .background(.white.opacity(hoveredTask == task.id ? 0.10 : 0.045), in: RoundedRectangle(cornerRadius: scaled(10)))
@@ -317,15 +363,15 @@ struct CompanionView: View {
 
     private func empty(_ title: String, detail: String, symbol: String) -> some View {
         VStack(spacing: scaled(9)) {
-            Image(systemName: symbol).font(.system(size: scaled(22))).foregroundStyle(.white.opacity(0.35))
-            Text(title).font(.system(size: scaled(12), weight: .medium))
-            Text(detail).font(.system(size: scaled(11))).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            Image(systemName: symbol).font(.system(size: fontSize(22))).foregroundStyle(.white.opacity(0.35))
+            Text(title).font(.system(size: fontSize(12), weight: .medium))
+            Text(detail).font(.system(size: fontSize(11))).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity).frame(height: scaled(132)).padding(.horizontal, scaled(25))
     }
 
     private func notice(_ text: String, symbol: String) -> some View {
-        Label(text, systemImage: symbol).font(.system(size: scaled(11))).foregroundStyle(.orange)
+        Label(text, systemImage: symbol).font(.system(size: fontSize(11))).foregroundStyle(.orange)
             .fixedSize(horizontal: false, vertical: true)
     }
 }

@@ -1,4 +1,4 @@
-import { Button, CheckBox, ComboBox, Switch, ScrollView, Palette } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, Switch, ScrollView, TabWidget, Palette } from "std-widgets.slint";
 import { StatusComponent } from "status-component.slint";
 
 global SettingsColors {
@@ -24,11 +24,12 @@ component ComponentChoice inherits Rectangle {
     in property <StatusComponent> item;
     in property <bool> available;
     callback toggle(string, bool);
-    height: 72px;
+    height: 34px;
     border-radius: 8px;
     background: root.item.selected ? SettingsColors.selected : SettingsColors.card;
+    Tooltip { text: @markdown("\{root.item.description}"); }
     HorizontalLayout {
-        padding: 10px;
+        padding: 8px;
         spacing: 8px;
         CheckBox {
             width: 16px;
@@ -39,22 +40,15 @@ component ComponentChoice inherits Rectangle {
         }
         Rectangle {
             horizontal-stretch: 1;
-            VerticalLayout {
-                alignment: center;
-                spacing: 4px;
-                Text {
-                    text: root.item.label;
-                    color: root.available ? SettingsColors.text : SettingsColors.secondary;
-                    font-size: 12px;
-                    font-weight: 600;
-                    overflow: elide;
-                }
-                Text {
-                    text: root.item.description;
-                    color: SettingsColors.secondary;
-                    font-size: 11px;
-                    wrap: word-wrap;
-                }
+            Text {
+                width: parent.width;
+                height: parent.height;
+                text: root.item.label;
+                color: root.available ? SettingsColors.text : SettingsColors.secondary;
+                font-size: 11px;
+                horizontal-alignment: left;
+                vertical-alignment: center;
+                overflow: elide;
             }
             TouchArea {
                 enabled: root.available;
@@ -66,6 +60,7 @@ component ComponentChoice inherits Rectangle {
 }
 
 export component MacSettings inherits Rectangle {
+    in-out property <int> current-page: 0;
     in property <[StatusComponent]> left-components;
     in property <[StatusComponent]> right-components;
     in property <string> preview;
@@ -92,20 +87,20 @@ export component MacSettings inherits Rectangle {
 
     background: SettingsColors.background;
     VerticalLayout {
-        padding: 24px;
-        spacing: 20px;
+        padding: 20px;
+        spacing: 16px;
         HorizontalLayout {
-            height: 54px;
-            spacing: 14px;
+            height: 44px;
+            spacing: 12px;
             Rectangle {
-                width: 44px;
-                height: 44px;
+                width: 40px;
+                height: 40px;
                 background: #172b22;
-                border-radius: 12px;
+                border-radius: 11px;
                 Text {
                     text: "›_";
                     font-family: root.mono-font;
-                    font-size: 22px;
+                    font-size: 21px;
                     font-weight: 600;
                     color: #8de1b9;
                     horizontal-alignment: center;
@@ -113,41 +108,232 @@ export component MacSettings inherits Rectangle {
                 }
             }
             VerticalLayout {
-                alignment: start;
+                alignment: center;
                 spacing: 4px;
-                Text { text: "Settings"; font-size: 25px; font-weight: 700; color: SettingsColors.text; }
-                Text { text: "Personalize your notch and Codex CLI."; font-size: 12px; color: SettingsColors.secondary; }
+                Text { text: "Settings"; font-size: 20px; font-weight: 700; color: SettingsColors.text; }
+                Text { text: "Make your workspace feel right."; font-size: 11px; color: SettingsColors.secondary; }
             }
             Text {
                 text: "Agent Companion";
-                font-size: 12px;
+                font-size: 11px;
                 color: SettingsColors.secondary;
                 horizontal-alignment: right;
                 vertical-alignment: center;
             }
         }
 
-        HorizontalLayout {
-            spacing: 22px;
-            vertical-stretch: 1;
-            VerticalLayout {
-                horizontal-stretch: 1;
-                spacing: 10px;
-                Text { text: "App appearance"; font-size: 13px; font-weight: 600; color: SettingsColors.text; }
-                SettingsCard {
-                    height: 164px;
+        TabWidget {
+            current-index <=> root.current-page;
+            Tab {
+                title: "Codex CLI";
+                VerticalLayout {
+                    padding-top: 20px;
+                    spacing: 12px;
+                    HorizontalLayout {
+                        VerticalLayout {
+                            spacing: 4px;
+                            Text { text: "Status bar"; font-size: 16px; font-weight: 600; color: SettingsColors.text; }
+                            Text { text: "Choose what appears at the bottom of your terminal."; font-size: 11px; color: SettingsColors.secondary; }
+                        }
+                        Text {
+                            text: "LIVE PREVIEW";
+                            color: SettingsColors.accent;
+                            font-size: 10px;
+                            font-weight: 600;
+                            horizontal-alignment: right;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Rectangle {
+                        height: 104px;
+                        border-radius: 12px;
+                        background: #141c18;
+                        border-width: 1px;
+                        border-color: #293a30;
+                        VerticalLayout {
+                            padding: 16px;
+                            spacing: 10px;
+                            HorizontalLayout {
+                                Text { text: "›_ Codex CLI"; font-size: 11px; font-family: root.mono-font; color: #e3ede7; }
+                                Text { text: "Sample values"; font-size: 10px; color: #a6b7ad; horizontal-alignment: right; }
+                            }
+                            Rectangle {
+                                border-radius: 7px;
+                                background: #223328;
+                                VerticalLayout {
+                                    padding: 12px;
+                                    ScrollView {
+                                        min-height: 0px;
+                                        viewport-width: self.visible-width;
+                                        horizontal-scrollbar-policy: always-off;
+                                        VerticalLayout {
+                                            alignment: start;
+                                            Text {
+                                                text: !root.ready ? "Preview unavailable" : root.selected-count == 0 ? "Status bar hidden" : root.preview;
+                                                color: #9de2b9;
+                                                font-family: root.mono-font;
+                                                font-size: 11px;
+                                                wrap: word-wrap;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        Text { text: "Components"; font-size: 12px; font-weight: 600; color: SettingsColors.text; }
+                        Text {
+                            text: root.ready ? root.selected-count + " selected" : "Unavailable";
+                            color: SettingsColors.accent;
+                            font-size: 10.5px;
+                            horizontal-alignment: right;
+                        }
+                    }
+                    SettingsCard {
+                        vertical-stretch: 1;
+                        min-height: 150px;
+                        VerticalLayout {
+                            padding: 8px;
+                            ScrollView {
+                                viewport-width: self.visible-width;
+                                horizontal-scrollbar-policy: always-off;
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    VerticalLayout {
+                                        spacing: 4px;
+                                        alignment: start;
+                                        for item in root.left-components: ComponentChoice {
+                                            item: item;
+                                            available: root.ready;
+                                            toggle(id, enabled) => { root.toggle(id, enabled); }
+                                        }
+                                    }
+                                    VerticalLayout {
+                                        spacing: 4px;
+                                        alignment: start;
+                                        for item in root.right-components: ComponentChoice {
+                                            item: item;
+                                            available: root.ready;
+                                            toggle(id, enabled) => { root.toggle(id, enabled); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    SettingsCard {
+                        vertical-stretch: 0;
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 5px;
+                            HorizontalLayout {
+                                Text { text: "Configuration"; font-size: 10.5px; font-weight: 600; color: SettingsColors.text; }
+                                Text {
+                                    text: "Codex CLI " + root.catalog-version;
+                                    font-size: 10px;
+                                    color: SettingsColors.secondary;
+                                    horizontal-alignment: right;
+                                }
+                            }
+                            Text {
+                                text: root.config-path;
+                                font-family: root.mono-font;
+                                font-size: 10px;
+                                color: SettingsColors.secondary;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                    Rectangle { height: 1px; background: SettingsColors.border; }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text {
+                            text: root.dirty ? "Unapplied changes" : root.ready ? (root.custom ? "Custom status bar" : "Using Codex defaults") : "Configuration unavailable";
+                            font-size: 11px;
+                            color: root.dirty ? SettingsColors.accent : SettingsColors.secondary;
+                            vertical-alignment: center;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        Button {
+                            text: "Restore defaults";
+                            height: 32px;
+                            enabled: root.ready && (root.custom || root.dirty);
+                            clicked => { root.restore-defaults(); }
+                        }
+                        Button {
+                            text: "Apply changes";
+                            height: 32px;
+                            min-width: 108px;
+                            primary: true;
+                            enabled: root.ready && root.dirty;
+                            clicked => { root.apply(); }
+                        }
+                    }
+                    Text {
+                        text: root.message;
+                        font-size: 10.5px;
+                        color: root.error ? SettingsColors.error : SettingsColors.secondary;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+            Tab {
+                title: "Notch & app";
+                VerticalLayout {
+                    padding-top: 20px;
+                    spacing: 18px;
                     VerticalLayout {
-                        padding: 14px;
-                        spacing: 10px;
+                        spacing: 5px;
+                        Text { text: "Notch & app"; font-size: 16px; font-weight: 600; color: SettingsColors.text; }
+                        Text { text: "Choose where your companion lives. Changes save automatically."; font-size: 11px; color: SettingsColors.secondary; }
+                    }
+                    Text { text: "Display"; font-size: 12px; font-weight: 600; color: SettingsColors.text; }
+                    SettingsCard {
+                        vertical-stretch: 0;
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 14px;
+                            HorizontalLayout {
+                                spacing: 24px;
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 5px;
+                                    Text { text: "Notch display"; font-size: 12px; font-weight: 600; color: SettingsColors.text; }
+                                    Text { text: "Follow your main screen or choose a display."; font-size: 10.5px; color: SettingsColors.secondary; wrap: word-wrap; }
+                                }
+                                ComboBox {
+                                    width: 340px;
+                                    height: 32px;
+                                    model: root.display-options;
+                                    current-index <=> root.selected-display;
+                                    enabled: root.display-options.length > 0;
+                                    accessible-label: "Notch display";
+                                    selected(label) => { root.select-display(label); }
+                                }
+                            }
+                            Rectangle { height: 1px; background: SettingsColors.border; }
+                            Text {
+                                text: root.display-error ? "Could not save the display choice. Please try again." : root.display-status;
+                                color: root.display-error ? SettingsColors.error : SettingsColors.secondary;
+                                font-size: 10.5px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                    Text { text: "App appearance"; font-size: 12px; font-weight: 600; color: SettingsColors.text; }
+                    SettingsCard {
+                        vertical-stretch: 0;
                         HorizontalLayout {
-                            spacing: 12px;
+                            padding: 18px;
+                            spacing: 24px;
                             VerticalLayout {
                                 alignment: center;
                                 spacing: 5px;
-                                Text { text: "Show in Dock"; font-size: 13px; font-weight: 600; color: SettingsColors.text; }
+                                Text { text: "Show in Dock"; font-size: 12px; font-weight: 600; color: SettingsColors.text; }
                                 Text {
-                                    text: root.dock-error ? "Could not save. Please try again." : "Open Settings from the notch when hidden.";
-                                    font-size: 11px;
+                                    text: root.dock-error ? "Could not save. Please try again." : "When hidden, open Settings from the notch.";
+                                    font-size: 10.5px;
                                     color: root.dock-error ? SettingsColors.error : SettingsColors.secondary;
                                     wrap: word-wrap;
                                 }
@@ -158,180 +344,29 @@ export component MacSettings inherits Rectangle {
                                 toggled => { root.toggle-dock-icon(self.checked); }
                             }
                         }
-                        Rectangle { height: 1px; background: SettingsColors.border; }
+                    }
+                    if root.dirty: SettingsCard {
+                        vertical-stretch: 0;
+                        background: SettingsColors.selected;
                         HorizontalLayout {
-                            spacing: 12px;
-                            Text { text: "Notch display"; font-size: 12px; font-weight: 600; color: SettingsColors.text; vertical-alignment: center; }
-                            ComboBox {
-                                model: root.display-options;
-                                current-index <=> root.selected-display;
-                                enabled: root.display-options.length > 0;
-                                accessible-label: "Notch display";
-                                selected(label) => { root.select-display(label); }
+                            padding: 14px;
+                            spacing: 16px;
+                            Text {
+                                text: "You have unapplied Codex CLI changes.";
+                                font-size: 11px;
+                                color: SettingsColors.accent;
+                                vertical-alignment: center;
                             }
-                        }
-                        Text {
-                            text: root.display-error ? "Could not save the display choice. Please try again." : root.display-status;
-                            color: root.display-error ? SettingsColors.error : SettingsColors.secondary;
-                            font-size: 11px;
-                            wrap: word-wrap;
-                        }
-                    }
-                }
-
-                HorizontalLayout {
-                    padding-top: 12px;
-                    VerticalLayout {
-                        spacing: 5px;
-                        Text { text: "Codex status bar"; font-size: 17px; font-weight: 600; color: SettingsColors.text; }
-                        Text { text: "Choose the details that stay in view."; font-size: 12px; color: SettingsColors.secondary; }
-                    }
-                    Text {
-                        text: root.ready ? root.selected-count + " selected" : "Unavailable";
-                        color: SettingsColors.accent;
-                        font-size: 11px;
-                        horizontal-alignment: right;
-                        vertical-alignment: center;
-                    }
-                }
-                SettingsCard {
-                    vertical-stretch: 1;
-                    min-height: 120px;
-                    VerticalLayout {
-                        padding: 8px;
-                        ScrollView {
-                            viewport-width: self.visible-width;
-                            horizontal-scrollbar-policy: always-off;
-                            HorizontalLayout {
-                                spacing: 6px;
-                                VerticalLayout {
-                                    spacing: 4px;
-                                    alignment: start;
-                                    for item in root.left-components: ComponentChoice {
-                                        item: item;
-                                        available: root.ready;
-                                        toggle(id, enabled) => { root.toggle(id, enabled); }
-                                    }
-                                }
-                                VerticalLayout {
-                                    spacing: 4px;
-                                    alignment: start;
-                                    for item in root.right-components: ComponentChoice {
-                                        item: item;
-                                        available: root.ready;
-                                        toggle(id, enabled) => { root.toggle(id, enabled); }
-                                    }
-                                }
+                            Rectangle { horizontal-stretch: 1; }
+                            Button {
+                                text: "Review changes";
+                                height: 28px;
+                                clicked => { root.current-page = 0; }
                             }
                         }
                     }
+                    Rectangle { vertical-stretch: 1; }
                 }
-                Text {
-                    text: "Codex shows each component when its data is available.";
-                    color: SettingsColors.secondary;
-                    font-size: 11px;
-                    wrap: word-wrap;
-                }
-            }
-
-            VerticalLayout {
-                width: 292px;
-                spacing: 10px;
-                Text { text: "Live preview"; font-size: 13px; font-weight: 600; color: SettingsColors.text; }
-                Rectangle {
-                    height: 286px;
-                    border-radius: 12px;
-                    background: #141c18;
-                    border-width: 1px;
-                    border-color: #293a30;
-                    VerticalLayout {
-                        padding: 18px;
-                        spacing: 14px;
-                        HorizontalLayout {
-                            Text { text: "›_ Codex CLI"; font-size: 12px; font-family: root.mono-font; color: #e3ede7; }
-                            Text { text: "PREVIEW"; font-size: 9px; font-weight: 600; color: #82b097; horizontal-alignment: right; }
-                        }
-                        Rectangle { height: 1px; background: #304237; }
-                        Text { text: "Ready when you are."; font-family: root.mono-font; font-size: 11px; color: #a6b7ad; }
-                        Text { text: "› Ask Codex anything"; font-family: root.mono-font; font-size: 12px; color: #e5ede8; }
-                        Rectangle {
-                            vertical-stretch: 1;
-                            border-radius: 8px;
-                            background: #223328;
-                            VerticalLayout {
-                                padding: 12px;
-                                ScrollView {
-                                    viewport-width: self.visible-width;
-                                    horizontal-scrollbar-policy: always-off;
-                                    VerticalLayout {
-                                        alignment: start;
-                                        Text {
-                                            text: !root.ready ? "Preview unavailable" : root.selected-count == 0 ? "Status bar hidden" : root.preview;
-                                            color: #9de2b9;
-                                            font-family: root.mono-font;
-                                            font-size: 11px;
-                                            wrap: word-wrap;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Text { text: "Sample values · your selection, live"; font-size: 10px; color: #a6b7ad; }
-                    }
-                }
-                Text {
-                    text: "Apply your selection, then restart Codex CLI. Your saved status bar works even after closing these settings.";
-                    font-size: 11px;
-                    color: SettingsColors.secondary;
-                    wrap: word-wrap;
-                }
-                SettingsCard {
-                    vertical-stretch: 0;
-                    VerticalLayout {
-                        padding: 14px;
-                        spacing: 8px;
-                        Text { text: "Configuration"; font-size: 12px; font-weight: 600; color: SettingsColors.text; }
-                        Text { text: root.config-path; font-family: root.mono-font; font-size: 10px; color: SettingsColors.secondary; wrap: word-wrap; }
-                        Text { text: "Components for Codex CLI " + root.catalog-version; font-size: 10px; color: SettingsColors.secondary; wrap: word-wrap; }
-                    }
-                }
-                Rectangle { vertical-stretch: 1; }
-            }
-        }
-
-        VerticalLayout {
-            vertical-stretch: 0;
-            spacing: 12px;
-            Rectangle { height: 1px; background: SettingsColors.border; }
-            HorizontalLayout {
-                spacing: 12px;
-                Text {
-                    text: root.dirty ? "Unapplied changes" : root.ready ? (root.custom ? "Custom status bar" : "Using Codex defaults") : "Configuration unavailable";
-                    font-size: 12px;
-                    color: root.dirty ? SettingsColors.accent : SettingsColors.secondary;
-                    vertical-alignment: center;
-                }
-                Rectangle { horizontal-stretch: 1; }
-                Button {
-                    text: "Restore defaults";
-                    height: 32px;
-                    enabled: root.ready && (root.custom || root.dirty);
-                    clicked => { root.restore-defaults(); }
-                }
-                Button {
-                    text: "Apply changes";
-                    height: 32px;
-                    min-width: 108px;
-                    primary: true;
-                    enabled: root.ready && root.dirty;
-                    clicked => { root.apply(); }
-                }
-            }
-            Text {
-                text: root.message;
-                font-size: 11px;
-                color: root.error ? SettingsColors.error : SettingsColors.secondary;
-                wrap: word-wrap;
             }
         }
     }
