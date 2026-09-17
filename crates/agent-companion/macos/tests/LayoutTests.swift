@@ -19,6 +19,14 @@ struct LayoutTests {
     @MainActor static func main() throws {
         // Preserve the last completed scenario if a native assertion aborts CI.
         setbuf(stdout, nil)
+        if CommandLine.arguments.dropFirst().first == "app-server" {
+            try SubscriptionUsageTests.serveFixture()
+            return
+        }
+        if CommandLine.arguments.contains("--live-subscription") {
+            SubscriptionUsageTests.liveRead()
+            return
+        }
         if CommandLine.arguments.count == 4, CommandLine.arguments[1] == "--write-dock-preference" {
             let store = DockPreferenceStore(domain: CommandLine.arguments[2])
             precondition(DockPreferences(store: store).setVisible(CommandLine.arguments[3] == "true"))
@@ -33,6 +41,10 @@ struct LayoutTests {
         _ = NSApplication.shared
         let output = URL(fileURLWithPath: CommandLine.arguments[1])
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        if CommandLine.arguments.contains("--subscription-usage") {
+            try SubscriptionUsageTests.run(output: output)
+            return
+        }
         if CommandLine.arguments.contains("--task-tabs") {
             try TaskTabTests.run(output: output)
             return
@@ -146,6 +158,7 @@ struct LayoutTests {
         verifyScreenEdgeHover()
         try verifyDockPreferencePersistence()
         try verifyDisplayPreferences()
+        try SubscriptionUsageTests.run(output: output)
         print("PASS: 21 native SwiftUI layouts; working/waiting summaries, remaining quota, errors and constant-width expansion")
     }
 

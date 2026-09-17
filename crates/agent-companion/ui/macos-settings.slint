@@ -24,9 +24,10 @@ component ComponentChoice inherits Rectangle {
     in property <StatusComponent> item;
     in property <bool> available;
     callback toggle(string, bool);
-    height: 62px;
+    height: 38px;
     border-radius: 8px;
     background: root.item.selected ? SettingsColors.selected : SettingsColors.card;
+    Tooltip { text: @markdown("\{root.item.description}"); }
     HorizontalLayout {
         padding: 10px;
         spacing: 8px;
@@ -39,22 +40,15 @@ component ComponentChoice inherits Rectangle {
         }
         Rectangle {
             horizontal-stretch: 1;
-            VerticalLayout {
-                alignment: center;
-                spacing: 4px;
-                Text {
-                    text: root.item.label;
-                    color: root.available ? SettingsColors.text : SettingsColors.secondary;
-                    font-size: 12px;
-                    font-weight: 600;
-                    overflow: elide;
-                }
-                Text {
-                    text: root.item.description;
-                    color: SettingsColors.secondary;
-                    font-size: 11px;
-                    wrap: word-wrap;
-                }
+            Text {
+                width: parent.width;
+                height: parent.height;
+                text: root.item.label;
+                color: root.available ? SettingsColors.text : SettingsColors.secondary;
+                font-size: 12px;
+                horizontal-alignment: left;
+                vertical-alignment: center;
+                overflow: elide;
             }
             TouchArea {
                 enabled: root.available;

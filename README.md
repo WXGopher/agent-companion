@@ -31,13 +31,15 @@
 - **Settings（设置）** 打开 TUI 定制窗口：macOS 风格开关、卡片分组和跟随系统的浅色／深色外观；开发版按 **Codex CLI** 和 **Notch & app** 分区：Codex 页顶部为横向长条实时预览，下方选择组件，底部 **Apply changes** 保存；显示器和 Dock 选项位于 Notch & app。切换分区保留未保存的组件选择。再次点击会回到已打开的设置；电源按钮或右键菜单退出刘海。刘海需要运行才能更新任务，保存后的 CLI 状态栏配置无需常驻。
 - 默认不显示 Dock 图标，打开设置也不会额外占位。需要时可在设置中开启 **Show in Dock**，立即生效并记住选择；此开关自动保存，不需要点击 TUI 的 Apply。
 
-只读取本地 Codex 会话、分页历史和额度，不发起模型请求。macOS 不启动 hooks、审批服务或其他代理，不包含宠物、主题编辑或 Intel Mac 支持。
+开发版的 **Usage** 页面显示 Codex 订阅的额度窗口、重置时间、累计 Token、单日峰值、最近七个有记录日期的用量、连续使用天数及最长任务时间。点击周额度卡片或 **Usage** 打开，**Tasks** 返回任务列表；宽度不变。复用 Codex 的 ChatGPT 登录，无需 API Key。只在打开用量页时读取，打开期间每五分钟刷新，也可手动刷新。没有数据时显示 `—`；Token 总数与订阅剩余额度是不同指标，服务端数据可能延迟，也不提供账号级输入／缓存／输出拆分。详见[订阅用量说明](docs/MACOS_NOTCH.md#订阅用量开发中未发布)。
+
+任务状态与默认周额度来自本地 Codex 会话和分页历史；开发版的订阅用量通过 Codex 官方账号接口联网读取，不发起模型请求。macOS 不启动 hooks、审批服务或其他代理，不包含宠物、主题编辑或 Intel Mac 支持。
 
 <p align="center"><img src="docs/macos-notch.png" width="356" alt="MacBook Codex 刘海展开界面，数字位于摄像头两侧的菜单栏内，合成数据渲染"></p>
 
 <p align="center"><img src="docs/macos-settings.png" width="760" alt="开发版 macOS 设置：顶部横向状态栏预览与独立 Codex CLI 分区"></p>
 
-开发中的设置布局（尚未发布）。[查看刘海与应用分区](docs/macos-app-settings.png)。
+开发中的设置布局（尚未发布）。组件只显示一行名称，悬停查看说明。[查看刘海与应用分区](docs/macos-app-settings.png) · [查看订阅用量](docs/macos-subscription-usage.png)（合成数据）。
 
 ### macOS 安装
 
@@ -77,7 +79,7 @@ Agent Companion 以 Codex 为支持和验证对象，通过 hooks、本地会话
 <img src="docs/readout.png" width="96" alt="垂直任务栏中的额度控件">
 <img src="docs/card.png" width="440" alt="Claude Code 工具审批卡片">
 
-当前已发布版本为 v0.3.9；v0.3.10 仍在开发中，包含列表切换修复和重新分区的设置页面，尚未发布。项目仍在早期开发，部分 Windows 截图来自较早版本，具体外观以当前程序为准。Codex CLI 提问接入与桌面分页历史读取为实验性功能，桌面原生问题仍在 Codex 中作答。用户已在双屏环境确认选择内置屏后位置正常；开发版增加 Active / Finished 反复切换的逐帧检查，覆盖空列表、长列表、滚动位置以及顶部和底部像素稳定性，保留既有刘海、双屏和设置回归。物理拔插、全屏和 Terminal.app 跳转仍未覆盖，详见[验证范围](docs/MACOS_NOTCH.md)。Windows 验证构建和自动测试，未在 macOS 上宣称桌面实测。
+当前已发布版本为 v0.3.9；v0.3.10 仍在开发中，包含订阅用量页、列表切换修复和精简后的分区设置，尚未发布。项目仍在早期开发，部分 Windows 截图来自较早版本，具体外观以当前程序为准。Codex CLI 提问接入与桌面分页历史读取为实验性功能，桌面原生问题仍在 Codex 中作答。用户已在双屏环境确认选择内置屏后位置正常；开发版增加 Active / Finished 反复切换的逐帧检查，覆盖空列表、长列表、滚动位置以及顶部和底部像素稳定性，保留既有刘海、双屏和设置回归。物理拔插、全屏和 Terminal.app 跳转仍未覆盖，详见[验证范围](docs/MACOS_NOTCH.md)。Windows 验证构建和自动测试，未在 macOS 上宣称桌面实测。
 
 ### 安装与使用
 
@@ -243,13 +245,15 @@ Agent Companion 复用 [open-vibe-island](https://github.com/Octane0411/open-vib
 - **Settings** opens Codex CLI status bar customization with macOS-style controls, grouped cards and system light/dark appearance. The development version separates **Codex CLI** from **Notch & app**. The Codex page places a wide live status-bar preview above the component choices, with **Apply changes** at the bottom; display and Dock preferences live in Notch & app. Switching sections keeps your unapplied component choices. Reopening settings brings the existing window forward. The power button or context menu quits the notch. The notch runs to keep tasks updated; saved CLI status bar settings need no background process.
 - The Dock icon is hidden by default, including while Settings is open. Enable **Show in Dock** in Settings to show it immediately and remember the choice. This preference saves automatically, independently of the TUI Apply button.
 
-Reads local Codex sessions, paginated history and usage without making model requests. The macOS surface has no hooks, approvals, other agents, pets, theme editor or Intel support.
+The development **Usage** page shows subscription allowance windows and reset times, lifetime and peak daily tokens, the seven most recent reported days, usage streaks and longest turn. Open it from the weekly quota card or **Usage**, then return with **Tasks**; the notch keeps its width. It reuses your Codex ChatGPT login without an API key. Reads happen on opening the page, every five minutes while visible, or on manual refresh. Missing values stay `—`. Token counts do not measure remaining allowance; reporting may be delayed and account-wide input/cached/output breakdowns are not provided. See [subscription usage details](docs/MACOS_NOTCH.md#订阅用量开发中未发布).
+
+Task state and default weekly quota come from local Codex sessions and history. The development subscription view reads the official Codex account service online without making model requests. The macOS surface has no hooks, approvals, other agents, pets, theme editor or Intel support.
 
 <p align="center"><img src="docs/macos-notch.png" width="356" alt="Expanded MacBook Codex notch with indicators beside the camera in the menu bar, rendered with synthetic data"></p>
 
 <p align="center"><img src="docs/macos-settings.png" width="760" alt="Development macOS settings with a wide status-bar preview above the Codex CLI component choices"></p>
 
-Development layout, not yet released. [View the Notch & app section](docs/macos-app-settings.png).
+Development layout, not yet released. Each component uses one name line with a hover description. [View the Notch & app section](docs/macos-app-settings.png) · [View subscription usage](docs/macos-subscription-usage.png) (synthetic data).
 
 ### macOS installation
 
@@ -289,7 +293,7 @@ Agent Companion focuses on Codex, using hooks, local session logs and an optiona
 <img src="docs/readout.png" width="96" alt="Quota readout in a vertical taskbar">
 <img src="docs/card.png" width="440" alt="Claude Code tool approval card">
 
-The latest published version is v0.3.9. The v0.3.10 task-tab fix and reorganized settings are in development and have not been released. The project is in early development and some Windows screenshots show earlier versions. Codex CLI question integration and desktop paginated-history reads are experimental; desktop questions still require answering in Codex. The user confirmed correct placement after choosing the built-in display in a dual-display setup. The development version adds frame-by-frame Active / Finished switching checks for empty and long lists, scroll position and stable summary/footer pixels, alongside existing notch, display and settings regressions. Physical hot-plugging, fullscreen and Terminal.app navigation remain outside the completed [verification scope](docs/MACOS_NOTCH.md). Windows validation covers compilation and automated tests, without claiming manual Windows desktop checks from macOS.
+The latest published version is v0.3.9. The v0.3.10 subscription usage view, task-tab fix and simplified settings are in development and have not been released. The project is in early development and some Windows screenshots show earlier versions. Codex CLI question integration and desktop paginated-history reads are experimental; desktop questions still require answering in Codex. The user confirmed correct placement after choosing the built-in display in a dual-display setup. The development version adds frame-by-frame Active / Finished switching checks for empty and long lists, scroll position and stable summary/footer pixels, alongside existing notch, display and settings regressions. Physical hot-plugging, fullscreen and Terminal.app navigation remain outside the completed [verification scope](docs/MACOS_NOTCH.md). Windows validation covers compilation and automated tests, without claiming manual Windows desktop checks from macOS.
 
 ### Install and use
 

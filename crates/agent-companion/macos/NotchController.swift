@@ -34,6 +34,7 @@ final class NotchController: NSObject, NSApplicationDelegate {
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "Show Codex tasks", action: #selector(showTasks), keyEquivalent: "0").target = self
+        appMenu.addItem(withTitle: "Subscription usage", action: #selector(showUsage), keyEquivalent: "3").target = self
         appMenu.addItem(withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: ",").target = self
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Quit Agent Companion", action: #selector(quit), keyEquivalent: "q").target = self
@@ -108,7 +109,7 @@ final class NotchController: NSObject, NSApplicationDelegate {
 
     private func expand(activate: Bool) {
         if activate { hover.pin() }
-        if !model.expanded { model.showingCompleted = false }
+        if !model.expanded { model.showingCompleted = false; model.showTasks() }
         model.expanded = true
         layout()
         if activate { panel.makeKeyAndOrderFront(nil) }
@@ -126,7 +127,8 @@ final class NotchController: NSObject, NSApplicationDelegate {
         hover.dismiss()
     }
 
-    @objc private func showTasks() { expand(activate: true) }
+    @objc private func showTasks() { model.showTasks(); expand(activate: true) }
+    @objc private func showUsage() { model.showUsage() }
     @objc private func showSettings() { model.openSettings() }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
