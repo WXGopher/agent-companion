@@ -10,6 +10,14 @@ struct CompanionView: View {
 
     private func scaled(_ value: CGFloat) -> CGFloat { value * model.metrics.contentScale }
     private func compactScaled(_ value: CGFloat) -> CGFloat { value * min(1, model.compactWidth / 179) }
+    private var taskViewportHeight: CGFloat {
+        let active = model.snapshot.tasks.filter { $0.isActive }.count
+        let finished = model.snapshot.tasks.count - active
+        func height(_ count: Int) -> CGFloat { count == 0 ? 132 : min(CGFloat(count) * 58, 232) }
+        // Both tabs share one viewport, so switching filters cannot resize the
+        // panel or move the footer. Empty states need room for their guidance.
+        return scaled(max(height(active), height(finished)))
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -147,20 +155,33 @@ struct CompanionView: View {
                 Spacer(minLength: 0)
             }
             if let error = model.snapshot.error { notice(error, symbol: "exclamationmark.triangle") }
-            if model.snapshot.loading {
-                empty("Reading Codex…", detail: "Checking local sessions and usage.", symbol: "ellipsis")
-            } else if model.visibleTasks.isEmpty {
-                empty(model.showingCompleted ? "No recently finished tasks" : "No active tasks",
-                      detail: model.showingCompleted ? "Finished, stopped and failed tasks stay here for 15 minutes." : "Start a task in Codex.app or Codex CLI. It will appear here automatically.",
-                      symbol: model.showingCompleted ? "checkmark.circle" : "terminal")
-            } else {
+            ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(spacing: scaled(4)) {
-                        ForEach(model.visibleTasks) { task in taskRow(task) }
+                    VStack(spacing: 0) {
+                        Color.clear.frame(height: 0).id("task-list-top")
+                        if model.snapshot.loading {
+                            empty("Reading Codex…", detail: "Checking local sessions and usage.", symbol: "ellipsis")
+                                .frame(height: taskViewportHeight)
+                        } else if model.visibleTasks.isEmpty {
+                            empty(model.showingCompleted ? "No recently finished tasks" : "No active tasks",
+                                  detail: model.showingCompleted ? "Finished, stopped and failed tasks stay here for 15 minutes." : "Start a task in Codex.app or Codex CLI. It will appear here automatically.",
+                                  symbol: model.showingCompleted ? "checkmark.circle" : "terminal")
+                                .frame(height: taskViewportHeight)
+                        } else {
+                            LazyVStack(spacing: scaled(4)) {
+                                ForEach(model.visibleTasks) { task in taskRow(task) }
+                            }
+                        }
                     }
+                    .frame(maxWidth: .infinity, minHeight: taskViewportHeight, alignment: .top)
                 }
-                .frame(height: scaled(min(CGFloat(model.visibleTasks.count) * 58, 232)))
+                .frame(height: taskViewportHeight)
                 .scrollIndicators(.visible)
+                .onChange(of: model.showingCompleted) { _, _ in
+                    // A long list's previous offset must not leave the newly
+                    // selected list offscreen for its first frame.
+                    proxy.scrollTo("task-list-top", anchor: .top)
+                }
             }
             if let message = model.message {
                 VStack(alignment: .leading, spacing: scaled(7)) {
