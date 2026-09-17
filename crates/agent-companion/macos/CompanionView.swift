@@ -34,25 +34,12 @@ struct CompanionView: View {
 
     private var compact: some View {
         Button { model.expand?() } label: {
-            VStack(spacing: 0) {
-                // Keep the menu-bar band entirely inside the physical camera gap.
-                // Counters sit just below it instead of growing wings over menus.
-                if model.hasCamera { Color.clear.frame(height: model.metrics.cameraHeight) }
-                HStack(spacing: 0) {
-                    HStack(spacing: compactScaled(7)) {
-                        count(model.snapshot.activeCount, symbol: "circle.inset.filled", tint: CompanionModel.accent)
-                        count(model.snapshot.completedCount, symbol: "checkmark", tint: .white.opacity(0.7))
-                    }
-                    Spacer(minLength: compactScaled(8))
-                    HStack(spacing: compactScaled(3)) {
-                        Text(model.weeklyText).monospacedDigit().fontWeight(.semibold).lineLimit(1).fixedSize()
-                        if model.weeklyRemainingPercent != nil {
-                            Text("left").font(.system(size: compactScaled(9))).foregroundStyle(.white.opacity(0.5)).fixedSize()
-                        }
-                    }
+            Group {
+                if model.hasCamera {
+                    cameraSummary
+                } else {
+                    ordinarySummary
                 }
-                .frame(height: model.metrics.statsHeight)
-                .padding(.horizontal, compactScaled(10))
             }
             .font(.system(size: compactScaled(12)))
             .frame(width: model.compactWidth, height: model.compactHeight)
@@ -68,6 +55,64 @@ struct CompanionView: View {
             Button("Settings…") { model.openSettings() }
             Divider()
             Button("Quit Agent Companion") { model.quit?() }
+        }
+    }
+
+    private var ordinarySummary: some View {
+        HStack(spacing: 0) {
+            HStack(spacing: compactScaled(7)) {
+                count(model.snapshot.activeCount, symbol: "circle.inset.filled", tint: CompanionModel.accent)
+                count(model.snapshot.completedCount, symbol: "checkmark", tint: .white.opacity(0.7))
+            }
+            Spacer(minLength: compactScaled(8))
+            HStack(spacing: compactScaled(3)) {
+                Text(model.weeklyText).monospacedDigit().fontWeight(.semibold).lineLimit(1).fixedSize()
+                if model.weeklyRemainingPercent != nil {
+                    Text("left").font(.system(size: compactScaled(9))).foregroundStyle(.white.opacity(0.5)).fixedSize()
+                }
+            }
+        }
+        .frame(height: model.metrics.statsHeight)
+        .padding(.horizontal, compactScaled(10))
+    }
+
+    private var cameraSummary: some View {
+        let scale = model.metrics.cameraContentScale
+        return HStack(spacing: 0) {
+            HStack(spacing: 4 * scale) {
+                cameraCount(model.snapshot.activeCount, symbol: "circle.inset.filled", tint: CompanionModel.accent)
+                cameraCount(model.snapshot.completedCount, symbol: "checkmark", tint: .white.opacity(0.7))
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .padding(.leading, 8 * scale).padding(.trailing, 2 * scale)
+            .frame(width: model.cameraSideWidth)
+
+            // These are physical camera pixels, not a place to draw content.
+            Color.clear.frame(width: model.metrics.cameraWidth)
+
+            HStack(spacing: 2 * scale) {
+                Text(model.weeklyText)
+                    .font(.system(size: 10 * scale, weight: .semibold)).monospacedDigit()
+                    .lineLimit(1).fixedSize()
+                if model.weeklyRemainingPercent != nil {
+                    Text("left").font(.system(size: 8 * scale)).foregroundStyle(.white.opacity(0.6))
+                        .lineLimit(1).fixedSize()
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.leading, 2 * scale).padding(.trailing, 8 * scale)
+            .frame(width: model.cameraSideWidth)
+        }
+        .frame(height: model.metrics.cameraHeight)
+    }
+
+    private func cameraCount(_ value: Int, symbol: String, tint: Color) -> some View {
+        let scale = model.metrics.cameraContentScale
+        return HStack(spacing: scale) {
+            Image(systemName: symbol).font(.system(size: 5 * scale, weight: .semibold))
+                .foregroundStyle(tint).frame(width: 5 * scale)
+            Text(model.countText(value)).font(.system(size: 10 * scale, weight: .semibold))
+                .monospacedDigit().lineLimit(1).fixedSize()
         }
     }
 
