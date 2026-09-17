@@ -75,6 +75,7 @@ enum SubscriptionUsageTests {
         monitorLifecycle()
         try readerLifecycle()
         try layouts(output: output)
+        try pinnedNavigation(output: output)
         print("Subscription usage: nullable metrics, quota windows, read-only RPC, framing, errors, timeout/cancellation, refresh lifecycle and layouts passed")
     }
 
@@ -132,18 +133,26 @@ enum SubscriptionUsageTests {
         precondition(!loading && latest?.tokens != nil)
         monitor.refresh(codexHome: "/first")
         precondition(reader.homes.count == 1)
+        for _ in 0..<10 {
+            monitor.stop()
+            monitor.refresh(codexHome: "/first")
+        }
+        precondition(reader.homes.count == 1, "Switching pages bypassed the five-minute cache")
+        monitor.refresh(codexHome: "/first", force: true)
+        precondition(reader.homes.count == 2, "Explicit refresh did not bypass the cache")
+        reader.completions[1](fixture)
         now += 301
         monitor.refresh(codexHome: "/first")
-        precondition(reader.homes.count == 2)
-        reader.completions[1](.failure("offline"))
+        precondition(reader.homes.count == 3)
+        reader.completions[2](.failure("offline"))
         precondition(latest?.tokens == nil && latest?.error == "offline", "Failure kept a possibly different account's data")
         monitor.refresh(codexHome: "/second")
-        precondition(reader.homes.count == 3 && latest?.error == nil)
+        precondition(reader.homes.count == 4 && latest?.error == nil)
         monitor.stop()
-        reader.completions[2](fixture)
+        reader.completions[3](fixture)
         precondition(latest?.tokens == nil, "An old request updated the stopped monitor")
         monitor.refresh(codexHome: "/second")
-        precondition(reader.homes.count == 4)
+        precondition(reader.homes.count == 5)
 
         let model = CompanionModel(usageReader: reader)
         model.snapshot.codexHome = "/model"
@@ -263,6 +272,62 @@ enum SubscriptionUsageTests {
     }
 
     private static func scrollViews(in view: NSView) -> [NSScrollView] {
-        (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap { scrollViews(in: $0) }
+        ((view as? NSScrollView).map { [$0] } ?? []) + view.subviews.flatMap { scrollViews(in: $0) }
+    }
+
+    @MainActor private static func pinnedNavigation(output: URL) throws {
+        for camera in [false, true] {
+            let screen = CGRect(x: -10000, y: -10000, width: 1280, height: 720)
+            let reader = FakeReader()
+            let model = CompanionModel(usageReader: reader)
+            if camera {
+                model.metrics = NotchMetrics(screen: screen, safeTop: 32,
+                    topLeft: CGRect(x: screen.minX, y: screen.maxY - 32, width: 550, height: 32),
+                    topRight: CGRect(x: screen.minX + 730, y: screen.maxY - 32, width: 550, height: 32))
+            }
+            model.expanded = true
+            model.showingCompleted = true
+            model.showUsage()
+            reader.completions.last!(fixture)
+            let panel = NSPanel(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
+            panel.isReleasedWhenClosed = false
+            let presentation = NotchPresentation(panel: panel, model: model, reduceMotion: { true })
+            defer { presentation.stop(); model.stop(); panel.close() }
+            presentation.update(screen: screen, availableHeight: 280, animated: false)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+            let surface = presentation.surface
+            let scrolls = scrollViews(in: surface)
+            precondition(scrolls.count >= 2, "The short-screen fixture did not exercise overflow")
+            let top = scrolls[0].convert(scrolls[0].bounds, to: surface).minY
+            precondition(top > model.compactHeight + 30, "Page navigation scrolled with the body")
+            func capture() -> NSBitmapImageRep {
+                let bitmap = surface.bitmapImageRepForCachingDisplay(in: surface.bounds)!
+                surface.cacheDisplay(in: surface.bounds, to: bitmap)
+                return bitmap
+            }
+            let before = capture()
+            for scroll in scrolls {
+                if let document = scroll.documentView {
+                    scroll.contentView.scroll(to: CGPoint(x: 0, y: max(0, document.bounds.height - scroll.contentSize.height)))
+                    scroll.reflectScrolledClipView(scroll.contentView)
+                }
+            }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+            let after = capture()
+            let scale = CGFloat(before.pixelsHigh) / surface.bounds.height
+            for y in stride(from: Int((model.compactHeight + 4) * scale), to: Int((top - 4) * scale), by: 2) {
+                for x in stride(from: 10, to: before.pixelsWide - 10, by: 2) {
+                    precondition(before.colorAt(x: x, y: y) == after.colorAt(x: x, y: y),
+                                 "Scrolling moved or obscured Tasks / Usage navigation")
+                }
+            }
+            try after.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("usage-pinned-navigation-\(camera).png"))
+            for _ in 0..<10 {
+                model.showTasks()
+                precondition(!model.showingUsage && model.showingCompleted, "Returning lost the previous task filter")
+                model.showUsage()
+            }
+            precondition(reader.homes.count == 1, "Repeated navigation launched extra subscription requests")
+        }
     }
 }
