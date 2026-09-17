@@ -9,7 +9,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="GPL-3.0-only"></a>
 </p>
 
-**下载 / Download v0.3.8:** [macOS Apple Silicon](https://github.com/WXGopher/agent-companion/releases/download/v0.3.8/agent-companion-v0.3.8-macos-arm64.zip) · [Windows x86_64](https://github.com/WXGopher/agent-companion/releases/download/v0.3.8/agent-companion-v0.3.8-windows-x86_64.zip) · [发布说明 / Release notes](https://github.com/WXGopher/agent-companion/releases/tag/v0.3.8)
+**下载 / Download v0.3.9:** [macOS Apple Silicon](https://github.com/WXGopher/agent-companion/releases/download/v0.3.9/agent-companion-v0.3.9-macos-arm64.zip) · [Windows x86_64](https://github.com/WXGopher/agent-companion/releases/download/v0.3.9/agent-companion-v0.3.9-windows-x86_64.zip) · [发布说明 / Release notes](https://github.com/WXGopher/agent-companion/releases/tag/v0.3.9)
 
 ## 中文
 
@@ -22,10 +22,10 @@
 
 ### macOS 窄刘海
 
-- 左侧两个数字分别表示**活动任务**与**最近十五分钟结束的任务**；右侧 `68% left` 表示 Codex 周额度还剩 68%。展开后的额度卡片和进度条也显示剩余量，由原生已用比例换算。没有读数或读数已过重置时间时显示 `—`。
+- 左侧只显示**周剩余额度**，例如 `68%`，省略 `left`；右侧绿色图标和数字表示**正在工作的会话数**。有待审批或待输入的会话时显示一个橙色 `?`，这些会话不计入工作数。没有工作时显示灰色 `0`；剩余额度不超过 10% 时变为橙色，缺失或过期时显示 `—`。展开后可查看需要处理的会话和最近十五分钟结束的任务，额度卡片保留 `left` 说明。
 - 鼠标移到刘海附近约 0.18 秒即自动展开，无需点击，也不抢键盘焦点；判定包含屏幕最顶边，并在可见窄条左右各留 12 点、下方留 8 点容错，显示宽度不变；实体刘海两侧的菜单图标区域不触发展开。移开约 0.35 秒后收起。点击后保持展开，按 Esc 或点击外部收起。展开默认显示活动任务，可切换 Finished 查看完成、停止和失败的任务。
 - 点击任务返回对应 Codex 桌面对话。CLI 根据存活进程定位 Terminal/iTerm2 的原标签页；首次可能需要在系统 Automation 设置中授权。其他终端尽力唤起宿主应用，定位失败时可复制 `codex resume` 命令。
-- 刘海默认跟随 macOS 设置的**主显示器**。在 **Settings → Notch display** 中，可选择 **Follow primary display（跟随主显示器）**，或指定任意已连接的显示器；立即生效并自动保存，无需点击 Apply。指定屏断开时临时回到主屏，重新连接后自动返回指定屏；更换主屏不会覆盖指定选择。MacBook 上活动／完成数位于摄像头左侧、周剩余额度位于右侧，与菜单栏图标同一行；中央完整避开实体摄像头，两侧只保留实际数字所需的窄空间。普通显示器最大为 216 × 28 点，小屏自动收窄至 180 点。每次切屏重新计算尺寸，居中贴住屏幕顶边，展开时保持顶边和宽度不变。支持不同桌面空间。
+- 刘海默认跟随 macOS 设置的**主显示器**。在 **Settings → Notch display** 中，可选择 **Follow primary display（跟随主显示器）**，或指定任意已连接的显示器；立即生效并自动保存，无需点击 Apply。指定屏断开时临时回到主屏，重新连接后自动返回指定屏；更换主屏不会覆盖指定选择。MacBook 上剩余额度位于摄像头左侧、工作数及待处理问号位于右侧，与菜单栏图标同一行；中央完整避开实体摄像头，左右按各自内容单独取最小宽度，为菜单图标留出空间。普通显示器最大为 216 × 28 点，小屏自动收窄至 180 点。每次切屏重新计算尺寸，居中贴住屏幕顶边，展开时保持顶边和宽度不变。支持不同桌面空间。
 - 刘海从原位置平滑向下延展，顶部计数与额度始终留在原位，展开保持同宽；移开后平滑回缩，途中再次进入会接着当前形状展开。系统开启“减少动态效果”时直接切换。MacBook 收起高度与摄像头所在的菜单栏区域一致，数字不会落到菜单栏下方。
 - 长错误提示和任务内容可滚动，展开高度限制在屏幕与底部 Dock 之间，设置和退出按钮保持可见。滚动或打开右键菜单时数据继续刷新，刷新不重置正文滚动位置；点击窄条中间的空白处也能展开。
 - **Settings（设置）** 打开 TUI 定制窗口：macOS 风格开关、卡片分组和跟随系统的浅色／深色外观；左侧选择组件，右侧固定显示实时预览，底部 **Apply changes** 保存。再次点击会回到已打开的设置；电源按钮或右键菜单退出刘海。刘海需要运行才能更新任务，保存后的 CLI 状态栏配置无需常驻。
@@ -75,7 +75,7 @@ Agent Companion 以 Codex 为支持和验证对象，通过 hooks、本地会话
 <img src="docs/readout.png" width="96" alt="垂直任务栏中的额度控件">
 <img src="docs/card.png" width="440" alt="Claude Code 工具审批卡片">
 
-当前版本为 v0.3.8。项目仍在早期开发，部分 Windows 截图来自较早版本，具体外观以当前程序为准。Codex CLI 提问接入与桌面分页历史读取为实验性功能，桌面原生问题仍在 Codex 中作答。macOS 既有核心窗口流程已有实机检查；本版新增显示器选择已验证双屏硬件坐标、保存与跨进程同步，并检查设置页原生渲染。桌面接口本轮无法读取窗口，新控件现场操作、物理拔插、全屏和 Terminal.app 跳转仍未覆盖，详见[验证范围](docs/MACOS_NOTCH.md)。Windows 本轮验证构建和自动测试，未在 macOS 上宣称桌面实测。
+当前版本为 v0.3.9。项目仍在早期开发，部分 Windows 截图来自较早版本，具体外观以当前程序为准。Codex CLI 提问接入与桌面分页历史读取为实验性功能，桌面原生问题仍在 Codex 中作答。用户已在双屏环境确认选择内置屏后位置正常；本版继续检查摄像头留白、左右内容独立宽度、工作／待处理状态和展开同宽。物理拔插、全屏和 Terminal.app 跳转仍未覆盖，详见[验证范围](docs/MACOS_NOTCH.md)。Windows 验证构建和自动测试，未在 macOS 上宣称桌面实测。
 
 ### 安装与使用
 
@@ -208,7 +208,7 @@ cargo test -p agent-companion --test display_lifecycle -- --ignored --nocapture
 正式发布通过 [GitHub Actions](.github/workflows/release.yml) 构建并运行两平台测试，包含 macOS 原生界面检查。先生成草稿，校验下载产物后公开，步骤见[发布流程](docs/RELEASING.md)。macOS 压缩包包含 `Agent Companion.app`，Windows 压缩包包含三个 Windows 程序；两者附 README、许可证及第三方声明，并提供统一 `SHA256SUMS.txt` 与构建来源证明。下载两个 ZIP 和校验文件后，在 macOS 运行 `shasum -a 256 -c SHA256SUMS.txt`；也可用 GitHub CLI 单独验证来源：
 
 ```powershell
-gh attestation verify agent-companion-v0.3.8-windows-x86_64.zip --repo WXGopher/agent-companion --source-ref refs/tags/v0.3.8 --deny-self-hosted-runners
+gh attestation verify agent-companion-v0.3.9-windows-x86_64.zip --repo WXGopher/agent-companion --source-ref refs/tags/v0.3.9 --deny-self-hosted-runners
 ```
 
 F01–F03 的交付范围与后续更新、远端会话候选项，见对照 open-vibe-island 整理的 [功能路线图](docs/ROADMAP.md)。更多代理、通知偏好和界面语言切换本轮不做。维护事项单列在 [已知问题](docs/KNOWN_ISSUES.md)。
@@ -232,10 +232,10 @@ Agent Companion 复用 [open-vibe-island](https://github.com/Octane0411/open-vib
 
 ### Compact macOS notch
 
-- The two numbers on the left show **active tasks** and **tasks finished within the last 15 minutes**. `68% left` on the right means 68% of the Codex weekly allowance remains. The expanded quota card and bar also show the remaining allowance, calculated from the native used percentage. Missing or expired readings show `—`.
+- The left side shows **weekly quota remaining**, such as `68%`, without `left`. A green icon and number on the right show **sessions currently working**. One orange `?` appears when any session needs approval or input; waiting sessions are excluded from the working count. Idle shows a gray `0`. Quota turns orange at 10% remaining or less; missing or expired readings show `—`. Expand for waiting sessions and tasks finished within the last 15 minutes; the quota card keeps its `left` label.
 - Hover near the notch for about 0.18 seconds to expand automatically without clicking or taking keyboard focus. The hover area includes the very top screen edge, with a 12-point margin beside the visible strip and 8 points below; the visible width stays unchanged. Menu icons beside a physical camera notch do not trigger expansion. Moving away collapses it after about 0.35 seconds; click to keep the list open. Escape or an outside click collapses it. The list opens on Active; Finished includes completed, stopped and failed tasks.
 - Click to return to the exact Codex desktop conversation. Live CLI processes can select their original Terminal/iTerm2 tab; macOS may request Automation permission on first use. Other terminal hosts are activated when identifiable, with a copyable `codex resume` command if precise navigation is unavailable.
-- By default, the surface follows the **primary display configured in macOS**. In **Settings → Notch display**, choose **Follow primary display** or pin it to any connected display. Changes apply immediately and save automatically, without Apply. If the selected display disconnects, the notch temporarily falls back to the primary display and returns when the selected display reconnects. Changing the primary display does not replace a pinned choice. On a MacBook, task counts sit to the left of the camera and weekly quota remaining sits to the right, aligned with the menu-bar icons. The middle reserves the physical camera cutout; narrow side areas fit the displayed numbers. The collapsed height matches the camera/menu-bar band, with no extra row underneath. Ordinary displays use a strip up to 216 × 28 points, narrowing to 180 points on smaller screens. Dimensions are recalculated on every display change, with the surface centered and flush with the top edge. Expansion preserves that top edge and width. Desktop Space changes are handled automatically.
+- By default, the surface follows the **primary display configured in macOS**. In **Settings → Notch display**, choose **Follow primary display** or pin it to any connected display. Changes apply immediately and save automatically, without Apply. If the selected display disconnects, the notch temporarily falls back to the primary display and returns when the selected display reconnects. Changing the primary display does not replace a pinned choice. On a MacBook, quota remaining sits to the left of the camera, with the working count and optional question mark to the right, aligned with menu-bar icons. The middle reserves the physical camera cutout. Each side is measured independently to leave more room for adjacent menu icons. The collapsed height matches the camera/menu-bar band, with no extra row underneath. Ordinary displays use a strip up to 216 × 28 points, narrowing to 180 points on smaller screens. Dimensions are recalculated on every display change, with the surface centered and flush with the top edge. Expansion preserves that top edge and width. Desktop Space changes are handled automatically.
 - The notch smoothly extends downward from the existing strip at the same width. Counters and quota stay anchored at the top. It retracts on exit and reverses continuously if you re-enter during collapse. macOS Reduce Motion switches immediately.
 - Long errors and task content scroll within the available screen height, keeping Settings and Quit visible above the bottom Dock. Data continues refreshing during scrolling and context menus without resetting the body scroll position. Clicking the blank middle of the compact strip also opens the list.
 - **Settings** opens Codex CLI status bar customization with macOS-style controls, grouped cards and system light/dark appearance. Choose components on the left, keep the live preview visible on the right, then save with **Apply changes**. Reopening settings brings the existing window forward. The power button or context menu quits the notch. The notch runs to keep tasks updated; saved CLI status bar settings need no background process.
@@ -285,7 +285,7 @@ Agent Companion focuses on Codex, using hooks, local session logs and an optiona
 <img src="docs/readout.png" width="96" alt="Quota readout in a vertical taskbar">
 <img src="docs/card.png" width="440" alt="Claude Code tool approval card">
 
-The current version is v0.3.8. The project is in early development and some Windows screenshots show earlier versions. Codex CLI question integration and desktop paginated-history reads are experimental; desktop questions still require answering in Codex. Existing core macOS window flows have been checked on a real desktop. This release checks the new display preference using real dual-display coordinates, persistence, cross-process notifications and native settings renders. The desktop interface could not read windows this round, so live operation of the new control, physical hot-plugging, fullscreen and Terminal.app navigation remain outside the completed [verification scope](docs/MACOS_NOTCH.md). This release verifies Windows builds and automated tests, without claiming manual Windows desktop checks from macOS.
+The current version is v0.3.9. The project is in early development and some Windows screenshots show earlier versions. Codex CLI question integration and desktop paginated-history reads are experimental; desktop questions still require answering in Codex. The user confirmed correct placement after choosing the built-in display in a dual-display setup. This release checks camera clearance, independently sized sides, working/waiting states and constant-width expansion. Physical hot-plugging, fullscreen and Terminal.app navigation remain outside the completed [verification scope](docs/MACOS_NOTCH.md). Windows validation covers compilation and automated tests, without claiming manual Windows desktop checks from macOS.
 
 ### Install and use
 
@@ -415,7 +415,7 @@ With Agent Companion installed and Windows notifications enabled, run `cargo tes
 The macOS ZIP contains `Agent Companion.app`; the Windows ZIP contains the three Windows executables. Both include the README, license and third-party notices. [GitHub Actions](.github/workflows/release.yml) builds and tests both platforms, including the native macOS UI checks, then creates a draft. Downloaded packages are verified before publication; see the [release process](docs/RELEASING.md). Download both ZIPs and `SHA256SUMS.txt`, then run `shasum -a 256 -c SHA256SUMS.txt` on macOS. Each archive also has a build provenance attestation, verifiable independently with the GitHub CLI:
 
 ```powershell
-gh attestation verify agent-companion-v0.3.8-windows-x86_64.zip --repo WXGopher/agent-companion --source-ref refs/tags/v0.3.8 --deny-self-hosted-runners
+gh attestation verify agent-companion-v0.3.9-windows-x86_64.zip --repo WXGopher/agent-companion --source-ref refs/tags/v0.3.9 --deny-self-hosted-runners
 ```
 
 See the [feature roadmap](docs/ROADMAP.md) for gaps compared with open-vibe-island, including the delivered F01–F03 scope and candidate update/remote-session features; more agents, notification preferences and language switching are not planned. Maintenance work is tracked separately in [known issues](docs/KNOWN_ISSUES.md).
