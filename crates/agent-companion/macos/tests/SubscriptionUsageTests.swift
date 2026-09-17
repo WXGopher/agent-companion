@@ -141,9 +141,17 @@ enum SubscriptionUsageTests {
         monitor.refresh(codexHome: "/first", force: true)
         precondition(reader.homes.count == 2, "Explicit refresh did not bypass the cache")
         reader.completions[1](fixture)
-        now += 301
+        now += 299
+        monitor.stop()
         monitor.refresh(codexHome: "/first")
-        precondition(reader.homes.count == 3)
+        precondition(reader.homes.count == 2 && !loading && latest?.tokens != nil,
+                     "Opening Usage before five minutes discarded or refreshed its cache")
+        now += 1
+        monitor.stop()
+        monitor.refresh(codexHome: "/first")
+        precondition(reader.homes.count == 3 && loading, "Opening Usage at five minutes did not refresh")
+        monitor.refresh(codexHome: "/first")
+        precondition(reader.homes.count == 3, "An expired cache launched duplicate requests")
         reader.completions[2](.failure("offline"))
         precondition(latest?.tokens == nil && latest?.error == "offline", "Failure kept a possibly different account's data")
         monitor.refresh(codexHome: "/second")
@@ -163,6 +171,16 @@ enum SubscriptionUsageTests {
         request(fixture)
         precondition(!model.usageLoading && model.subscriptionUsage.tokens == nil,
                      "Closing the notch left a loading state or accepted a cancelled result")
+        model.expanded = true
+        model.showUsage()
+        reader.completions.last!(fixture)
+        let completedReads = reader.homes.count
+        model.showTasks()
+        model.expanded = false
+        model.expanded = true
+        model.showUsage()
+        precondition(reader.homes.count == completedReads && !model.usageLoading && model.subscriptionUsage.tokens != nil,
+                     "Returning to Usage after collapsing the notch bypassed the cache")
         model.snapshot.weekly = WeeklyUsage(usedPercent: 90, resetsAt: nil, expired: false)
         model.subscriptionUsage = fixture
         model.subscriptionUsage.readAt = Date()
