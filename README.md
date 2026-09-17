@@ -28,14 +28,16 @@
 - 刘海默认跟随 macOS 设置的**主显示器**。在 **Settings → Notch display** 中，可选择 **Follow primary display（跟随主显示器）**，或指定任意已连接的显示器；立即生效并自动保存，无需点击 Apply。指定屏断开时临时回到主屏，重新连接后自动返回指定屏；更换主屏不会覆盖指定选择。MacBook 上剩余额度位于摄像头左侧、工作数及待处理问号位于右侧，与菜单栏图标同一行；中央完整避开实体摄像头，左右按各自内容单独取最小宽度，为菜单图标留出空间。普通显示器最大为 216 × 28 点，小屏自动收窄至 180 点。每次切屏重新计算尺寸，居中贴住屏幕顶边，展开时保持顶边和宽度不变。支持不同桌面空间。
 - 刘海从原位置平滑向下延展，顶部计数与额度始终留在原位，展开保持同宽；移开后平滑回缩，途中再次进入会接着当前形状展开。系统开启“减少动态效果”时直接切换。MacBook 收起高度与摄像头所在的菜单栏区域一致，数字不会落到菜单栏下方。
 - 长错误提示和任务内容可滚动，展开高度限制在屏幕与底部 Dock 之间，设置和退出按钮保持可见。滚动或打开右键菜单时数据继续刷新，刷新不重置正文滚动位置；点击窄条中间的空白处也能展开。
-- **Settings（设置）** 打开 TUI 定制窗口：macOS 风格开关、卡片分组和跟随系统的浅色／深色外观；左侧选择组件，右侧固定显示实时预览，底部 **Apply changes** 保存。再次点击会回到已打开的设置；电源按钮或右键菜单退出刘海。刘海需要运行才能更新任务，保存后的 CLI 状态栏配置无需常驻。
+- **Settings（设置）** 打开 TUI 定制窗口：macOS 风格开关、卡片分组和跟随系统的浅色／深色外观；开发版按 **Codex CLI** 和 **Notch & app** 分区：Codex 页顶部为横向长条实时预览，下方选择组件，底部 **Apply changes** 保存；显示器和 Dock 选项位于 Notch & app。切换分区保留未保存的组件选择。再次点击会回到已打开的设置；电源按钮或右键菜单退出刘海。刘海需要运行才能更新任务，保存后的 CLI 状态栏配置无需常驻。
 - 默认不显示 Dock 图标，打开设置也不会额外占位。需要时可在设置中开启 **Show in Dock**，立即生效并记住选择；此开关自动保存，不需要点击 TUI 的 Apply。
 
 只读取本地 Codex 会话、分页历史和额度，不发起模型请求。macOS 不启动 hooks、审批服务或其他代理，不包含宠物、主题编辑或 Intel Mac 支持。
 
 <p align="center"><img src="docs/macos-notch.png" width="356" alt="MacBook Codex 刘海展开界面，数字位于摄像头两侧的菜单栏内，合成数据渲染"></p>
 
-<p align="center"><img src="docs/macos-settings.png" width="760" alt="macOS 设置：显示器选择、Dock 开关、组件选择和固定实时预览"></p>
+<p align="center"><img src="docs/macos-settings.png" width="760" alt="开发版 macOS 设置：顶部横向状态栏预览与独立 Codex CLI 分区"></p>
+
+开发中的设置布局（尚未发布）。[查看刘海与应用分区](docs/macos-app-settings.png)。
 
 ### macOS 安装
 
@@ -75,7 +77,7 @@ Agent Companion 以 Codex 为支持和验证对象，通过 hooks、本地会话
 <img src="docs/readout.png" width="96" alt="垂直任务栏中的额度控件">
 <img src="docs/card.png" width="440" alt="Claude Code 工具审批卡片">
 
-当前已发布版本为 v0.3.9；v0.3.10 的列表切换修复已合并，尚未发布。项目仍在早期开发，部分 Windows 截图来自较早版本，具体外观以当前程序为准。Codex CLI 提问接入与桌面分页历史读取为实验性功能，桌面原生问题仍在 Codex 中作答。用户已在双屏环境确认选择内置屏后位置正常；开发版增加 Active / Finished 反复切换的逐帧检查，覆盖空列表、长列表、滚动位置以及顶部和底部像素稳定性，保留既有刘海、双屏和设置回归。物理拔插、全屏和 Terminal.app 跳转仍未覆盖，详见[验证范围](docs/MACOS_NOTCH.md)。Windows 验证构建和自动测试，未在 macOS 上宣称桌面实测。
+当前已发布版本为 v0.3.9；v0.3.10 仍在开发中，包含列表切换修复和重新分区的设置页面，尚未发布。项目仍在早期开发，部分 Windows 截图来自较早版本，具体外观以当前程序为准。Codex CLI 提问接入与桌面分页历史读取为实验性功能，桌面原生问题仍在 Codex 中作答。用户已在双屏环境确认选择内置屏后位置正常；开发版增加 Active / Finished 反复切换的逐帧检查，覆盖空列表、长列表、滚动位置以及顶部和底部像素稳定性，保留既有刘海、双屏和设置回归。物理拔插、全屏和 Terminal.app 跳转仍未覆盖，详见[验证范围](docs/MACOS_NOTCH.md)。Windows 验证构建和自动测试，未在 macOS 上宣称桌面实测。
 
 ### 安装与使用
 
@@ -238,14 +240,16 @@ Agent Companion 复用 [open-vibe-island](https://github.com/Octane0411/open-vib
 - By default, the surface follows the **primary display configured in macOS**. In **Settings → Notch display**, choose **Follow primary display** or pin it to any connected display. Changes apply immediately and save automatically, without Apply. If the selected display disconnects, the notch temporarily falls back to the primary display and returns when the selected display reconnects. Changing the primary display does not replace a pinned choice. On a MacBook, quota remaining sits to the left of the camera, with the working count and optional question mark to the right, aligned with menu-bar icons. The middle reserves the physical camera cutout. Each side is measured independently to leave more room for adjacent menu icons. The collapsed height matches the camera/menu-bar band, with no extra row underneath. Ordinary displays use a strip up to 216 × 28 points, narrowing to 180 points on smaller screens. Dimensions are recalculated on every display change, with the surface centered and flush with the top edge. Expansion preserves that top edge and width. Desktop Space changes are handled automatically.
 - The notch smoothly extends downward from the existing strip at the same width. Counters and quota stay anchored at the top. It retracts on exit and reverses continuously if you re-enter during collapse. macOS Reduce Motion switches immediately.
 - Long errors and task content scroll within the available screen height, keeping Settings and Quit visible above the bottom Dock. Data continues refreshing during scrolling and context menus without resetting the body scroll position. Clicking the blank middle of the compact strip also opens the list.
-- **Settings** opens Codex CLI status bar customization with macOS-style controls, grouped cards and system light/dark appearance. Choose components on the left, keep the live preview visible on the right, then save with **Apply changes**. Reopening settings brings the existing window forward. The power button or context menu quits the notch. The notch runs to keep tasks updated; saved CLI status bar settings need no background process.
+- **Settings** opens Codex CLI status bar customization with macOS-style controls, grouped cards and system light/dark appearance. The development version separates **Codex CLI** from **Notch & app**. The Codex page places a wide live status-bar preview above the component choices, with **Apply changes** at the bottom; display and Dock preferences live in Notch & app. Switching sections keeps your unapplied component choices. Reopening settings brings the existing window forward. The power button or context menu quits the notch. The notch runs to keep tasks updated; saved CLI status bar settings need no background process.
 - The Dock icon is hidden by default, including while Settings is open. Enable **Show in Dock** in Settings to show it immediately and remember the choice. This preference saves automatically, independently of the TUI Apply button.
 
 Reads local Codex sessions, paginated history and usage without making model requests. The macOS surface has no hooks, approvals, other agents, pets, theme editor or Intel support.
 
 <p align="center"><img src="docs/macos-notch.png" width="356" alt="Expanded MacBook Codex notch with indicators beside the camera in the menu bar, rendered with synthetic data"></p>
 
-<p align="center"><img src="docs/macos-settings.png" width="760" alt="macOS settings with display selection, Dock switch, component choices and a persistent live preview"></p>
+<p align="center"><img src="docs/macos-settings.png" width="760" alt="Development macOS settings with a wide status-bar preview above the Codex CLI component choices"></p>
+
+Development layout, not yet released. [View the Notch & app section](docs/macos-app-settings.png).
 
 ### macOS installation
 
@@ -285,7 +289,7 @@ Agent Companion focuses on Codex, using hooks, local session logs and an optiona
 <img src="docs/readout.png" width="96" alt="Quota readout in a vertical taskbar">
 <img src="docs/card.png" width="440" alt="Claude Code tool approval card">
 
-The latest published version is v0.3.9. The v0.3.10 task-tab fix is merged but has not been released. The project is in early development and some Windows screenshots show earlier versions. Codex CLI question integration and desktop paginated-history reads are experimental; desktop questions still require answering in Codex. The user confirmed correct placement after choosing the built-in display in a dual-display setup. The development version adds frame-by-frame Active / Finished switching checks for empty and long lists, scroll position and stable summary/footer pixels, alongside existing notch, display and settings regressions. Physical hot-plugging, fullscreen and Terminal.app navigation remain outside the completed [verification scope](docs/MACOS_NOTCH.md). Windows validation covers compilation and automated tests, without claiming manual Windows desktop checks from macOS.
+The latest published version is v0.3.9. The v0.3.10 task-tab fix and reorganized settings are in development and have not been released. The project is in early development and some Windows screenshots show earlier versions. Codex CLI question integration and desktop paginated-history reads are experimental; desktop questions still require answering in Codex. The user confirmed correct placement after choosing the built-in display in a dual-display setup. The development version adds frame-by-frame Active / Finished switching checks for empty and long lists, scroll position and stable summary/footer pixels, alongside existing notch, display and settings regressions. Physical hot-plugging, fullscreen and Terminal.app navigation remain outside the completed [verification scope](docs/MACOS_NOTCH.md). Windows validation covers compilation and automated tests, without claiming manual Windows desktop checks from macOS.
 
 ### Install and use
 
