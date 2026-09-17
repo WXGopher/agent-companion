@@ -1,4 +1,4 @@
-import { Button, CheckBox, Switch, ScrollView, Palette } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, Switch, ScrollView, Palette } from "std-widgets.slint";
 import { StatusComponent } from "status-component.slint";
 
 global SettingsColors {
@@ -80,6 +80,11 @@ export component MacSettings inherits Rectangle {
     in property <string> catalog-version;
     in property <bool> show-dock-icon;
     in property <bool> dock-error;
+    in property <[string]> display-options;
+    in-out property <int> selected-display;
+    in property <string> display-status;
+    in property <bool> display-error;
+    callback select-display(string);
     callback toggle-dock-icon(bool);
     callback toggle(string, bool);
     callback apply();
@@ -130,25 +135,46 @@ export component MacSettings inherits Rectangle {
                 spacing: 10px;
                 Text { text: "App appearance"; font-size: 13px; font-weight: 600; color: SettingsColors.text; }
                 SettingsCard {
-                    height: root.dock-error ? 100px : 78px;
-                    HorizontalLayout {
-                        padding: 16px;
-                        spacing: 12px;
-                        VerticalLayout {
-                            alignment: center;
-                            spacing: 5px;
-                            Text { text: "Show in Dock"; font-size: 13px; font-weight: 600; color: SettingsColors.text; }
-                            Text {
-                                text: root.dock-error ? "Could not save. Please try again." : "When hidden, open Settings from the notch.\nThis preference saves automatically.";
-                                font-size: 11px;
-                                color: root.dock-error ? SettingsColors.error : SettingsColors.secondary;
-                                wrap: word-wrap;
+                    height: 164px;
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 10px;
+                        HorizontalLayout {
+                            spacing: 12px;
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 5px;
+                                Text { text: "Show in Dock"; font-size: 13px; font-weight: 600; color: SettingsColors.text; }
+                                Text {
+                                    text: root.dock-error ? "Could not save. Please try again." : "Open Settings from the notch when hidden.";
+                                    font-size: 11px;
+                                    color: root.dock-error ? SettingsColors.error : SettingsColors.secondary;
+                                    wrap: word-wrap;
+                                }
+                            }
+                            Switch {
+                                checked: root.show-dock-icon;
+                                accessible-label: "Show Agent Companion in the Dock";
+                                toggled => { root.toggle-dock-icon(self.checked); }
                             }
                         }
-                        Switch {
-                            checked: root.show-dock-icon;
-                            accessible-label: "Show Agent Companion in the Dock";
-                            toggled => { root.toggle-dock-icon(self.checked); }
+                        Rectangle { height: 1px; background: SettingsColors.border; }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Text { text: "Notch display"; font-size: 12px; font-weight: 600; color: SettingsColors.text; vertical-alignment: center; }
+                            ComboBox {
+                                model: root.display-options;
+                                current-index <=> root.selected-display;
+                                enabled: root.display-options.length > 0;
+                                accessible-label: "Notch display";
+                                selected(label) => { root.select-display(label); }
+                            }
+                        }
+                        Text {
+                            text: root.display-error ? "Could not save the display choice. Please try again." : root.display-status;
+                            color: root.display-error ? SettingsColors.error : SettingsColors.secondary;
+                            font-size: 11px;
+                            wrap: word-wrap;
                         }
                     }
                 }
@@ -170,7 +196,7 @@ export component MacSettings inherits Rectangle {
                 }
                 SettingsCard {
                     vertical-stretch: 1;
-                    min-height: 160px;
+                    min-height: 120px;
                     VerticalLayout {
                         padding: 8px;
                         ScrollView {
