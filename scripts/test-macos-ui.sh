@@ -6,6 +6,6 @@ mkdir -p target/native-ui-tests
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx14.0 \
   -sdk "$(xcrun --sdk macosx --show-sdk-path)" \
   crates/agent-companion/macos/*.swift \
-  crates/agent-companion/macos/tests/LayoutTests.swift \
+  crates/agent-companion/macos/tests/*.swift \
   -o target/native-ui-tests/layout-tests
-target/native-ui-tests/layout-tests target/native-ui-tests/renders
+target/native-ui-tests/layout-tests target/native-ui-tests/renders "$@"
