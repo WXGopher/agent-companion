@@ -102,6 +102,10 @@ pub(crate) struct Editor {
     draft: RefCell<Option<Draft>>,
     left_rows: Rc<VecModel<ui::StatusComponent>>,
     right_rows: Rc<VecModel<ui::StatusComponent>>,
+    #[cfg(target_os = "macos")]
+    display_settings: RefCell<Option<crate::macos::DisplaySettings>>,
+    #[cfg(target_os = "macos")]
+    pub(crate) preference_timer: slint::Timer,
 }
 
 impl Editor {
@@ -112,6 +116,10 @@ impl Editor {
             draft: RefCell::new(None),
             left_rows: Rc::new(VecModel::default()),
             right_rows: Rc::new(VecModel::default()),
+            #[cfg(target_os = "macos")]
+            display_settings: RefCell::new(None),
+            #[cfg(target_os = "macos")]
+            preference_timer: slint::Timer::default(),
         });
         editor
             .window
@@ -145,6 +153,42 @@ impl Editor {
                     editor.window.set_dock_error(!saved);
                 }
             });
+            editor.refresh_display_settings();
+            let weak = Rc::downgrade(&editor);
+            editor.window.on_select_display(move |label| {
+                if let Some(editor) = weak.upgrade() {
+                    // Resolve the displayed option to its stable identity,
+                    // rather than persisting a transient list/screen index.
+                    let identifier =
+                        editor
+                            .display_settings
+                            .borrow()
+                            .as_ref()
+                            .and_then(|settings| {
+                                settings
+                                    .options
+                                    .iter()
+                                    .find(|option| option.label == label.as_str())
+                                    .map(|option| option.id.clone())
+                            });
+                    let saved = identifier.is_some_and(|id| crate::macos::select_display(&id));
+                    editor.window.set_display_error(!saved);
+                    editor.refresh_display_settings();
+                }
+            });
+            let weak = Rc::downgrade(&editor);
+            editor.preference_timer.start(
+                slint::TimerMode::Repeated,
+                std::time::Duration::from_secs(1),
+                move || {
+                    if let Some(editor) = weak.upgrade() {
+                        editor.refresh_display_settings();
+                        editor
+                            .window
+                            .set_show_dock_icon(crate::macos::dock_visible());
+                    }
+                },
+            );
         }
         let weak = Rc::downgrade(&editor);
         editor.window.on_toggle(move |id, enabled| {
@@ -175,6 +219,38 @@ impl Editor {
             }
         });
         Ok(editor)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn refresh_display_settings(&self) {
+        let Some(settings) = crate::macos::display_settings() else {
+            self.window.set_display_error(true);
+            return;
+        };
+        let mut previous = self.display_settings.borrow_mut();
+        if previous
+            .as_ref()
+            .is_none_or(|old| old.options != settings.options)
+        {
+            let labels = settings
+                .options
+                .iter()
+                .map(|option| option.label.as_str().into())
+                .collect::<Vec<_>>();
+            self.window
+                .set_display_options(ModelRc::new(VecModel::from(labels)));
+        }
+        let selected = settings
+            .options
+            .iter()
+            .position(|option| option.id == settings.selected_id)
+            .unwrap_or(0);
+        // Also restore the control after a failed save, even when the stored
+        // snapshot did not change. Updating properties never invokes selection.
+        self.window.set_selected_display(selected as i32);
+        self.window
+            .set_display_status(settings.status.as_str().into());
+        *previous = Some(settings);
     }
 
     pub fn show(&self) -> Result<(), slint::PlatformError> {

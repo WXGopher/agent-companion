@@ -65,6 +65,7 @@ final class NotchController: NSObject, NSApplicationDelegate {
         observers.append(NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in self?.selectScreen() })
         observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in self?.selectScreen() })
         observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in self?.selectScreen(); self?.model.refresh() })
+        DisplayPreferences.shared.start { [weak self] in self?.selectScreen() }
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDown, .rightMouseDown]) { [weak self] event in
             guard let self else { return }
             if event.type == .mouseMoved { hover.update(); return }
@@ -88,10 +89,10 @@ final class NotchController: NSObject, NSApplicationDelegate {
     }
 
     private func selectScreen() {
-        // AppKit orders the configured primary display first. NSScreen.main
-        // follows the key window instead, and a camera notch may be secondary.
-        // Re-read this list on every display change, including hot-plugging.
-        selectedScreen = NSScreen.screens.first
+        // AppKit's first screen is the configured primary, unlike NSScreen.main
+        // which follows keyboard focus. An explicit preference overrides it;
+        // an absent display falls back without forgetting the saved identity.
+        selectedScreen = DisplayPreferences.shared.selectedScreen()
         guard let screen = selectedScreen else { panel?.orderOut(nil); return }
         model.metrics = NotchMetrics(screen: screen)
         layout(animated: false)
@@ -139,6 +140,7 @@ final class NotchController: NSObject, NSApplicationDelegate {
         presentation.stop()
         hover.stop()
         model.stop()
+        DisplayPreferences.shared.stop()
         changes?.cancel()
         if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
         if let localMonitor { NSEvent.removeMonitor(localMonitor) }

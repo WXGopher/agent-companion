@@ -90,6 +90,7 @@ fn native_macos() {
     println!("cargo:rustc-link-lib=framework=SwiftUI");
     println!("cargo:rustc-link-lib=framework=AppKit");
     println!("cargo:rustc-link-lib=framework=Foundation");
+    println!("cargo:rustc-link-lib=framework=ColorSync");
     println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
     // Keep the executable's Mach-O minimum aligned with the native Swift layer
     // and the packaged Info.plist, including direct command-line launches.
