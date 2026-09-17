@@ -89,22 +89,34 @@ final class CompanionModel: ObservableObject {
     }
 
     var hasCamera: Bool { metrics.hasCamera }
-    var cameraSideWidth: CGFloat {
+    var workingCount: Int { snapshot.tasks.filter { $0.state == "running" }.count }
+    var needsInput: Bool { snapshot.tasks.contains { $0.state == "waiting" } }
+    var quotaTint: Color {
+        guard let remaining = weeklyRemainingPercent else { return .white.opacity(0.55) }
+        return remaining <= 10 ? .orange : Self.accent
+    }
+    var summaryDescription: String {
+        "Codex: \(workingCount) working\(needsInput ? ", approval or input needed" : ""). Weekly quota remaining: \(weeklyText)"
+    }
+    private func cameraWingWidth(text: String, accessories: CGFloat = 0) -> CGFloat {
         guard hasCamera else { return 0 }
         let scale = metrics.cameraContentScale
         let font = NSFont.monospacedDigitSystemFont(ofSize: 10 * scale, weight: .semibold)
-        func textWidth(_ text: String, font: NSFont) -> CGFloat {
-            (text as NSString).size(withAttributes: [.font: font]).width
-        }
-        let counts = textWidth(countText(snapshot.activeCount), font: font)
-            + textWidth(countText(snapshot.completedCount), font: font) + 26 * scale
-        var quota = textWidth(weeklyText, font: font) + 10 * scale
-        if weeklyRemainingPercent != nil {
-            quota += textWidth("left", font: .systemFont(ofSize: 8 * scale)) + 2 * scale
-        }
-        return ceil(max(metrics.cameraSideWidth, counts, quota))
+        let textWidth = (text as NSString).size(withAttributes: [.font: font]).width
+        // Leave room for the outer curve and the edge of the camera cutout.
+        return ceil(max(metrics.cameraSideWidth, textWidth + (accessories + 12) * scale))
     }
-    var compactWidth: CGFloat { hasCamera ? metrics.cameraWidth + 2 * cameraSideWidth : metrics.width }
+    var cameraLeftWidth: CGFloat { cameraWingWidth(text: weeklyText) }
+    var cameraRightWidth: CGFloat {
+        // Reserve only the working count, its icon and an optional question
+        // mark. Waiting sessions remain in Active but are not still working.
+        cameraWingWidth(text: countText(workingCount), accessories: needsInput ? 18 : 8)
+    }
+    var compactWidth: CGFloat { hasCamera ? cameraLeftWidth + metrics.cameraWidth + cameraRightWidth : metrics.width }
+    var centerOffset: CGFloat {
+        // Unequal wings reclaim menu space without shifting the camera gap.
+        metrics.centerOffset + (cameraRightWidth - cameraLeftWidth) / 2
+    }
     var compactHeight: CGFloat { metrics.compactHeight }
     func countText(_ count: Int) -> String { count > 99 ? "99+" : "\(count)" }
     var weeklyRemainingPercent: Int? {

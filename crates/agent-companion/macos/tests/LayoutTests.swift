@@ -46,13 +46,38 @@ struct LayoutTests {
             CodexTask(id: "1b966260-04f3-4281-9179-219ee11f60a2", title: "Run shared configuration checks", project: "agent-companion", cwd: nil, client: "cli", state: "completed", updatedAt: Date().timeIntervalSince1970 - 120, transcriptPath: nil)
         ], weekly: WeeklyUsage(usedPercent: 32, resetsAt: Date().timeIntervalSince1970 + 340000, expired: false), loading: false)
         precondition(model.visibleTasks.count == 2 && model.weeklyText == "68%")
+        precondition(model.workingCount == 1 && model.needsInput, "Waiting sessions must not inflate the working count")
+        precondition(model.summaryDescription.contains("1 working, approval or input needed"))
         try render(model, name: "compact-external", output: output, height: 28...28)
         model.expanded = true
         try render(model, name: "active-external", output: output, height: 300...480)
         model.expanded = false
         model.metrics = cameraMetrics()
         try render(model, name: "compact-notched", output: output, height: 32...32)
-        precondition(model.compactWidth < 291, "Ordinary counts should use less space than the original camera layout")
+        precondition(max(model.cameraLeftWidth, model.cameraRightWidth) <= 37,
+                     "A working session and question mark must fit in narrow camera wings")
+        let tasks = model.snapshot.tasks
+        let waitingWidth = model.compactWidth
+        model.snapshot.tasks = [tasks[0], tasks[2]]
+        precondition(model.workingCount == 1 && !model.needsInput)
+        precondition(!model.summaryDescription.contains("input needed"))
+        precondition(model.compactWidth < waitingWidth, "Clearing pending input should reclaim its menu-bar space")
+        try render(model, name: "compact-working", output: output, height: 32...32)
+        let workingWidth = model.compactWidth
+        model.snapshot.completedCount = 1000
+        precondition(model.compactWidth == workingWidth, "Finished tasks should not widen the compact strip")
+        model.snapshot.completedCount = 1
+        model.snapshot.tasks = [tasks[1]]
+        precondition(model.workingCount == 0 && model.needsInput)
+        try render(model, name: "compact-waiting-only", output: output, height: 32...32)
+        model.snapshot.tasks = (0..<120).map { taskFixture($0, state: "waiting") }
+        precondition(model.workingCount == 0 && model.needsInput && model.compactWidth == waitingWidth,
+                     "Multiple waiting sessions must share one question mark")
+        try render(model, name: "compact-many-waiting", output: output, height: 32...32)
+        model.snapshot.tasks = []
+        precondition(model.workingCount == 0 && !model.needsInput)
+        try render(model, name: "compact-idle", output: output, height: 32...32)
+        model.snapshot.tasks = tasks
         let weekly = model.snapshot.weekly
         model.snapshot.weekly = WeeklyUsage(usedPercent: 99, resetsAt: weekly?.resetsAt, expired: false)
         try render(model, name: "compact-low-quota", output: output, height: 32...32)
@@ -62,8 +87,11 @@ struct LayoutTests {
         model.snapshot.weekly = weekly
         model.snapshot.activeCount = 120
         model.snapshot.completedCount = 101
+        model.snapshot.tasks = (0..<120).map { taskFixture($0) } + [tasks[1], tasks[2]]
+        precondition(model.countText(model.workingCount) == "99+" && model.needsInput)
         try render(model, name: "large-counts", output: output, height: 32...32)
-        precondition(model.cameraSideWidth <= 70, "Large counts exceeded the compact side-indicator budget")
+        precondition(model.cameraRightWidth <= 52, "Large counts exceeded the compact side-indicator budget")
+        model.snapshot.tasks = tasks
         model.expanded = true
         let largeCountsSize = try render(model, name: "large-counts-expanded", output: output, height: 300...440)
         model.snapshot.activeCount = 2
@@ -112,7 +140,12 @@ struct LayoutTests {
         verifyScreenEdgeHover()
         try verifyDockPreferencePersistence()
         try verifyDisplayPreferences()
-        print("PASS: 17 native SwiftUI layouts; filters, remaining quota, errors and constant-width expand/collapse sizing")
+        print("PASS: 21 native SwiftUI layouts; working/waiting summaries, remaining quota, errors and constant-width expansion")
+    }
+
+    private static func taskFixture(_ index: Int, state: String = "running") -> CodexTask {
+        CodexTask(id: "fixture-\(index)", title: "Synthetic task \(index)", project: "workspace", cwd: nil,
+                  client: "cli", state: state, updatedAt: Date().timeIntervalSince1970, transcriptPath: nil)
     }
 
     private static func cameraMetrics(
@@ -228,8 +261,8 @@ struct LayoutTests {
         let external = CGRect(x: -10000, y: -10000, width: 1920, height: 1080)
         let builtin = CGRect(x: -11470, y: -9876, width: 1470, height: 956)
         let camera = cameraMetrics(screen: builtin)
-        precondition(camera.width == 260 && camera.cameraWidth == 180 && camera.cameraHeight == 32 && camera.compactHeight == 32)
-        precondition(camera.contentScale == 1 && camera.cameraSideWidth == 40)
+        precondition(camera.width == 228 && camera.cameraWidth == 180 && camera.cameraHeight == 32 && camera.compactHeight == 32)
+        precondition(camera.contentScale == 1 && camera.cameraSideWidth == 24)
         let small = CGRect(x: -10000, y: -10000, width: 1280, height: 800)
         precondition(NotchMetrics(screen: small).width == 180)
         let model = CompanionModel()
@@ -260,15 +293,17 @@ struct LayoutTests {
                 for count in [0, 9, 10, 99, 120] {
                     model.snapshot.activeCount = count
                     model.snapshot.completedCount = count
+                    model.snapshot.tasks = (0..<count).map { taskFixture($0) }
+                    if count > 0 { model.snapshot.tasks.append(taskFixture(count, state: "waiting")) }
                     presentation.update(screen: screen)
                     RunLoop.main.run(until: Date().addingTimeInterval(0.02))
                     precondition(panel.frame.width == model.compactWidth, "Display changes retained the old width")
-                    precondition(panel.frame.midX == screen.midX + metrics.centerOffset && panel.frame.maxY == screen.maxY,
+                    precondition(panel.frame.midX == screen.midX + model.centerOffset && panel.frame.maxY == screen.maxY,
                                  "The notch did not follow the new display's camera position: \(panel.frame), screen \(screen), metrics \(metrics)")
                     if metrics.hasCamera {
                         let cameraLeft = screen.midX + metrics.centerOffset - metrics.cameraWidth / 2
-                        precondition(panel.frame.minX + model.cameraSideWidth == cameraLeft &&
-                                     panel.frame.maxX - model.cameraSideWidth == cameraLeft + metrics.cameraWidth,
+                        precondition(panel.frame.minX + model.cameraLeftWidth == cameraLeft &&
+                                     panel.frame.maxX - model.cameraRightWidth == cameraLeft + metrics.cameraWidth,
                                      "A display/count change moved the reserved camera gap")
                         precondition(model.compactHeight == metrics.cameraHeight,
                                      "The indicators dropped below the menu-bar band")
@@ -444,7 +479,7 @@ struct LayoutTests {
             precondition(preferences.selectedScreen(in: screens) === screen)
             model.metrics = NotchMetrics(screen: screen)
             presentation.update(screen: screen.frame, availableHeight: screen.frame.maxY - screen.visibleFrame.minY, animated: false)
-            precondition(panel.frame.maxY == screen.frame.maxY && panel.frame.midX == screen.frame.midX + model.metrics.centerOffset)
+            precondition(panel.frame.maxY == screen.frame.maxY && panel.frame.midX == screen.frame.midX + model.centerOffset)
             precondition(screen.frame.contains(panel.frame) && panel.frame.height == model.compactHeight)
             if screen.safeAreaInsets.top > 0 { precondition(model.hasCamera, "The secondary screen lost its camera metadata") }
             let remaining = screens.filter { $0 !== screen }
@@ -654,7 +689,8 @@ struct LayoutTests {
         precondition(compact.height == model.compactHeight && compact.width == model.compactWidth)
         func checkAnchor() {
             precondition(abs(panel.frame.maxY - screen.maxY) < 0.01, "The notch detached from the menu bar during animation")
-            precondition(panel.frame.width == compact.width && panel.frame.midX == screen.midX, "Expansion occupied more menu-bar space")
+            precondition(panel.frame.width == compact.width && panel.frame.midX == screen.midX + model.centerOffset,
+                         "Expansion occupied more menu-bar space")
             precondition(content === presentation.surface.subviews[0] && content.frame.minY == 0,
                          "The compact strip was replaced or moved during animation")
             precondition(panel.frame.height >= compact.height)
@@ -765,23 +801,33 @@ struct LayoutTests {
         if model.hasCamera {
             let pixels = NSBitmapImageRep(data: png)!
             let scale = CGFloat(pixels.pixelsWide) / size.width
-            let cameraStart = Int(model.cameraSideWidth * scale)
-            let cameraEnd = Int((model.cameraSideWidth + model.metrics.cameraWidth) * scale)
+            let cameraStart = Int(model.cameraLeftWidth * scale)
+            let cameraEnd = Int((model.cameraLeftWidth + model.metrics.cameraWidth) * scale)
             var leftInk = 0
             var rightInk = 0
+            var leftGreen = 0
+            var leftOrange = 0
+            var rightGreen = 0
+            var rightOrange = 0
             var rightInkTop = pixels.pixelsHigh
             var rightInkBottom = 0
             for y in 2..<Int(model.metrics.cameraHeight * scale) - 2 {
                 for x in 2..<pixels.pixelsWide - 2 {
                     let color = pixels.colorAt(x: x, y: y)!.usingColorSpace(.deviceRGB)!
                     let hasInk = max(color.redComponent, color.greenComponent, color.blueComponent) > 0.2
+                    let green = color.greenComponent > color.redComponent * 1.25 + 0.05
+                    let orange = color.redComponent > color.greenComponent * 1.3 + 0.05 && color.greenComponent > 0.1
                     if x >= cameraStart && x < cameraEnd {
                         precondition(!hasInk, "\(name): an indicator is hidden under the physical camera")
                     } else if hasInk {
                         if x < cameraStart {
                             leftInk += 1
+                            if green { leftGreen += 1 }
+                            if orange { leftOrange += 1 }
                         } else {
                             rightInk += 1
+                            if green { rightGreen += 1 }
+                            if orange { rightOrange += 1 }
                             rightInkTop = min(rightInkTop, y)
                             rightInkBottom = max(rightInkBottom, y)
                         }
@@ -792,8 +838,17 @@ struct LayoutTests {
             let minimumInk = Int(3 * scale * scale)
             precondition(leftInk > minimumInk && rightInk > minimumInk,
                          "\(name): counters/quota are missing from the menu-bar row beside the camera")
+            if let remaining = model.weeklyRemainingPercent {
+                precondition((remaining <= 10 ? leftOrange : leftGreen) > minimumInk,
+                             "\(name): the left quota is missing its status color")
+            }
+            if model.workingCount > 0 {
+                precondition(rightGreen > minimumInk, "\(name): the right working count is not green")
+            }
+            precondition(model.needsInput ? rightOrange > minimumInk : rightOrange == 0,
+                         "\(name): the pending question mark is missing or stale")
             precondition(CGFloat(rightInkBottom - rightInkTop) < 14 * model.metrics.cameraContentScale * scale,
-                         "\(name): the compact quota wrapped onto a second line")
+                         "\(name): the working summary wrapped onto a second line")
         }
         window.close()
         print("\(name): \(size.width) × \(size.height)")
