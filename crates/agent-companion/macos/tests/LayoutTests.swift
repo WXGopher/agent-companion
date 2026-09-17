@@ -45,25 +45,27 @@ struct LayoutTests {
         try render(model, name: "active-external", output: output, height: 300...480)
         model.expanded = false
         model.metrics = cameraMetrics()
-        try render(model, name: "compact-notched", output: output, height: 56...56)
-        precondition(model.compactWidth == 178, "The panel extends beyond the physical camera gap")
+        try render(model, name: "compact-notched", output: output, height: 32...32)
+        precondition(model.compactWidth < 291, "Ordinary counts should use less space than the original camera layout")
         let weekly = model.snapshot.weekly
+        model.snapshot.weekly = WeeklyUsage(usedPercent: 99, resetsAt: weekly?.resetsAt, expired: false)
+        try render(model, name: "compact-low-quota", output: output, height: 32...32)
         model.snapshot.weekly = WeeklyUsage(usedPercent: 0, resetsAt: weekly?.resetsAt, expired: false)
         precondition(model.weeklyText == "100%")
-        try render(model, name: "compact-full-quota", output: output, height: 56...56)
+        try render(model, name: "compact-full-quota", output: output, height: 32...32)
         model.snapshot.weekly = weekly
         model.snapshot.activeCount = 120
         model.snapshot.completedCount = 101
-        try render(model, name: "large-counts", output: output, height: 56...56)
-        precondition(model.compactWidth == 178, "Large counts grew into the menu bar")
+        try render(model, name: "large-counts", output: output, height: 32...32)
+        precondition(model.cameraSideWidth <= 70, "Large counts exceeded the compact side-indicator budget")
         model.expanded = true
         let largeCountsSize = try render(model, name: "large-counts-expanded", output: output, height: 300...440)
         model.snapshot.activeCount = 2
         model.snapshot.completedCount = 1
         let activeSize = try render(model, name: "active", output: output, height: 300...420)
-        precondition(largeCountsSize == activeSize, "Large counts wrapped the tabs instead of fitting the compact layout")
+        precondition(largeCountsSize.height == activeSize.height, "Large counts wrapped the tabs instead of fitting the compact layout")
         model.metrics = cameraMetrics(width: 156, height: 28)
-        try render(model, name: "active-small-camera", output: output, height: 280...410)
+        try render(model, name: "active-small-camera", output: output, height: 300...460)
         model.metrics = cameraMetrics(width: 220)
         try render(model, name: "active-wide-camera", output: output, height: 350...490)
         model.metrics = NotchMetrics(screen: CGRect(x: 0, y: 0, width: 1280, height: 800))
@@ -83,13 +85,13 @@ struct LayoutTests {
         model.failedTask = nil
         model.snapshot = CodexSnapshot(loading: false)
         precondition(model.weeklyText == "—" && model.visibleTasks.isEmpty)
-        try render(model, name: "empty", output: output, height: 300...430)
+        try render(model, name: "empty", output: output, height: 300...480)
         model.snapshot.weekly = WeeklyUsage(usedPercent: 100, resetsAt: 0, expired: true)
         precondition(model.weeklyText == "—")
         model.snapshot.error = "Could not read Codex sessions: permission denied."
-        try render(model, name: "read-error", output: output, height: 330...480)
+        try render(model, name: "read-error", output: output, height: 330...510)
         model.snapshot = CodexSnapshot(loading: true)
-        try render(model, name: "loading", output: output, height: 300...430)
+        try render(model, name: "loading", output: output, height: 300...480)
         verifyDisplaySizing()
         verifyResize()
         try verifyBoundedContent(output: output)
@@ -103,7 +105,7 @@ struct LayoutTests {
         verifyHoverLifecycle()
         verifyScreenEdgeHover()
         try verifyDockPreferencePersistence()
-        print("PASS: 16 native SwiftUI layouts; filters, remaining quota, errors and constant-width expand/collapse sizing")
+        print("PASS: 17 native SwiftUI layouts; filters, remaining quota, errors and constant-width expand/collapse sizing")
     }
 
     private static func cameraMetrics(
@@ -219,8 +221,8 @@ struct LayoutTests {
         let external = CGRect(x: -10000, y: -10000, width: 1920, height: 1080)
         let builtin = CGRect(x: -11470, y: -9876, width: 1470, height: 956)
         let camera = cameraMetrics(screen: builtin)
-        precondition(camera.width == 178 && camera.cameraHeight == 32 && camera.compactHeight == 56)
-        precondition(camera.contentScale == 178 / 216)
+        precondition(camera.width == 260 && camera.cameraWidth == 180 && camera.cameraHeight == 32 && camera.compactHeight == 32)
+        precondition(camera.contentScale == 1 && camera.cameraSideWidth == 40)
         let small = CGRect(x: -10000, y: -10000, width: 1280, height: 800)
         precondition(NotchMetrics(screen: small).width == 180)
         let model = CompanionModel()
@@ -253,13 +255,16 @@ struct LayoutTests {
                     model.snapshot.completedCount = count
                     presentation.update(screen: screen)
                     RunLoop.main.run(until: Date().addingTimeInterval(0.02))
-                    precondition(panel.frame.width == metrics.width, "Display changes retained the old width")
+                    precondition(panel.frame.width == model.compactWidth, "Display changes retained the old width")
                     precondition(panel.frame.midX == screen.midX + metrics.centerOffset && panel.frame.maxY == screen.maxY,
                                  "The notch did not follow the new display's camera position: \(panel.frame), screen \(screen), metrics \(metrics)")
                     if metrics.hasCamera {
-                        let leftEdge = screen.midX + metrics.centerOffset - metrics.width / 2
-                        precondition(panel.frame.minX == leftEdge && panel.frame.maxX == leftEdge + metrics.width,
-                                     "The notch covers menu-bar space outside the camera gap")
+                        let cameraLeft = screen.midX + metrics.centerOffset - metrics.cameraWidth / 2
+                        precondition(panel.frame.minX + model.cameraSideWidth == cameraLeft &&
+                                     panel.frame.maxX - model.cameraSideWidth == cameraLeft + metrics.cameraWidth,
+                                     "A display/count change moved the reserved camera gap")
+                        precondition(model.compactHeight == metrics.cameraHeight,
+                                     "The indicators dropped below the menu-bar band")
                     }
                 }
                 // Published counter updates can invalidate SwiftUI's measured
@@ -279,7 +284,7 @@ struct LayoutTests {
         presentation.update(screen: external)
         model.metrics = camera
         presentation.update(screen: builtin)
-        precondition(panel.frame.size == CGSize(width: 178, height: 56) && !presentation.isAnimating)
+        precondition(panel.frame.size == CGSize(width: model.compactWidth, height: 32) && !presentation.isAnimating)
         precondition(NotchMetrics(screen: builtin, safeTop: 32).cameraHeight == 0,
                      "Missing camera metadata must fall back to a compact ordinary strip")
         print("Display sizing: disconnect/reconnect, compact/expanded, camera gap, large counts, scaled resolution and offset origins passed")
@@ -305,13 +310,14 @@ struct LayoutTests {
             panel: compact.offsetBy(dx: offset.x, dy: offset.y),
             screen: screen.offsetBy(dx: offset.x, dy: offset.y)))
 
-        let cameraPanel = CGRect(x: 870.5, y: 1024, width: 179, height: 56)
-        for point in [CGPoint(x: 960, y: 1080), CGPoint(x: 870.5, y: 1080),
-                      CGPoint(x: 862.5, y: 1047), CGPoint(x: 1057.5, y: 1035)] {
+        let cameraPanel = CGRect(x: 830, y: 1048, width: 260, height: 32)
+        for point in [CGPoint(x: 960, y: 1080), CGPoint(x: 830, y: 1080),
+                      CGPoint(x: 840, y: 1064), CGPoint(x: 1080, y: 1064),
+                      CGPoint(x: 822, y: 1047), CGPoint(x: 1098, y: 1042)] {
             precondition(NotchHoverRegion.contains(point, panel: cameraPanel, screen: screen, cameraHeight: 32),
-                         "The camera strip lost its top edge or lower hover margin")
+                         "The camera side indicators lost their top edge or lower hover margin")
         }
-        for point in [CGPoint(x: 870, y: 1080), CGPoint(x: 1050, y: 1060), CGPoint(x: 862.5, y: 1048)] {
+        for point in [CGPoint(x: 829, y: 1080), CGPoint(x: 1091, y: 1060), CGPoint(x: 822, y: 1048)] {
             precondition(!NotchHoverRegion.contains(point, panel: cameraPanel, screen: screen, cameraHeight: 32),
                          "Hovering a menu icon beside the camera opened the panel")
         }
@@ -565,8 +571,10 @@ struct LayoutTests {
             // a fade or a vertically centered SwiftUI root would otherwise pass.
             let scale = CGFloat(pixels.pixelsWide) / surface.bounds.width
             var header: [UInt8] = []
-            for y in stride(from: 2, to: Int(model.compactHeight * scale) - 2, by: 4) {
-                for x in stride(from: Int(28 * scale), to: pixels.pixelsWide - Int(28 * scale), by: 4) {
+            let horizontalInset: CGFloat = camera ? 8 : 28
+            let verticalInset: CGFloat = camera ? 4 : 2
+            for y in stride(from: Int(verticalInset * scale), to: Int((model.compactHeight - verticalInset) * scale), by: 4) {
+                for x in stride(from: Int(horizontalInset * scale), to: pixels.pixelsWide - Int(horizontalInset * scale), by: 4) {
                     let color = pixels.colorAt(x: x, y: y)!.usingColorSpace(.deviceRGB)!
                     header += [color.redComponent, color.greenComponent, color.blueComponent, color.alphaComponent]
                         .map { UInt8((min(1, max(0, $0)) * 255).rounded()) }
@@ -653,7 +661,41 @@ struct LayoutTests {
         precondition(height.contains(size.height), "Unexpected height for \(name): \(size)")
         guard let image = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { fatalError("Could not render \(name)") }
         host.cacheDisplay(in: host.bounds, to: image)
-        try image.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("\(name).png"))
+        let png = image.representation(using: .png, properties: [:])!
+        try png.write(to: output.appendingPathComponent("\(name).png"))
+        if model.hasCamera {
+            let pixels = NSBitmapImageRep(data: png)!
+            let scale = CGFloat(pixels.pixelsWide) / size.width
+            let cameraStart = Int(model.cameraSideWidth * scale)
+            let cameraEnd = Int((model.cameraSideWidth + model.metrics.cameraWidth) * scale)
+            var leftInk = 0
+            var rightInk = 0
+            var rightInkTop = pixels.pixelsHigh
+            var rightInkBottom = 0
+            for y in 2..<Int(model.metrics.cameraHeight * scale) - 2 {
+                for x in 2..<pixels.pixelsWide - 2 {
+                    let color = pixels.colorAt(x: x, y: y)!.usingColorSpace(.deviceRGB)!
+                    let hasInk = max(color.redComponent, color.greenComponent, color.blueComponent) > 0.2
+                    if x >= cameraStart && x < cameraEnd {
+                        precondition(!hasInk, "\(name): an indicator is hidden under the physical camera")
+                    } else if hasInk {
+                        if x < cameraStart {
+                            leftInk += 1
+                        } else {
+                            rightInk += 1
+                            rightInkTop = min(rightInkTop, y)
+                            rightInkBottom = max(rightInkBottom, y)
+                        }
+                    }
+                }
+            }
+            // A missing-quota em dash has very little ink on a 1× CI display.
+            let minimumInk = Int(3 * scale * scale)
+            precondition(leftInk > minimumInk && rightInk > minimumInk,
+                         "\(name): counters/quota are missing from the menu-bar row beside the camera")
+            precondition(CGFloat(rightInkBottom - rightInkTop) < 14 * model.metrics.cameraContentScale * scale,
+                         "\(name): the compact quota wrapped onto a second line")
+        }
         window.close()
         print("\(name): \(size.width) × \(size.height)")
         return size

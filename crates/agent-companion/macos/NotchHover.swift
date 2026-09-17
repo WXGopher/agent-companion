@@ -6,8 +6,8 @@ import Foundation
 enum NotchHoverRegion {
     static func contains(_ point: CGPoint, panel: CGRect, screen: CGRect, cameraHeight: CGFloat = 0) -> Bool {
         guard !panel.isEmpty, !screen.isEmpty else { return false }
-        // Do not open while pointing at menu icons beside the hardware notch.
-        // The forgiving side margin still applies to the visible strip below it.
+        // In the menu bar, stop exactly at our narrow side indicators instead
+        // of extending the hover margin onto neighbouring menu icons.
         if cameraHeight > 0 && point.y >= screen.maxY - cameraHeight,
            point.x < panel.minX || point.x > panel.maxX { return false }
         let area = panel.insetBy(dx: -12, dy: -8).intersection(screen)
