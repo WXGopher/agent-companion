@@ -29,7 +29,7 @@
 - v0.3.1 完善主屏跟随、菜单栏贴边、悬停容错、周剩余额度、Dock 偏好和 macOS 设置界面；[发布说明](releases/v0.3.1.md)记录本版交付范围。
 - Windows 以编译通过为交付要求，CI 另运行平台自动测试。
 
-## 订阅用量（v0.3.10）
+## 订阅用量（开发中，未发布）
 
 - 面板顶部固定显示 **Tasks / Usage** 切换，即使滚动到底部或屏幕较矮也保持可见；Tasks 返回之前的任务分类（Active / Finished）。也可点击周额度卡片或使用 ⌘3 打开用量，⌘0 返回任务。展开宽度保持不变。
 - 参考 [Open Island 固定版本的字号](https://github.com/Octane0411/open-vibe-island/blob/b50f87aa7d58af1478837d48909eb68baa37f9b9/Sources/OpenIslandApp/Views/IslandPanelView.swift#L1593)：任务标题约 13.2–13.8 pt，说明常用 10–11.2 pt。Agent Companion 去掉 20 pt 的重复页面大标题，展开正文和间距缩小 10%，Token 主数字由 18 pt 调到约 13.5 pt；小字至少 9 pt。设置页主标题从 23 pt 调到 20 pt，组件行高从 38 点调到 34 点。菜单栏数字、摄像头间隔与悬停区域保持现有尺寸。
@@ -40,11 +40,11 @@
 - **查询开销：** 菜单栏默认额度在启动时读取，之后每 2 分钟扫描本地额度记录；沿用 [Open Island 参考版本的 120 秒间隔](https://github.com/Octane0411/open-vibe-island/blob/b50f87aa7d58af1478837d48909eb68baa37f9b9/Sources/OpenIslandApp/HookInstallationCoordinator.swift#L1312)。任务仍每 2 秒读取，界面每秒检查已有快照；只有 Codex 写入新的额度记录时数值才会更新，已缓存额度的过期判断无需等待下次扫描。Usage 的额度和 Token 统计使用上面的账号读取接口，仍按五分钟缓存／刷新，调用链没有 `turn/start`、模型输入或生成请求，因此不产生推理 Token 消耗；只产生短时 CLI 和普通网络读取开销。旧 CLI 仍可显示可用的额度，并提示更新以读取 Token。
 - Finder 启动不读取 shell 初始化文件；按进程 PATH、常见 CLI 安装路径和 Codex.app 内置命令寻找 Codex。首次需要在 Codex 中完成订阅登录。
 - 本地验证：真实订阅登录成功读取汇总、198 条每日记录与额度；只记录成功状态和记录数，没有记录账号标识或凭据。离线检查覆盖空值、真实零值、额度过期、旧 CLI、未登录／API 登录、协议分帧／乱序、超大输出、异常退出、超时和取消后无残留进程。原生布局覆盖普通屏和摄像头屏、加载与错误状态、滚动和固定宽度；已有任务切换、悬停、动画、双屏与设置检查继续通过。
-- 实际本地 app 已检查订阅数据展示、Usage 按钮、⌘3 入口、Tasks 返回与 Esc 收起。首次读数明确定位到顶部，后续刷新保留滚动位置；新增对应检查。macOS 完整测试、Clippy、优化构建与 Windows GNU 三个程序交叉编译通过；这些是开发阶段的本地结果；正式发布验证记录见 [v0.3.10 Release](https://github.com/WXGopher/agent-companion/releases/tag/v0.3.10)。
-- 顶部导航与密度调整后，补充普通屏／摄像头屏的短窗口滚动检查：滚动到底部时导航像素不动，反复 Tasks / Usage 往返保留 Finished 分类，十次往返只发起一轮读取。真实本地 app 已确认滚动后直接点 Tasks 返回 Finished，重新进入 Usage 沿用相同更新时间。原生回归、两项编辑器单元测试、九种设置渲染、格式和 Clippy 通过；Windows GNU 三个 PE64 程序编译成功，该轮为本地验证，正式 CI 结果在发布页记录。
+- 实际本地 app 已检查订阅数据展示、Usage 按钮、⌘3 入口、Tasks 返回与 Esc 收起。首次读数明确定位到顶部，后续刷新保留滚动位置；新增对应检查。macOS 完整测试、Clippy、优化构建与 Windows GNU 三个程序交叉编译通过；该开发提交已通过 [Windows MSVC 与 macOS arm64 CI](https://github.com/WXGopher/agent-companion/actions/runs/35246192534)；发布已暂停，未创建新版本。
+- 顶部导航与密度调整后，补充普通屏／摄像头屏的短窗口滚动检查：滚动到底部时导航像素不动，反复 Tasks / Usage 往返保留 Finished 分类，十次往返只发起一轮读取。真实本地 app 已确认滚动后直接点 Tasks 返回 Finished，重新进入 Usage 沿用相同更新时间。原生回归、两项编辑器单元测试、九种设置渲染、格式和 Clippy 通过；Windows GNU 三个 PE64 程序编译成功，未运行新的远端 CI。
 - 两分钟额度间隔回归覆盖首次立即读取、119 秒内复用、120 秒时读到新值、期间任务完成即时可见、缓存到期判断及读取失败后的重试。四项 dashboard 检查、格式、Clippy 与 Windows GNU 编译通过；未更改其他刷新间隔。
 
-## 设置分区（v0.3.10）
+## 设置分区（开发中，未发布）
 
 - 设置默认打开 **Codex CLI** 分区。状态栏实时预览横向铺满组件列表上方，显示示例值；下方为双列组件选择、配置路径与保存区域。长预览可滚动，全部取消时显示隐藏状态。
 - **Notch & app** 独立管理显示器选择和 Dock 图标，按 Display 与 App appearance 分组；这两项即时保存，不与 TUI 的 Apply 混在一起。
