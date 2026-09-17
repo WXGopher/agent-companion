@@ -38,8 +38,9 @@ fn check_editor_startup() {
         }
     });
     let home = tempfile::tempdir().unwrap();
+    let config_path = home.path().join("config.toml");
     macos::prepare_editor().unwrap();
-    let editor = codex_tui::Editor::new(home.path().join("config.toml")).unwrap();
+    let editor = codex_tui::Editor::new(config_path.clone()).unwrap();
     // Freeze live preferences while rendering synthetic UI states. This never
     // writes the user's display choice or changes the actual primary screen.
     editor.preference_timer.stop();
@@ -104,7 +105,17 @@ fn check_editor_startup() {
                 path.with_file_name(format!(
                     "{}-{}.pam",
                     path.file_stem().unwrap().to_string_lossy(),
-                    ["light", "dark", "compact-dirty", "compact-error"][phase]
+                    [
+                        "light",
+                        "notch",
+                        "dark",
+                        "compact-dirty",
+                        "notch-dirty",
+                        "notch-error",
+                        "compact-error",
+                        "all-components",
+                        "hidden",
+                    ][phase]
                 ))
             };
             let mut image = std::fs::File::create(path).unwrap();
@@ -118,8 +129,12 @@ fn check_editor_startup() {
             image.write_all(pixels.as_bytes()).unwrap();
         }
         match phase {
-            0 => window.global::<ui::Palette>().set_color_scheme(ColorScheme::Dark),
+            0 => window.set_settings_page(1),
             1 => {
+                window.set_settings_page(0);
+                window.global::<ui::Palette>().set_color_scheme(ColorScheme::Dark);
+            }
+            2 => {
                 window.window().set_size(slint::LogicalSize::new(820.0, 660.0));
                 window.set_selected_display(3);
                 window.set_display_status("Display disconnected. Using the primary display until it returns.".into());
@@ -127,13 +142,34 @@ fn check_editor_startup() {
                 assert!(window.get_dirty());
                 assert!(window.get_preview().contains("main"));
             }
-            2 => {
+            3 => window.set_settings_page(1),
+            4 => {
+                assert!(window.get_dirty());
+                assert!(window.get_preview().contains("main"));
                 window.global::<ui::Palette>().set_color_scheme(ColorScheme::Light);
                 window.set_display_error(true);
+                window.set_dock_error(true);
                 window.set_error(true);
                 window.set_message("Could not save: the status bar was changed outside Agent Companion. Reopen Settings to load the latest configuration.".into());
             }
+            5 => window.set_settings_page(0),
+            6 => {
+                assert!(window.get_dirty(), "Switching settings sections lost the draft");
+                assert!(window.get_preview().contains("main"));
+                assert!(!config_path.exists(), "Switching sections saved the draft");
+                window.set_error(false);
+                for item in agent_companion_core::install::codex_tui::COMPONENTS {
+                    window.invoke_toggle(item.id.into(), true);
+                }
+            }
+            7 => {
+                assert_eq!(window.get_selected_count() as usize, agent_companion_core::install::codex_tui::COMPONENTS.len());
+                for item in agent_companion_core::install::codex_tui::COMPONENTS {
+                    window.invoke_toggle(item.id.into(), false);
+                }
+            }
             _ => {
+                assert_eq!(window.get_selected_count(), 0);
                 // A selection that disappeared before saving must restore the
                 // persisted choice, without touching real display preferences.
                 window.set_display_error(false);
@@ -154,6 +190,6 @@ fn check_editor_startup() {
     finished.send(()).unwrap();
     watchdog.join().unwrap();
     println!(
-        "PASS: opaque AppKit settings frame; Slint light/dark, display choices/disconnection/errors, minimum size and live draft; no user config or display preference writes"
+        "PASS: opaque AppKit settings frame; both settings sections, light/dark, minimum size, long/hidden preview and display errors; navigation preserves the draft without saving; no user config or display preference writes"
     );
 }
