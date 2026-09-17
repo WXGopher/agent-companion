@@ -264,7 +264,11 @@ enum SubscriptionUsageTests {
                 view.cacheDisplay(in: view.bounds, to: image)
                 try image.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("usage-\(camera ? "camera" : "external")-\(state).png"))
                 if state == "ready" {
-                    guard let scroll = scrollViews(in: view).first, let document = scroll.documentView else { fatalError("No usage scroll view") }
+                    // Both pages remain mounted. Select the Usage viewport by
+                    // its specified height, rather than the first page's view.
+                    let usageHeight = (330 * model.metrics.detailScale).rounded()
+                    guard let scroll = scrollViews(in: view).first(where: { abs($0.frame.height - usageHeight) < 1 }),
+                          let document = scroll.documentView else { fatalError("No usage scroll view") }
                     precondition(abs(scroll.contentView.bounds.minY) < 1, "The first account response scrolled past the subscription limits")
                     precondition(document.bounds.height > scroll.contentSize.height, "Remaining usage fields must be reachable by scrolling")
                     scroll.contentView.scroll(to: CGPoint(x: 0, y: document.bounds.height - scroll.contentSize.height))
@@ -274,7 +278,7 @@ enum SubscriptionUsageTests {
                     model.subscriptionUsage.readAt = model.subscriptionUsage.readAt?.addingTimeInterval(1)
                     presentation.update(screen: screen, animated: false)
                     RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-                    precondition(scrollViews(in: view).first === scroll && abs(scroll.contentView.bounds.minY - offset) < 1,
+                    precondition(scrollViews(in: view).contains(where: { $0 === scroll }) && abs(scroll.contentView.bounds.minY - offset) < 1,
                                  "A usage refresh reset the scroll position or replaced the scroll view")
                     view.cacheDisplay(in: view.bounds, to: image)
                     try image.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("usage-\(camera ? "camera" : "external")-bottom.png"))

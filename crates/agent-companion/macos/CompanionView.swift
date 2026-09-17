@@ -126,15 +126,7 @@ struct CompanionView: View {
     private var expanded: some View {
         VStack(alignment: .leading, spacing: scaled(13)) {
             pageNavigation
-            if detailsHeight != nil {
-                ScrollView {
-                    expandedContent
-                }
-                .scrollIndicators(.visible)
-                .frame(maxHeight: .infinity)
-            } else {
-                expandedContent
-            }
+            expandedContent
             Divider().overlay(.white.opacity(0.06))
             footer
         }
@@ -144,13 +136,41 @@ struct CompanionView: View {
     }
 
     private var expandedContent: some View {
-        Group {
-            if model.showingUsage {
+        // Page selection is presentation state, not view identity or geometry.
+        // Keep both trees and size to their shared maximum. Replacing a page
+        // with `if` destroys its NSScrollView and changes the measured height
+        // before the native panel finishes resizing, flashing the footer.
+        ZStack(alignment: .top) {
+            pageViewport { taskContent }
+                .opacity(model.showingUsage ? 0 : 1)
+                .allowsHitTesting(!model.showingUsage)
+                .accessibilityElement(children: .contain)
+                .accessibilityHidden(model.showingUsage)
+            pageViewport {
                 SubscriptionUsageView(usage: model.subscriptionUsage, loading: model.usageLoading,
                                       scale: model.metrics.detailScale, refresh: { model.refreshUsage(force: true) })
-            } else {
-                taskContent
             }
+                .opacity(model.showingUsage ? 1 : 0)
+                .allowsHitTesting(model.showingUsage)
+                .accessibilityElement(children: .contain)
+                .accessibilityHidden(!model.showingUsage)
+        }
+        // Do not disable a hidden page: AppKit would remove its legacy
+        // scrollers, reflow its text and clamp its saved scroll offset.
+        // The surface owns expand/collapse motion. Page changes must never
+        // inherit a SwiftUI fade or animate layout independently of that surface.
+        .transaction { $0.animation = nil; $0.disablesAnimations = true }
+    }
+
+    @ViewBuilder private func pageViewport<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        if detailsHeight != nil {
+            // Overflow belongs to each page. Sharing this scroll offset would
+            // open Usage below its content after scrolling a long task error.
+            ScrollView { content() }
+                .scrollIndicators(.visible)
+                .frame(maxHeight: .infinity)
+        } else {
+            content()
         }
     }
 
