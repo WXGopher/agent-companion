@@ -47,9 +47,9 @@ struct CompanionView: View {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("notch-summary")
-        .accessibilityLabel("Codex: \(model.snapshot.activeCount) active, \(model.snapshot.completedCount) recently finished. Weekly quota remaining: \(model.weeklyText)")
+        .accessibilityLabel(model.summaryDescription)
         .accessibilityHint("Open task list")
-        .help("\(model.snapshot.activeCount) active · \(model.snapshot.completedCount) finished in the last 15 minutes · Weekly quota remaining: \(model.weeklyText)")
+        .help(model.summaryDescription + " · \(model.snapshot.completedCount) finished in the last 15 minutes")
         .contextMenu {
             Button("Show tasks") { model.expand?() }
             Button("Settings…") { model.openSettings() }
@@ -60,17 +60,9 @@ struct CompanionView: View {
 
     private var ordinarySummary: some View {
         HStack(spacing: 0) {
-            HStack(spacing: compactScaled(7)) {
-                count(model.snapshot.activeCount, symbol: "circle.inset.filled", tint: CompanionModel.accent)
-                count(model.snapshot.completedCount, symbol: "checkmark", tint: .white.opacity(0.7))
-            }
+            quotaSummary(scale: compactScaled(1.2))
             Spacer(minLength: compactScaled(8))
-            HStack(spacing: compactScaled(3)) {
-                Text(model.weeklyText).monospacedDigit().fontWeight(.semibold).lineLimit(1).fixedSize()
-                if model.weeklyRemainingPercent != nil {
-                    Text("left").font(.system(size: compactScaled(9))).foregroundStyle(.white.opacity(0.5)).fixedSize()
-                }
-            }
+            workingSummary(scale: compactScaled(1.2))
         }
         .frame(height: model.metrics.statsHeight)
         .padding(.horizontal, compactScaled(10))
@@ -79,47 +71,43 @@ struct CompanionView: View {
     private var cameraSummary: some View {
         let scale = model.metrics.cameraContentScale
         return HStack(spacing: 0) {
-            HStack(spacing: 4 * scale) {
-                cameraCount(model.snapshot.activeCount, symbol: "circle.inset.filled", tint: CompanionModel.accent)
-                cameraCount(model.snapshot.completedCount, symbol: "checkmark", tint: .white.opacity(0.7))
-            }
+            quotaSummary(scale: scale)
             .frame(maxWidth: .infinity, alignment: .trailing)
-            .padding(.leading, 8 * scale).padding(.trailing, 2 * scale)
-            .frame(width: model.cameraSideWidth)
+            .padding(.leading, 9 * scale).padding(.trailing, 3 * scale)
+            .frame(width: model.cameraLeftWidth)
 
             // These are physical camera pixels, not a place to draw content.
             Color.clear.frame(width: model.metrics.cameraWidth)
 
-            HStack(spacing: 2 * scale) {
-                Text(model.weeklyText)
-                    .font(.system(size: 10 * scale, weight: .semibold)).monospacedDigit()
-                    .lineLimit(1).fixedSize()
-                if model.weeklyRemainingPercent != nil {
-                    Text("left").font(.system(size: 8 * scale)).foregroundStyle(.white.opacity(0.6))
-                        .lineLimit(1).fixedSize()
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.leading, 2 * scale).padding(.trailing, 8 * scale)
-            .frame(width: model.cameraSideWidth)
+            workingSummary(scale: scale)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, 3 * scale).padding(.trailing, 9 * scale)
+            .frame(width: model.cameraRightWidth)
         }
         .frame(height: model.metrics.cameraHeight)
     }
 
-    private func cameraCount(_ value: Int, symbol: String, tint: Color) -> some View {
-        let scale = model.metrics.cameraContentScale
-        return HStack(spacing: scale) {
-            Image(systemName: symbol).font(.system(size: 5 * scale, weight: .semibold))
-                .foregroundStyle(tint).frame(width: 5 * scale)
-            Text(model.countText(value)).font(.system(size: 10 * scale, weight: .semibold))
-                .monospacedDigit().lineLimit(1).fixedSize()
-        }
+    private func quotaSummary(scale: CGFloat) -> some View {
+        Text(model.weeklyText)
+            .font(.system(size: 10 * scale, weight: .semibold)).monospacedDigit()
+            .foregroundStyle(model.quotaTint).lineLimit(1).fixedSize()
     }
 
-    private func count(_ count: Int, symbol: String, tint: Color) -> some View {
-        HStack(spacing: compactScaled(3)) {
-            Image(systemName: symbol).font(.system(size: compactScaled(8), weight: .semibold)).foregroundStyle(tint)
-            Text(model.countText(count)).monospacedDigit().fontWeight(.semibold).lineLimit(1).fixedSize()
+    private func workingSummary(scale: CGFloat) -> some View {
+        HStack(spacing: 4 * scale) {
+            HStack(spacing: 2 * scale) {
+                Image(systemName: "circle.inset.filled")
+                    .font(.system(size: 6 * scale, weight: .semibold)).frame(width: 6 * scale)
+                Text(model.countText(model.workingCount))
+                    .font(.system(size: 10 * scale, weight: .semibold)).monospacedDigit()
+                    .lineLimit(1).fixedSize()
+            }
+            .foregroundStyle(model.workingCount > 0 ? CompanionModel.accent : .white.opacity(0.55))
+            if model.needsInput {
+                Image(systemName: "questionmark")
+                    .font(.system(size: 10 * scale, weight: .bold)).frame(width: 6 * scale)
+                    .foregroundStyle(.orange)
+            }
         }
     }
 
