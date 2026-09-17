@@ -6,13 +6,14 @@ struct SubscriptionUsageView: View {
     let loading: Bool
     let scale: CGFloat
     let refresh: () -> Void
-    private func s(_ value: CGFloat) -> CGFloat { value * scale }
+    private func s(_ value: CGFloat) -> CGFloat { (value * scale).rounded() }
+    private func f(_ value: CGFloat) -> CGFloat { max(9, value * scale) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: s(10)) {
             HStack {
                 Text(loading ? "Refreshing…" : updatedText)
-                    .font(.system(size: s(10))).foregroundStyle(.secondary).lineLimit(1)
+                    .font(.system(size: f(10))).foregroundStyle(.secondary).lineLimit(1)
                 Spacer(minLength: s(4))
                 Button(action: refresh) {
                     Image(systemName: "arrow.clockwise").frame(width: s(26), height: s(24))
@@ -50,7 +51,7 @@ struct SubscriptionUsageView: View {
                 limits
                 tokens
                 Text("Codex account activity may be delayed. Token totals do not measure remaining allowance.")
-                    .font(.system(size: s(10))).foregroundStyle(.secondary)
+                    .font(.system(size: f(10))).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -71,12 +72,12 @@ struct SubscriptionUsageView: View {
                 ForEach(limits.buckets, id: \.id) { bucket in
                     VStack(alignment: .leading, spacing: s(10)) {
                         Text(bucketTitle(bucket.id, bucket.value))
-                            .font(.system(size: s(11), weight: .medium)).foregroundStyle(.secondary)
+                            .font(.system(size: f(11), weight: .medium)).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                         if let primary = bucket.value.primary { quota(primary, fallback: "Primary") }
                         if let secondary = bucket.value.secondary { quota(secondary, fallback: "Secondary") }
                         if bucket.value.primary == nil && bucket.value.secondary == nil {
-                            Text("No allowance window reported.").font(.system(size: s(11))).foregroundStyle(.secondary)
+                            Text("No allowance window reported.").font(.system(size: f(11))).foregroundStyle(.secondary)
                         }
                     }
                     .padding(s(11)).background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: s(12)))
@@ -100,7 +101,7 @@ struct SubscriptionUsageView: View {
                 Text(remaining.map { "\($0)% left" } ?? "—").monospacedDigit()
                     .foregroundStyle(remaining.map { $0 <= 10 } == true ? .orange : CompanionModel.accent)
             }
-            .font(.system(size: s(11), weight: .medium))
+            .font(.system(size: f(11), weight: .medium))
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
                     Capsule().fill(.white.opacity(0.10))
@@ -110,10 +111,10 @@ struct SubscriptionUsageView: View {
             }.frame(height: s(3)).accessibilityHidden(true)
             if remaining == nil {
                 Text("Reset passed · refresh for a new reading")
-                    .font(.system(size: s(9))).foregroundStyle(.secondary)
+                    .font(.system(size: f(9))).foregroundStyle(.secondary)
             } else if let resets = window.resetsAt {
                 Text("Resets \(Date(timeIntervalSince1970: resets).formatted(date: .abbreviated, time: .shortened))")
-                    .font(.system(size: s(9))).foregroundStyle(.secondary)
+                    .font(.system(size: f(9))).foregroundStyle(.secondary)
             }
         }
         .accessibilityElement(children: .combine)
@@ -134,18 +135,18 @@ struct SubscriptionUsageView: View {
                             Text("Latest day").foregroundStyle(.secondary)
                             Spacer(minLength: s(2))
                             Text(latest.startDate).foregroundStyle(.secondary)
-                        }.font(.system(size: s(10)))
+                        }.font(.system(size: f(10)))
                         Text(UsageNumber.short(latest.tokens) + " tokens")
-                            .font(.system(size: s(18), weight: .semibold)).monospacedDigit()
+                            .font(.system(size: f(15), weight: .semibold)).monospacedDigit()
                             .help(UsageNumber.full(latest.tokens) + " tokens")
                             .accessibilityLabel(UsageNumber.full(latest.tokens) + " tokens on " + latest.startDate)
                         dailyChart(tokens.recentDays)
                         Text("Last \(tokens.recentDays.count) reported days")
-                            .font(.system(size: s(9))).foregroundStyle(.secondary)
+                            .font(.system(size: f(9))).foregroundStyle(.secondary)
                     }
                     .padding(s(11)).background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: s(12)))
                 } else {
-                    Text("Daily history is not available.").font(.system(size: s(10))).foregroundStyle(.secondary)
+                    Text("Daily history is not available.").font(.system(size: f(10))).foregroundStyle(.secondary)
                 }
                 VStack(spacing: s(8)) {
                     detail("Current streak", value: dayCount(tokens.summary.currentStreakDays))
@@ -154,20 +155,20 @@ struct SubscriptionUsageView: View {
                 }
                 .padding(s(11)).background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: s(12)))
                 Text("— = not reported. Account input/output breakdown unavailable.")
-                    .font(.system(size: s(9))).foregroundStyle(.secondary)
+                    .font(.system(size: f(9))).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
 
     private func sectionTitle(_ title: String) -> some View {
-        Text(title).font(.system(size: s(9), weight: .semibold)).tracking(s(0.7)).foregroundStyle(.secondary)
+        Text(title).font(.system(size: f(9), weight: .semibold)).tracking(s(0.7)).foregroundStyle(.secondary)
     }
 
     private func metric(_ title: String, value: Int64?) -> some View {
         VStack(alignment: .leading, spacing: s(6)) {
-            Text(title).font(.system(size: s(10))).foregroundStyle(.secondary)
-            Text(UsageNumber.short(value)).font(.system(size: s(18), weight: .semibold))
+            Text(title).font(.system(size: f(10))).foregroundStyle(.secondary)
+            Text(UsageNumber.short(value)).font(.system(size: f(15), weight: .semibold))
                 .monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
                 .foregroundStyle(CompanionModel.accent)
         }
@@ -188,7 +189,7 @@ struct SubscriptionUsageView: View {
                         RoundedRectangle(cornerRadius: s(2)).fill(CompanionModel.accent.opacity(0.75))
                             .frame(height: s(38) * CGFloat(Double(day.tokens) / peak))
                     }.frame(height: s(38))
-                    Text(String(day.startDate.suffix(2))).font(.system(size: s(8))).foregroundStyle(.secondary)
+                    Text(String(day.startDate.suffix(2))).font(.system(size: f(8))).foregroundStyle(.secondary)
                 }
                 .help(day.startDate + ": " + UsageNumber.full(day.tokens) + " tokens")
                 .accessibilityElement(children: .ignore)
@@ -207,13 +208,13 @@ struct SubscriptionUsageView: View {
             Text(title).foregroundStyle(.secondary)
             Spacer(minLength: 0)
             Text(value).monospacedDigit().multilineTextAlignment(.trailing)
-        }.font(.system(size: s(10))).accessibilityElement(children: .combine)
+        }.font(.system(size: f(10))).accessibilityElement(children: .combine)
     }
 
     private func guidance(_ text: String, symbol: String) -> some View {
         VStack(alignment: .leading, spacing: s(10)) {
-            Image(systemName: symbol).font(.system(size: s(20))).foregroundStyle(CompanionModel.accent)
-            Text(text).font(.system(size: s(11))).fixedSize(horizontal: false, vertical: true)
+            Image(systemName: symbol).font(.system(size: f(20))).foregroundStyle(CompanionModel.accent)
+            Text(text).font(.system(size: f(11))).fixedSize(horizontal: false, vertical: true)
         }
         .padding(s(12)).frame(maxWidth: .infinity, alignment: .leading)
         .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: s(12)))

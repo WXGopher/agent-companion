@@ -67,7 +67,7 @@ import Combine
                 precondition(surface.subviews[0] === host && scrollViews(in: surface).first === scroll,
                              "Switching task tabs recreated the hosting view or native scroll view")
                 precondition(scroll.convert(scroll.bounds, to: surface) == viewport,
-                             "Switching task tabs moved the list viewport")
+                             "Switching task tabs moved the list viewport: \(viewport) → \(scroll.convert(scroll.bounds, to: surface)), camera \(camera), counts \(active)/\(finished)")
                 precondition(abs(scroll.contentView.bounds.minY) < 1,
                              "Switching task tabs kept the previous list's scroll offset")
                 verifyPixels(pixels, match: baseline, height: frame.height, compactHeight: model.compactHeight)

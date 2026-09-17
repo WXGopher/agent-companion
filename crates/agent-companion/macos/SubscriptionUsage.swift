@@ -146,7 +146,9 @@ final class SubscriptionMonitor {
     func stop() {
         generation &+= 1
         reader.cancel()
+        // Reopening a completed read within five minutes uses the existing
+        // snapshot. An interrupted request is retried on the next visit.
+        if inFlight { lastAttempt = nil }
         inFlight = false
-        lastAttempt = nil
     }
 }

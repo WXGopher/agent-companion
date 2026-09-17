@@ -24,12 +24,12 @@ component ComponentChoice inherits Rectangle {
     in property <StatusComponent> item;
     in property <bool> available;
     callback toggle(string, bool);
-    height: 38px;
+    height: 34px;
     border-radius: 8px;
     background: root.item.selected ? SettingsColors.selected : SettingsColors.card;
     Tooltip { text: @markdown("\{root.item.description}"); }
     HorizontalLayout {
-        padding: 10px;
+        padding: 8px;
         spacing: 8px;
         CheckBox {
             width: 16px;
@@ -45,7 +45,7 @@ component ComponentChoice inherits Rectangle {
                 height: parent.height;
                 text: root.item.label;
                 color: root.available ? SettingsColors.text : SettingsColors.secondary;
-                font-size: 12px;
+                font-size: 11px;
                 horizontal-alignment: left;
                 vertical-alignment: center;
                 overflow: elide;
@@ -87,8 +87,8 @@ export component MacSettings inherits Rectangle {
 
     background: SettingsColors.background;
     VerticalLayout {
-        padding: 24px;
-        spacing: 20px;
+        padding: 20px;
+        spacing: 16px;
         HorizontalLayout {
             height: 44px;
             spacing: 12px;
@@ -110,12 +110,12 @@ export component MacSettings inherits Rectangle {
             VerticalLayout {
                 alignment: center;
                 spacing: 4px;
-                Text { text: "Settings"; font-size: 23px; font-weight: 700; color: SettingsColors.text; }
-                Text { text: "Make your workspace feel right."; font-size: 12px; color: SettingsColors.secondary; }
+                Text { text: "Settings"; font-size: 20px; font-weight: 700; color: SettingsColors.text; }
+                Text { text: "Make your workspace feel right."; font-size: 11px; color: SettingsColors.secondary; }
             }
             Text {
                 text: "Agent Companion";
-                font-size: 12px;
+                font-size: 11px;
                 color: SettingsColors.secondary;
                 horizontal-alignment: right;
                 vertical-alignment: center;
@@ -132,8 +132,8 @@ export component MacSettings inherits Rectangle {
                     HorizontalLayout {
                         VerticalLayout {
                             spacing: 4px;
-                            Text { text: "Status bar"; font-size: 18px; font-weight: 600; color: SettingsColors.text; }
-                            Text { text: "Choose what appears at the bottom of your terminal."; font-size: 12px; color: SettingsColors.secondary; }
+                            Text { text: "Status bar"; font-size: 16px; font-weight: 600; color: SettingsColors.text; }
+                            Text { text: "Choose what appears at the bottom of your terminal."; font-size: 11px; color: SettingsColors.secondary; }
                         }
                         Text {
                             text: "LIVE PREVIEW";
@@ -145,7 +145,7 @@ export component MacSettings inherits Rectangle {
                         }
                     }
                     Rectangle {
-                        height: 116px;
+                        height: 104px;
                         border-radius: 12px;
                         background: #141c18;
                         border-width: 1px;
@@ -154,7 +154,7 @@ export component MacSettings inherits Rectangle {
                             padding: 16px;
                             spacing: 10px;
                             HorizontalLayout {
-                                Text { text: "›_ Codex CLI"; font-size: 12px; font-family: root.mono-font; color: #e3ede7; }
+                                Text { text: "›_ Codex CLI"; font-size: 11px; font-family: root.mono-font; color: #e3ede7; }
                                 Text { text: "Sample values"; font-size: 10px; color: #a6b7ad; horizontal-alignment: right; }
                             }
                             Rectangle {
@@ -172,7 +172,7 @@ export component MacSettings inherits Rectangle {
                                                 text: !root.ready ? "Preview unavailable" : root.selected-count == 0 ? "Status bar hidden" : root.preview;
                                                 color: #9de2b9;
                                                 font-family: root.mono-font;
-                                                font-size: 12px;
+                                                font-size: 11px;
                                                 wrap: word-wrap;
                                             }
                                         }
@@ -182,11 +182,11 @@ export component MacSettings inherits Rectangle {
                         }
                     }
                     HorizontalLayout {
-                        Text { text: "Components"; font-size: 13px; font-weight: 600; color: SettingsColors.text; }
+                        Text { text: "Components"; font-size: 12px; font-weight: 600; color: SettingsColors.text; }
                         Text {
                             text: root.ready ? root.selected-count + " selected" : "Unavailable";
                             color: SettingsColors.accent;
-                            font-size: 11px;
+                            font-size: 10.5px;
                             horizontal-alignment: right;
                         }
                     }
@@ -228,7 +228,7 @@ export component MacSettings inherits Rectangle {
                             padding: 12px;
                             spacing: 5px;
                             HorizontalLayout {
-                                Text { text: "Configuration"; font-size: 11px; font-weight: 600; color: SettingsColors.text; }
+                                Text { text: "Configuration"; font-size: 10.5px; font-weight: 600; color: SettingsColors.text; }
                                 Text {
                                     text: "Codex CLI " + root.catalog-version;
                                     font-size: 10px;
@@ -250,7 +250,7 @@ export component MacSettings inherits Rectangle {
                         spacing: 12px;
                         Text {
                             text: root.dirty ? "Unapplied changes" : root.ready ? (root.custom ? "Custom status bar" : "Using Codex defaults") : "Configuration unavailable";
-                            font-size: 12px;
+                            font-size: 11px;
                             color: root.dirty ? SettingsColors.accent : SettingsColors.secondary;
                             vertical-alignment: center;
                         }
@@ -272,7 +272,7 @@ export component MacSettings inherits Rectangle {
                     }
                     Text {
                         text: root.message;
-                        font-size: 11px;
+                        font-size: 10.5px;
                         color: root.error ? SettingsColors.error : SettingsColors.secondary;
                         wrap: word-wrap;
                     }
@@ -285,10 +285,10 @@ export component MacSettings inherits Rectangle {
                     spacing: 18px;
                     VerticalLayout {
                         spacing: 5px;
-                        Text { text: "Notch & app"; font-size: 18px; font-weight: 600; color: SettingsColors.text; }
-                        Text { text: "Choose where your companion lives. Changes save automatically."; font-size: 12px; color: SettingsColors.secondary; }
+                        Text { text: "Notch & app"; font-size: 16px; font-weight: 600; color: SettingsColors.text; }
+                        Text { text: "Choose where your companion lives. Changes save automatically."; font-size: 11px; color: SettingsColors.secondary; }
                     }
-                    Text { text: "Display"; font-size: 13px; font-weight: 600; color: SettingsColors.text; }
+                    Text { text: "Display"; font-size: 12px; font-weight: 600; color: SettingsColors.text; }
                     SettingsCard {
                         vertical-stretch: 0;
                         VerticalLayout {
@@ -299,8 +299,8 @@ export component MacSettings inherits Rectangle {
                                 VerticalLayout {
                                     alignment: center;
                                     spacing: 5px;
-                                    Text { text: "Notch display"; font-size: 13px; font-weight: 600; color: SettingsColors.text; }
-                                    Text { text: "Follow your main screen or choose a display."; font-size: 11px; color: SettingsColors.secondary; wrap: word-wrap; }
+                                    Text { text: "Notch display"; font-size: 12px; font-weight: 600; color: SettingsColors.text; }
+                                    Text { text: "Follow your main screen or choose a display."; font-size: 10.5px; color: SettingsColors.secondary; wrap: word-wrap; }
                                 }
                                 ComboBox {
                                     width: 340px;
@@ -316,12 +316,12 @@ export component MacSettings inherits Rectangle {
                             Text {
                                 text: root.display-error ? "Could not save the display choice. Please try again." : root.display-status;
                                 color: root.display-error ? SettingsColors.error : SettingsColors.secondary;
-                                font-size: 11px;
+                                font-size: 10.5px;
                                 wrap: word-wrap;
                             }
                         }
                     }
-                    Text { text: "App appearance"; font-size: 13px; font-weight: 600; color: SettingsColors.text; }
+                    Text { text: "App appearance"; font-size: 12px; font-weight: 600; color: SettingsColors.text; }
                     SettingsCard {
                         vertical-stretch: 0;
                         HorizontalLayout {
@@ -330,10 +330,10 @@ export component MacSettings inherits Rectangle {
                             VerticalLayout {
                                 alignment: center;
                                 spacing: 5px;
-                                Text { text: "Show in Dock"; font-size: 13px; font-weight: 600; color: SettingsColors.text; }
+                                Text { text: "Show in Dock"; font-size: 12px; font-weight: 600; color: SettingsColors.text; }
                                 Text {
                                     text: root.dock-error ? "Could not save. Please try again." : "When hidden, open Settings from the notch.";
-                                    font-size: 11px;
+                                    font-size: 10.5px;
                                     color: root.dock-error ? SettingsColors.error : SettingsColors.secondary;
                                     wrap: word-wrap;
                                 }
@@ -353,7 +353,7 @@ export component MacSettings inherits Rectangle {
                             spacing: 16px;
                             Text {
                                 text: "You have unapplied Codex CLI changes.";
-                                font-size: 12px;
+                                font-size: 11px;
                                 color: SettingsColors.accent;
                                 vertical-alignment: center;
                             }
