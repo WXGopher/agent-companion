@@ -1,5 +1,5 @@
 //! Native notch shell; the independent Slint editor uses its own process.
-use std::ffi::{CString, c_char};
+use std::ffi::{CStr, CString, c_char};
 use std::fs::OpenOptions;
 use std::io;
 use std::sync::{Mutex, OnceLock, mpsc};
@@ -15,6 +15,45 @@ unsafe extern "C" {
     fn agent_companion_start_editor_preferences();
     fn agent_companion_dock_visible() -> bool;
     fn agent_companion_set_dock_visible(visible: bool) -> bool;
+    fn agent_companion_display_settings_json() -> *mut c_char;
+    fn agent_companion_free_native_string(pointer: *mut c_char);
+    fn agent_companion_select_display(identifier: *const c_char) -> bool;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+pub struct DisplayOption {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplaySettings {
+    pub options: Vec<DisplayOption>,
+    pub selected_id: String,
+    pub status: String,
+}
+
+pub fn display_settings() -> Option<DisplaySettings> {
+    // SAFETY: the UI thread receives a Swift-owned, NUL-terminated allocation
+    // and always frees it through the matching native allocator.
+    unsafe {
+        let pointer = agent_companion_display_settings_json();
+        if pointer.is_null() {
+            return None;
+        }
+        let settings = serde_json::from_slice(CStr::from_ptr(pointer).to_bytes()).ok();
+        agent_companion_free_native_string(pointer);
+        settings
+    }
+}
+
+pub fn select_display(identifier: &str) -> bool {
+    let Ok(identifier) = CString::new(identifier) else {
+        return false;
+    };
+    // SAFETY: UI-thread call; Swift borrows the string only for this call.
+    unsafe { agent_companion_select_display(identifier.as_ptr()) }
 }
 
 /// Configure Slint before it creates its AppKit event loop, including when
