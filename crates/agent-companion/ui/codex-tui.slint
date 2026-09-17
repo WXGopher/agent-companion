@@ -53,6 +53,11 @@ export component CodexTuiWindow inherits Window {
     in property <bool> macos-preferences;
     in property <bool> show-dock-icon;
     in property <bool> dock-error;
+    in property <[string]> display-options;
+    in-out property <int> selected-display;
+    in property <string> display-status;
+    in property <bool> display-error;
+    callback select-display(string);
     callback toggle-dock-icon(bool);
     callback toggle(string, bool);
     callback apply();
@@ -73,6 +78,11 @@ export component CodexTuiWindow inherits Window {
         catalog-version: root.catalog-version;
         show-dock-icon: root.show-dock-icon;
         dock-error: root.dock-error;
+        display-options: root.display-options;
+        selected-display <=> root.selected-display;
+        display-status: root.display-status;
+        display-error: root.display-error;
+        select-display(label) => { root.select-display(label); }
         toggle-dock-icon(visible) => { root.toggle-dock-icon(visible); }
         toggle(id, enabled) => { root.toggle(id, enabled); }
         apply => { root.apply(); }

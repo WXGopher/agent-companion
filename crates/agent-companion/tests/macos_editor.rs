@@ -40,6 +40,24 @@ fn check_editor_startup() {
     let home = tempfile::tempdir().unwrap();
     macos::prepare_editor().unwrap();
     let editor = codex_tui::Editor::new(home.path().join("config.toml")).unwrap();
+    // Freeze live preferences while rendering synthetic UI states. This never
+    // writes the user's display choice or changes the actual primary screen.
+    editor.preference_timer.stop();
+    editor
+        .window
+        .set_config_path("/Users/example/.codex/config.toml".into());
+    editor
+        .window
+        .set_display_options(slint::ModelRc::new(slint::VecModel::from(vec![
+            "Follow primary display".into(),
+            "Built-in Retina Display".into(),
+            "Studio Display (Primary)".into(),
+            "Office Display (Disconnected)".into(),
+        ])));
+    editor.window.set_selected_display(0);
+    editor.window.set_display_status(
+        "Follows the primary display set in macOS. Changes save automatically.".into(),
+    );
     editor
         .window
         .global::<ui::Palette>()
@@ -53,6 +71,9 @@ fn check_editor_startup() {
         let window = weak.upgrade().unwrap();
         assert!(window.get_macos_preferences());
         assert!(window.get_ready());
+        let displays = macos::display_settings().expect("Display preferences did not cross the native bridge");
+        assert_eq!(displays.options.first().unwrap().id, "");
+        assert!(displays.options.iter().any(|option| option.id == displays.selected_id));
         let mut created = false;
         window.window().with_winit_window(|native| {
             created = native.is_visible() == Some(true);
@@ -100,16 +121,31 @@ fn check_editor_startup() {
             0 => window.global::<ui::Palette>().set_color_scheme(ColorScheme::Dark),
             1 => {
                 window.window().set_size(slint::LogicalSize::new(820.0, 660.0));
+                window.set_selected_display(3);
+                window.set_display_status("Display disconnected. Using the primary display until it returns.".into());
                 window.invoke_toggle("git-branch".into(), true);
                 assert!(window.get_dirty());
                 assert!(window.get_preview().contains("main"));
             }
             2 => {
                 window.global::<ui::Palette>().set_color_scheme(ColorScheme::Light);
+                window.set_display_error(true);
                 window.set_error(true);
                 window.set_message("Could not save: the status bar was changed outside Agent Companion. Reopen Settings to load the latest configuration.".into());
             }
-            _ => slint::quit_event_loop().unwrap(),
+            _ => {
+                // A selection that disappeared before saving must restore the
+                // persisted choice, without touching real display preferences.
+                window.set_display_error(false);
+                window.invoke_select_display("Unavailable display fixture".into());
+                assert!(window.get_display_error());
+                assert_eq!(macos::display_settings().unwrap(), displays);
+                assert_eq!(
+                    window.get_selected_display() as usize,
+                    displays.options.iter().position(|option| option.id == displays.selected_id).unwrap()
+                );
+                slint::quit_event_loop().unwrap();
+            }
         }
         phase += 1;
     });
@@ -118,6 +154,6 @@ fn check_editor_startup() {
     finished.send(()).unwrap();
     watchdog.join().unwrap();
     println!(
-        "PASS: opaque AppKit settings frame; Slint light/dark, minimum size, live draft and save error; no Codex config writes"
+        "PASS: opaque AppKit settings frame; Slint light/dark, display choices/disconnection/errors, minimum size and live draft; no user config or display preference writes"
     );
 }

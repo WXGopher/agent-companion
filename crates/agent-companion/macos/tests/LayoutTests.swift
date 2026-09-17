@@ -24,6 +24,12 @@ struct LayoutTests {
             precondition(DockPreferences(store: store).setVisible(CommandLine.arguments[3] == "true"))
             return
         }
+        if CommandLine.arguments.count == 5, CommandLine.arguments[1] == "--write-display-preference" {
+            let store = DisplayPreferenceStore(domain: CommandLine.arguments[2])
+            let display = CompanionDisplay(id: CommandLine.arguments[3], name: CommandLine.arguments[4])
+            precondition(DisplayPreferences(store: store).select(display.id, displays: [display]))
+            return
+        }
         _ = NSApplication.shared
         let output = URL(fileURLWithPath: CommandLine.arguments[1])
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
@@ -105,6 +111,7 @@ struct LayoutTests {
         verifyHoverLifecycle()
         verifyScreenEdgeHover()
         try verifyDockPreferencePersistence()
+        try verifyDisplayPreferences()
         print("PASS: 17 native SwiftUI layouts; filters, remaining quota, errors and constant-width expand/collapse sizing")
     }
 
@@ -323,11 +330,15 @@ struct LayoutTests {
         }
 
         var pointer = CGPoint(x: 40, y: 1080)
+        var sampledPointer = pointer
         var frame = compact
         var expansions = 0
         var collapses = 0
         let hover = NotchHover(
-            containsPointer: { NotchHoverRegion.contains(pointer, panel: frame, screen: screen) },
+            containsPointer: {
+                sampledPointer = pointer
+                return NotchHoverRegion.contains(pointer, panel: frame, screen: screen)
+            },
             expand: { frame = expanded; expansions += 1 },
             collapse: { frame = compact; collapses += 1 }
         )
@@ -337,7 +348,7 @@ struct LayoutTests {
         hover.start()
         hover.start() // Starting again must not create a second sampler.
         pointer = CGPoint(x: 960, y: 1080) // Deliberately no mouse event.
-        elapse(0.45)
+        waitFor("A stationary pointer at the top edge did not expand") { expansions == 1 }
         precondition(expansions == 1 && collapses == 0, "A stationary pointer at the top edge did not expand")
         pointer = CGPoint(x: 844, y: 800) // Move down through the expanded panel's side margin.
         elapse(0.45)
@@ -348,18 +359,106 @@ struct LayoutTests {
         elapse(0.45)
         precondition(expansions == 1, "Polling reopened the panel after Esc at the top edge")
         pointer = CGPoint(x: 40, y: 1080)
-        elapse(0.2)
+        waitFor("Polling did not observe leaving the dismissed strip") { sampledPointer == pointer }
         pointer = CGPoint(x: 1076, y: 1080)
-        elapse(0.45)
+        waitFor("Leaving and returning to the margin did not re-arm hover") { expansions == 2 }
         precondition(expansions == 2, "Leaving and returning to the margin did not re-arm hover")
         pointer = CGPoint(x: 40, y: 1080)
-        elapse(0.55)
+        waitFor("Polling did not dismiss after leaving the expanded panel") { collapses == 1 }
         precondition(collapses == 1, "Polling did not dismiss after leaving the expanded panel")
         hover.stop()
         pointer = CGPoint(x: 960, y: 1080)
         elapse(0.45)
         precondition(expansions == 2, "Polling continued after shutdown")
         print("Screen-edge hover: inclusive top, margins, display clipping, missing events, panel entry and dismissal passed")
+    }
+
+    private static func waitFor(_ message: String, timeout: TimeInterval = 3, until ready: () -> Bool) {
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        while !ready() && ProcessInfo.processInfo.systemUptime < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        precondition(ready(), message)
+    }
+
+    @MainActor private static func verifyDisplayPreferences() throws {
+        let domain = "com.wxgopher.agent-companion.tests.\(UUID().uuidString)"
+        let store = DisplayPreferenceStore(domain: domain)
+        let preferences = DisplayPreferences(store: store)
+        defer {
+            preferences.stop()
+            CFPreferencesSetAppValue(DisplayPreferenceStore.key, nil, domain as CFString)
+            CFPreferencesAppSynchronize(domain as CFString)
+        }
+        let first = CompanionDisplay(id: "00000000-0000-0000-0000-000000000001", name: "Studio Display")
+        let second = CompanionDisplay(id: "00000000-0000-0000-0000-000000000002", name: "Studio Display")
+        let connected = [first, second]
+        precondition(store.read() == nil)
+        precondition(preferences.snapshot(displays: connected).selectedId.isEmpty)
+        precondition(CompanionDisplay.selectedIndex(preferredID: nil, identifiers: [second.id, first.id]) == 0)
+        precondition(CompanionDisplay.selectedIndex(preferredID: first.id, identifiers: []) == nil)
+        precondition(store.write(second))
+        precondition(DisplayPreferenceStore(domain: domain).read() == second, "Display preference was not persisted")
+        for ids in [[first.id, second.id], [second.id, first.id]] {
+            let index = CompanionDisplay.selectedIndex(preferredID: store.read()?.id, identifiers: ids)!
+            precondition(ids[index] == second.id, "Screen ordering changed the selected display")
+        }
+        let connectedSnapshot = preferences.snapshot(displays: connected)
+        precondition(Set(connectedSnapshot.options.map(\.label)).count == 3, "Identical names are ambiguous")
+        let sameSuffix = CompanionDisplay(id: "00000000-0000-0000-0000-000000010002", name: second.name)
+        precondition(Set(preferences.snapshot(displays: connected + [sameSuffix]).options.map(\.label)).count == 4,
+                     "Identical display names and short ID suffixes are ambiguous")
+        let offline = preferences.snapshot(displays: [first])
+        precondition(offline.selectedId == second.id && offline.options.last?.label.contains("Disconnected") == true)
+        precondition(CompanionDisplay.selectedIndex(preferredID: second.id, identifiers: [first.id]) == 0)
+        precondition(store.read() == second, "Fallback forgot the disconnected display")
+        precondition(preferences.snapshot(displays: connected) == connectedSnapshot, "Reconnecting did not restore the selection")
+        precondition(!preferences.select("unknown", displays: connected) && store.read() == second)
+
+        var changes = 0
+        preferences.start { changes += 1 }
+        preferences.start { fatalError("Display observation started twice") }
+        for (index, selection) in [first, CompanionDisplay(id: "", name: ""), second].enumerated() {
+            let child = Process()
+            child.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+            child.arguments = ["--write-display-preference", domain, selection.id, selection.name]
+            try child.run()
+            child.waitUntilExit()
+            precondition(child.terminationStatus == 0)
+            waitFor("The running notch did not receive the settings change") { changes == index + 1 }
+            precondition((store.read()?.id ?? "") == selection.id)
+        }
+
+        // Use the connected hardware's real UUIDs, negative origins and camera
+        // metadata, but keep all preferences and windows isolated from the app.
+        let screens = NSScreen.screens
+        let displays = screens.compactMap(CompanionDisplay.init(screen:))
+        let model = CompanionModel()
+        let panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.isReleasedWhenClosed = false
+        let presentation = NotchPresentation(panel: panel, model: model, reduceMotion: { true })
+        defer { presentation.stop(); panel.close() }
+        for screen in screens {
+            guard let display = CompanionDisplay(screen: screen) else { continue }
+            precondition(preferences.select(display.id, displays: displays))
+            precondition(preferences.selectedScreen(in: screens) === screen)
+            model.metrics = NotchMetrics(screen: screen)
+            presentation.update(screen: screen.frame, availableHeight: screen.frame.maxY - screen.visibleFrame.minY, animated: false)
+            precondition(panel.frame.maxY == screen.frame.maxY && panel.frame.midX == screen.frame.midX + model.metrics.centerOffset)
+            precondition(screen.frame.contains(panel.frame) && panel.frame.height == model.compactHeight)
+            if screen.safeAreaInsets.top > 0 { precondition(model.hasCamera, "The secondary screen lost its camera metadata") }
+            let remaining = screens.filter { $0 !== screen }
+            precondition(preferences.selectedScreen(in: remaining) === remaining.first)
+            precondition(preferences.selectedScreen(in: screens) === screen)
+            print("Connected display geometry: \(display.name), compact \(panel.frame.size), camera \(model.hasCamera)")
+        }
+        precondition(preferences.select("", displays: displays))
+        precondition(store.read() == nil && preferences.selectedScreen(in: screens) === screens.first)
+        let malformed = ["id": "invalid", "name": "Old display"] as CFDictionary
+        CFPreferencesSetAppValue(DisplayPreferenceStore.key, malformed, domain as CFString)
+        CFPreferencesAppSynchronize(domain as CFString)
+        precondition(store.read() == nil, "An invalid saved identifier broke the default mode")
+        print("Display preference: persistence, duplicate names, primary changes, disconnect/reconnect, notifications and connected hardware passed")
     }
 
     private static func verifyHoverLifecycle() {
