@@ -8,7 +8,8 @@ component ComponentOption inherits Rectangle {
     in property <StatusComponent> item;
     in property <bool> available;
     callback toggle(string, bool);
-    min-height: 52px;
+    min-height: 34px;
+    Tooltip { text: @markdown("\{root.item.description}"); }
     HorizontalLayout {
         padding-left: 2px;
         padding-right: 12px;
@@ -20,12 +21,6 @@ component ComponentOption inherits Rectangle {
                 checked: root.item.selected;
                 enabled: root.available;
                 toggled => { root.toggle(root.item.id, self.checked); }
-            }
-            Text {
-                text: root.item.description;
-                font-size: 11px;
-                wrap: word-wrap;
-                color: #808080;
             }
         }
     }

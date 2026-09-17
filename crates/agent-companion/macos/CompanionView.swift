@@ -59,7 +59,8 @@ struct CompanionView: View {
         .accessibilityHint("Open task list")
         .help(model.summaryDescription + " · \(model.snapshot.completedCount) finished in the last 15 minutes")
         .contextMenu {
-            Button("Show tasks") { model.expand?() }
+            Button("Show tasks") { model.showTasks(); model.expand?() }
+            Button("Subscription usage") { model.showUsage() }
             Button("Settings…") { model.openSettings() }
             Divider()
             Button("Quit Agent Companion") { model.quit?() }
@@ -141,14 +142,28 @@ struct CompanionView: View {
         VStack(alignment: .leading, spacing: scaled(13)) {
             HStack(alignment: .center, spacing: scaled(8)) {
                 VStack(alignment: .leading, spacing: scaled(3)) {
-                    Text("Codex").font(.system(size: scaled(20), weight: .semibold))
-                    Text("Your tasks, at a glance").font(.system(size: scaled(11))).foregroundStyle(.secondary)
+                    Text(model.showingUsage ? "Usage" : "Codex").font(.system(size: scaled(20), weight: .semibold))
+                    Text(model.showingUsage ? "Your Codex subscription" : "Your tasks, at a glance")
+                        .font(.system(size: scaled(11))).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button { model.collapse?() } label: { Image(systemName: "chevron.up").frame(width: scaled(26), height: scaled(26)) }
                     .buttonStyle(.plain).foregroundStyle(.secondary).help("Collapse (Esc)").accessibilityLabel("Collapse task list")
             }
-            weekly
+            if model.showingUsage {
+                SubscriptionUsageView(usage: model.subscriptionUsage, loading: model.usageLoading,
+                                      scale: model.metrics.contentScale, refresh: { model.refreshUsage(force: true) })
+            } else {
+                taskContent
+            }
+        }
+    }
+
+    private var taskContent: some View {
+        VStack(alignment: .leading, spacing: scaled(13)) {
+            Button { model.showUsage() } label: { weekly }
+                .buttonStyle(.plain).help("View subscription limits and token activity")
+                .accessibilityLabel("Weekly quota, \(model.weeklyText). View subscription usage")
             HStack(spacing: scaled(8)) {
                 tab("Active", count: model.snapshot.activeCount, completed: false)
                 tab("Finished", count: model.snapshot.completedCount, completed: true)
@@ -213,7 +228,17 @@ struct CompanionView: View {
                 Button { model.quit?() } label: { Image(systemName: "power") }
                     .help("Quit Agent Companion").accessibilityLabel("Quit Agent Companion")
             }
-            Button { model.openCodex() } label: { Label("Open Codex", systemImage: "arrow.up.forward.app").fixedSize() }
+            HStack {
+                Button { model.openCodex() } label: { Label("Open Codex", systemImage: "arrow.up.forward.app").fixedSize() }
+                Spacer(minLength: scaled(4))
+                Button {
+                    if model.showingUsage { model.showTasks() } else { model.showUsage() }
+                } label: {
+                    Text(model.showingUsage ? "Tasks" : "Usage").foregroundStyle(CompanionModel.accent).fixedSize()
+                }
+                .accessibilityIdentifier("notch-usage-toggle")
+                .accessibilityLabel(model.showingUsage ? "Back to tasks" : "View subscription usage")
+            }
         }
         .buttonStyle(.plain).font(.system(size: scaled(11))).foregroundStyle(.secondary)
     }
@@ -235,11 +260,11 @@ struct CompanionView: View {
                     }
                 }
             }.frame(height: scaled(3)).accessibilityHidden(true)
-            if let usage = model.snapshot.weekly, !usage.expired, let resets = usage.resetsAt {
+            if let usage = model.weeklyUsage, !usage.expired, let resets = usage.resetsAt {
                 Text("Resets \(Date(timeIntervalSince1970: resets).formatted(date: .abbreviated, time: .shortened))")
                     .font(.system(size: scaled(10))).foregroundStyle(.secondary)
             } else {
-                Text(model.snapshot.weekly?.expired == true ? "Waiting for a new Codex usage reading after reset." : "Usage appears after Codex records a rate limit reading.")
+                Text(model.weeklyUsage?.expired == true ? "Waiting for a new Codex usage reading after reset." : "Usage appears after Codex records a rate limit reading.")
                     .font(.system(size: scaled(10))).foregroundStyle(.secondary)
             }
         }
