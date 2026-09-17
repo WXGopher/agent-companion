@@ -7,6 +7,9 @@ use crate::codex::SessionCache;
 use crate::state::{CodexClient, Phase, STALE_AFTER_SECS, SessionState};
 use crate::usage::{self, CodexUsage, WindowUsage};
 
+/// Reuse local quota readings for two minutes independently of task polling.
+const USAGE_REFRESH_SECS: u64 = 120;
+
 #[derive(Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
@@ -104,7 +107,7 @@ impl Dashboard {
             .retain(|session| !session.is_stale(now, STALE_AFTER_SECS));
         if self
             .usage_scanned_at
-            .is_none_or(|at| now.saturating_sub(at) >= 30)
+            .is_none_or(|at| now.saturating_sub(at) >= USAGE_REFRESH_SECS)
         {
             match usage::scan_codex_usage_at(&self.home) {
                 Ok(usage) => {
@@ -247,6 +250,25 @@ mod tests {
         let done = dashboard.poll(start + 5);
         assert_eq!((done.active_count, done.completed_count), (0, 1));
         assert_eq!(done.tasks[0].state, "completed");
+        writeln!(
+            file,
+            "{}",
+            json!({"timestamp":"2026-09-05T00:00:06Z","type":"event_msg","payload":{
+                "type":"token_count","rate_limits":{
+                    "secondary":{"used_percent":45.0,"window_minutes":10080,"resets_at":start+500}}}})
+        )
+        .unwrap();
+        // Task completion was already visible. Quota stays cached until two
+        // minutes after the first read, but its expiry is checked on each poll.
+        for elapsed in [30, 119] {
+            let cached = dashboard.poll(start + 3 + elapsed);
+            let weekly = cached.weekly.unwrap();
+            assert_eq!(weekly.used_percent, 32);
+            assert_eq!(weekly.expired, elapsed >= 97);
+        }
+        let refreshed = dashboard.poll(start + 123).weekly.unwrap();
+        assert_eq!(refreshed.used_percent, 45);
+        assert!(!refreshed.expired);
         let expired = dashboard.poll(start + 1000);
         assert!(expired.tasks.is_empty());
         assert!(expired.weekly.unwrap().expired);
@@ -271,9 +293,11 @@ mod tests {
         assert!(persistent.error.is_some());
         assert_eq!(persistent.active_count, 0);
         assert!(persistent.tasks.is_empty());
+        assert!(dashboard.poll(1120).error.is_some());
         std::fs::remove_file(sessions).unwrap();
-        // Usage retries on its own 30-second interval.
-        assert!(dashboard.poll(1060).error.is_none());
+        // Session reads recover immediately; quota errors retry after two minutes.
+        assert!(dashboard.poll(1239).error.is_some());
+        assert!(dashboard.poll(1240).error.is_none());
     }
 
     #[test]

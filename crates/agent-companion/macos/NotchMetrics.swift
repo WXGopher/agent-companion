@@ -11,6 +11,9 @@ struct NotchMetrics: Equatable {
 
     var hasCamera: Bool { cameraHeight > 0 }
     var contentScale: CGFloat { min(1, width / 216) }
+    // The expanded surface is denser than the menu-bar indicators. Keep its
+    // typography/spacing independent of the physical camera and hover region.
+    var detailScale: CGFloat { 0.9 * contentScale }
     var cameraContentScale: CGFloat { min(1, cameraHeight / 32) }
     var cameraSideWidth: CGFloat { hasCamera ? (width - cameraWidth) / 2 : 0 }
     var statsHeight: CGFloat { hasCamera ? cameraHeight : (28 * contentScale).rounded() }
