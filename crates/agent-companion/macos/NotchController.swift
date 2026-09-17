@@ -109,9 +109,12 @@ final class NotchController: NSObject, NSApplicationDelegate {
 
     private func expand(activate: Bool) {
         if activate { hover.pin() }
-        if !model.expanded { model.showingCompleted = false; model.showTasks() }
-        model.expanded = true
-        layout()
+        if !model.expanded {
+            model.showingCompleted = false
+            model.showTasks()
+            model.expanded = true
+            layout()
+        }
         if activate { panel.makeKeyAndOrderFront(nil) }
     }
 

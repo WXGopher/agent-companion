@@ -49,6 +49,10 @@ struct LayoutTests {
             try TaskTabTests.run(output: output)
             return
         }
+        if CommandLine.arguments.contains("--page-switches") {
+            try PageSwitchTests.run(output: output)
+            return
+        }
         let model = CompanionModel()
         if ProcessInfo.processInfo.environment["AGENT_COMPANION_TEST_SNAPSHOT"] != nil {
             model.refresh()
@@ -64,9 +68,12 @@ struct LayoutTests {
         precondition(model.visibleTasks.count == 2 && model.weeklyText == "68%")
         precondition(model.workingCount == 1 && model.needsInput, "Waiting sessions must not inflate the working count")
         precondition(model.summaryDescription.contains("1 working, approval or input needed"))
+        // Tasks and Usage reserve one shared page height, including on first
+        // open. This budget includes the 330-point (density-scaled) usage list.
+        let standardPageHeight: ClosedRange<CGFloat> = 450...500
         try render(model, name: "compact-external", output: output, height: 28...28)
         model.expanded = true
-        try render(model, name: "active-external", output: output, height: 300...480)
+        try render(model, name: "active-external", output: output, height: standardPageHeight)
         model.expanded = false
         model.metrics = cameraMetrics()
         try render(model, name: "compact-notched", output: output, height: 32...32)
@@ -109,10 +116,10 @@ struct LayoutTests {
         precondition(model.cameraRightWidth <= 52, "Large counts exceeded the compact side-indicator budget")
         model.snapshot.tasks = tasks
         model.expanded = true
-        let largeCountsSize = try render(model, name: "large-counts-expanded", output: output, height: 300...440)
+        let largeCountsSize = try render(model, name: "large-counts-expanded", output: output, height: standardPageHeight)
         model.snapshot.activeCount = 2
         model.snapshot.completedCount = 1
-        let activeSize = try render(model, name: "active", output: output, height: 300...420)
+        let activeSize = try render(model, name: "active", output: output, height: standardPageHeight)
         precondition(largeCountsSize.height == activeSize.height, "Large counts wrapped the tabs instead of fitting the compact layout")
         model.metrics = cameraMetrics(width: 156, height: 28)
         try render(model, name: "active-small-camera", output: output, height: 300...460)
@@ -123,7 +130,7 @@ struct LayoutTests {
         model.metrics = cameraMetrics()
         model.showingCompleted = true
         precondition(model.visibleTasks.count == 1)
-        let finishedSize = try render(model, name: "finished", output: output, height: 300...440)
+        let finishedSize = try render(model, name: "finished", output: output, height: standardPageHeight)
         precondition(finishedSize == activeSize, "Task tabs must share the same panel size")
         model.showingCompleted = false
         model.failedTask = model.snapshot.tasks[0]
@@ -136,16 +143,17 @@ struct LayoutTests {
         model.failedTask = nil
         model.snapshot = CodexSnapshot(loading: false)
         precondition(model.weeklyText == "—" && model.visibleTasks.isEmpty)
-        try render(model, name: "empty", output: output, height: 300...480)
+        try render(model, name: "empty", output: output, height: standardPageHeight)
         model.snapshot.weekly = WeeklyUsage(usedPercent: 100, resetsAt: 0, expired: true)
         precondition(model.weeklyText == "—")
         model.snapshot.error = "Could not read Codex sessions: permission denied."
         try render(model, name: "read-error", output: output, height: 330...510)
         model.snapshot = CodexSnapshot(loading: true)
-        try render(model, name: "loading", output: output, height: 300...480)
+        try render(model, name: "loading", output: output, height: standardPageHeight)
         verifyDisplaySizing()
         verifyResize()
         try TaskTabTests.run(output: output)
+        try PageSwitchTests.run(output: output)
         try verifyBoundedContent(output: output)
         verifySnapshotRefresh()
         try verifyMorphing(output: output)
