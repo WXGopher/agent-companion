@@ -1,6 +1,6 @@
 # Agent Companion
 
-[中文](#中文) · [English](#english) · [下载 / Downloads](https://github.com/WXGopher/agent-companion/releases/latest)
+[中文](#中文) · [English](#english) · [截图 / Screenshots](#截图--screenshots) · [下载 / Downloads](https://github.com/WXGopher/agent-companion/releases/latest)
 
 ## 中文
 
@@ -75,6 +75,35 @@ Use `/hooks` in Codex to review and trust the configuration, then start a new se
 The app is not Apple-notarized. If the first launch is blocked, follow [Apple's instructions](https://support.apple.com/102445) to choose **Open Anyway** in System Settings → Privacy & Security.
 
 **Upgrade**: quit the old app and replace its files. If you installed Windows hooks, rerun the installation command. Existing settings are retained.
+
+## 截图 / Screenshots
+
+界面使用演示数据。 / Screenshots use sample data.
+
+### Windows
+
+<p align="center">
+  <img src="docs/panel.png" width="340" alt="Windows 任务列表 / Tasks">
+  <img src="docs/windows-usage.png" width="340" alt="Windows Token 用量柱状图 / Usage">
+</p>
+
+<details>
+<summary>设置 / Settings</summary>
+
+<p align="center"><img src="docs/codex-tui.png" width="760" alt="Windows 分区设置与状态栏预览 / Settings and status bar preview"></p>
+
+</details>
+
+### macOS
+
+<p align="center"><img src="docs/macos-notch.png" width="356" alt="macOS 刘海与任务列表 / Notch and tasks"></p>
+
+<details>
+<summary>设置 / Settings</summary>
+
+<p align="center"><img src="docs/macos-settings.png" width="760" alt="macOS 设置与状态栏预览 / Settings and status bar preview"></p>
+
+</details>
 
 ---
 

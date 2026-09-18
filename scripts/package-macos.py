@@ -52,6 +52,10 @@ with (contents / "Info.plist").open("wb") as stream:
     }, stream)
 for name in ("README.md", "LICENSE", "THIRD_PARTY_NOTICES.md"):
     shutil.copy2(root / name, contents / "Resources" / name)
+screenshots = contents / "Resources" / "docs"
+screenshots.mkdir()
+for name in ("panel.png", "windows-usage.png", "codex-tui.png", "macos-notch.png", "macos-settings.png"):
+    shutil.copy2(root / "docs" / name, screenshots / name)
 # Rust's linker signs the Mach-O executable ad hoc. Once it is placed in an
 # app bundle, seal Info.plist and Resources as well; otherwise codesign reports
 # "code has no resources but signature indicates they must be present".

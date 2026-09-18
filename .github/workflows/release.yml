@@ -57,6 +57,9 @@ jobs:
           $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
           New-Item -ItemType Directory -Force staging, dist | Out-Null
           Copy-Item target/${{ matrix.target }}/release/agent-companion.exe, target/${{ matrix.target }}/release/agent-companion-hook.exe, target/${{ matrix.target }}/release/agent-companion-codex.exe, README.md, LICENSE, THIRD_PARTY_NOTICES.md staging/
+          New-Item -ItemType Directory -Force staging/docs | Out-Null
+          'panel.png', 'windows-usage.png', 'codex-tui.png', 'macos-notch.png', 'macos-settings.png' |
+            ForEach-Object { Copy-Item -LiteralPath "docs/$_" -Destination staging/docs/ }
           Compress-Archive -Path staging/* -DestinationPath "dist/agent-companion-v$version-windows-x86_64.zip"
           Get-FileHash "dist/agent-companion-v$version-windows-x86_64.zip" -Algorithm SHA256 |
             ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } |

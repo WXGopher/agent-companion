@@ -437,6 +437,9 @@ fn flyout_pages_render_and_preserve_scroll(
             assert_eq!(refreshed.get(), before + 1);
         }
     }
+    if agent_companion_core::compat::var_os("AGENT_COMPANION_RENDER_DIR").is_some() {
+        render_readme_flyout(panel, windows);
+    }
     let mut subscription = panel.get_subscription();
     subscription.loading = true;
     panel.set_subscription(subscription);
@@ -453,5 +456,65 @@ fn flyout_pages_render_and_preserve_scroll(
         ..Default::default()
     });
     draw(&window, "usage-signed-out");
+    panel.hide().unwrap();
+}
+
+fn render_readme_flyout(
+    source: &super::ui::FlyoutWindow,
+    windows: &Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>,
+) {
+    let panel = super::ui::FlyoutWindow::new().unwrap();
+    panel.set_active_count(4);
+    panel.set_finished_count(2);
+    panel.set_sessions(ModelRc::new(VecModel::from(
+        [
+            (
+                "Website · Polish the settings page",
+                "Working · editing components",
+                "running",
+            ),
+            (
+                "CLI · Run regression tests",
+                "Waiting for approval · run tests",
+                "waitingForApproval",
+            ),
+            (
+                "Docs · Update the installation guide",
+                "Working · reviewing changes",
+                "running",
+            ),
+            (
+                "Dashboard · Add usage filters",
+                "Waiting for input · choose a date range",
+                "waitingForAnswer",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(n, (title, detail, phase))| super::ui::SessionRow {
+            id: format!("example-{n}").into(),
+            title: title.into(),
+            detail: detail.into(),
+            phase: phase.into(),
+            source: "codex".into(),
+            jumpable: true,
+        })
+        .collect::<Vec<_>>(),
+    )));
+    panel.set_usage_rows(source.get_subscription_limits());
+    panel.set_subscription(source.get_subscription());
+    panel.set_subscription_limits(source.get_subscription_limits());
+    panel.set_usage_days(source.get_usage_days());
+    panel.show().unwrap();
+    let window = windows.borrow().last().unwrap().clone();
+    window.dispatch_event(WindowEvent::ScaleFactorChanged { scale_factor: 2.0 });
+    panel.window().set_size(slint::LogicalSize::new(
+        super::DETAIL_WIDTH,
+        super::DETAIL_HEIGHT,
+    ));
+    draw(&window, "readme-tasks");
+    panel.set_usage_page(true);
+    panel.set_usage_scroll_y(-170.0);
+    draw(&window, "readme-usage");
     panel.hide().unwrap();
 }
