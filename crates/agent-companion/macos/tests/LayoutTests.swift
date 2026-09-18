@@ -760,7 +760,25 @@ struct LayoutTests {
             }
             return header
         }
-        let header = try capture("morph-compact")
+        // NSHostingView installs its window appearance and first text layers
+        // asynchronously. Compare expansion against a visibly painted, idle
+        // strip, as seen before a user hovers, rather than its creation frame.
+        var header = try capture("morph-cold")
+        var stableFrames = 0
+        let paintDeadline = Date().addingTimeInterval(2)
+        while stableFrames < 2 && Date() < paintDeadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            let painted = try capture("morph-compact")
+            let hasCounters = painted.enumerated().contains { $0.offset % 4 != 3 && $0.element > 32 }
+            if painted == header && hasCounters {
+                stableFrames += 1
+            } else {
+                if painted != header { print("Compact strip finished its initial paint: camera \(camera)") }
+                stableFrames = 0
+            }
+            header = painted
+        }
+        precondition(stableFrames == 2, "The idle compact strip did not finish painting")
         model.expanded = true
         presentation.update(screen: screen)
         precondition(panel.frame == compact, "Opening jumped straight to the expanded window")

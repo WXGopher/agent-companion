@@ -75,6 +75,15 @@ jobs:
             dist/*.zip
             dist/SHA256SUMS-*.txt
 
+      - name: Preserve failed macOS UI renders
+        if: failure() && runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-ui-diagnostics
+          path: target/native-ui-tests/renders/
+          if-no-files-found: ignore
+          retention-days: 7
+
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
