@@ -41,6 +41,7 @@ mod notifications;
 mod panel_render_tests;
 mod sessions;
 mod settings;
+mod subscription;
 mod taskbar;
 mod tray;
 pub(crate) mod win;
@@ -94,6 +95,8 @@ const AGENTS: [HookSource; 2] = [HookSource::Claude, HookSource::Codex];
 
 const FLYOUT_TITLE: &str = "Agent Companion Sessions";
 const FLYOUT_WIDTH: f32 = 320.0;
+const DETAIL_WIDTH: f32 = 380.0;
+const DETAIL_HEIGHT: f32 = 520.0;
 const FLYOUT_MARGIN: i32 = 8;
 
 thread_local! {
@@ -166,7 +169,7 @@ struct App {
     /// show cycle, and running it on a window the user has just opened is a
     /// visible blink a moment after it appears.
     flyout_handle: Cell<Option<isize>>,
-    settings_window: RefCell<Option<ui::SettingsWindow>>,
+    settings_window: RefCell<Option<ui::CodexTuiWindow>>,
     codex_tui_editor: RefCell<Option<Rc<codex_tui::Editor>>>,
     tray: RefCell<Option<Tray>>,
 
@@ -197,6 +200,7 @@ struct App {
     scanning: Cell<bool>,
 
     usage: RefCell<UsageSnapshot>,
+    subscription: RefCell<subscription::Monitor>,
     display: RefCell<display::DisplayState>,
     /// Claude's usage arrives over the network, so it comes back on a channel
     /// rather than being read inline: an eight-second timeout on the UI thread
@@ -254,6 +258,7 @@ impl App {
             transcripts: Arc::new(Mutex::new(transcript::TranscriptCache::new())),
             scanning: Cell::new(false),
             usage: RefCell::new(display.usage()),
+            subscription: RefCell::new(subscription::Monitor::default()),
             display: RefCell::new(display),
             limits_tx,
             limits_rx,
@@ -707,9 +712,37 @@ impl App {
         self.refresh();
     }
 
-    /// Connect the flyout's one interaction: a click on a session row brings
-    /// that session's terminal window to the front.
+    /// Connect page navigation, settings, and jumps back to a session.
     fn wire_flyout(self: &Rc<Self>) {
+        let app = Rc::downgrade(self);
+        self.flyout.on_select_page(move |usage| {
+            if let Some(app) = app.upgrade() {
+                if usage {
+                    app.refresh_subscription(false);
+                } else {
+                    app.subscription.borrow_mut().stop();
+                    app.render_subscription();
+                }
+            }
+        });
+        let app = Rc::downgrade(self);
+        self.flyout.on_select_tasks(move |_| {
+            if let Some(app) = app.upgrade() {
+                app.refresh_flyout();
+            }
+        });
+        let app = Rc::downgrade(self);
+        self.flyout.on_refresh_usage(move || {
+            if let Some(app) = app.upgrade() {
+                app.refresh_subscription(true);
+            }
+        });
+        let app = Rc::downgrade(self);
+        self.flyout.on_settings(move || {
+            if let Some(app) = app.upgrade() {
+                app.open_settings();
+            }
+        });
         let app = Rc::downgrade(self);
         self.flyout.on_expand(move || {
             if let Some(app) = app.upgrade() {
@@ -1085,6 +1118,10 @@ impl App {
 
     fn housekeeping(self: &Rc<Self>) {
         let now = now_unix_secs();
+        if self.flyout_open.get() && !self.flyout_peek.get() && self.flyout.get_usage_page() {
+            self.subscription.borrow_mut().poll();
+            self.refresh_subscription(false);
+        }
         // A live app-server question can wait longer than the log-only TTL.
         // Its pipe is the authority; disconnects also clear queued forms.
         {
@@ -1430,6 +1467,9 @@ impl App {
             Ok(()) => {
                 self.flyout.window().request_redraw();
                 self.flyout_open.set(true);
+                if !peek && self.flyout.get_usage_page() {
+                    self.refresh_subscription(false);
+                }
                 self.flyout_anchor.set(Some((anchor, from)));
                 self.adopt_flyout();
                 *self.flyout_dismissal.borrow_mut() = Some(flyout::Dismissal::new(
@@ -1452,6 +1492,7 @@ impl App {
     }
 
     fn close_flyout(&self) {
+        self.subscription.borrow_mut().stop();
         self.hover.borrow_mut().reset();
         self.flyout_peek.set(false);
         self.flyout_anchor.set(None);
@@ -1519,17 +1560,116 @@ impl App {
         });
     }
 
-    fn refresh_flyout(&self) {
-        let previous_usage: Vec<ui::UsageRow> = self.flyout.get_usage_rows().iter().collect();
-        let previous_height = if self.flyout_peek.get() {
-            flyout::peek_height(self.flyout.get_sessions().row_count())
-        } else {
-            flyout_height(
-                self.flyout.get_sessions().row_count(),
-                usage_block_height(&previous_usage),
-            )
+    fn refresh_subscription(&self, force: bool) {
+        match agent_companion_core::install::codex_home() {
+            Ok(home) => self.subscription.borrow_mut().refresh(home, force),
+            Err(_) => {
+                self.subscription.borrow_mut().snapshot.error =
+                    "Could not locate the Codex configuration directory.".into()
+            }
+        }
+        self.render_subscription();
+    }
+
+    fn render_subscription(&self) {
+        let monitor = self.subscription.borrow();
+        let snapshot = &monitor.snapshot;
+        let summary = snapshot.tokens.as_ref().map(|tokens| &tokens.summary);
+        let total = summary.and_then(|summary| summary.lifetime_tokens);
+        let peak = summary.and_then(|summary| summary.peak_daily_tokens);
+        let exact = |value: Option<i64>| {
+            value
+                .filter(|value| *value >= 0)
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "—".into())
         };
+        let now = now_unix_secs();
+        let offset = win::local_offset_secs();
+        self.flyout.set_subscription(ui::SubscriptionView {
+            loading: monitor.loading(),
+            updated: snapshot
+                .read_at
+                .map(|at| format!("Updated {}", crate::usage_cache::local_clock(at, offset)))
+                .unwrap_or_else(|| "Subscription account".into())
+                .into(),
+            message: if !snapshot.error.is_empty() {
+                snapshot.error.clone()
+            } else if snapshot.read_at.is_none() {
+                if monitor.loading() {
+                    "Reading your Codex subscription…"
+                } else {
+                    "Refresh to read your Codex subscription."
+                }
+                .into()
+            } else {
+                String::new()
+            }
+            .into(),
+            has_reading: snapshot.read_at.is_some(),
+            has_tokens: snapshot.tokens.is_some(),
+            limits_error: snapshot.limits_error.as_str().into(),
+            token_error: snapshot.token_error.as_str().into(),
+            total: subscription::number(total).into(),
+            total_exact: exact(total).into(),
+            peak: subscription::number(peak).into(),
+            peak_exact: exact(peak).into(),
+            current_streak: subscription::day_count(
+                summary.and_then(|summary| summary.current_streak_days),
+            )
+            .into(),
+            longest_streak: subscription::day_count(
+                summary.and_then(|summary| summary.longest_streak_days),
+            )
+            .into(),
+            longest_turn: subscription::duration(
+                summary.and_then(|summary| summary.longest_running_turn_sec),
+            )
+            .into(),
+        });
+        let (good, warn) = self.config.borrow().taskbar.thresholds();
+        let limits = snapshot
+            .limits
+            .as_ref()
+            .map(|limits| limits.rows(now, offset, good, warn))
+            .unwrap_or_default();
+        if self
+            .flyout
+            .get_subscription_limits()
+            .iter()
+            .collect::<Vec<_>>()
+            != limits
+        {
+            self.flyout
+                .set_subscription_limits(ModelRc::new(VecModel::from(limits)));
+        }
+        let days = snapshot
+            .tokens
+            .as_ref()
+            .map(|tokens| tokens.recent_days())
+            .unwrap_or_default();
+        let peak = days.iter().map(|day| day.tokens).max().unwrap_or(1).max(1) as f64;
+        let days: Vec<_> = days
+            .into_iter()
+            .map(|day| ui::UsageDay {
+                date: day.start_date.as_str().into(),
+                value: subscription::number(Some(day.tokens)).into(),
+                exact: day.tokens.to_string().into(),
+                fill: (day.tokens as f64 / peak) as f32,
+            })
+            .collect();
+        if self.flyout.get_usage_days().iter().collect::<Vec<_>>() != days {
+            self.flyout
+                .set_usage_days(ModelRc::new(VecModel::from(days)));
+        }
+    }
+
+    fn refresh_flyout(&self) {
+        let previous_count = self.flyout.get_sessions().row_count();
         let mut rows = self.session_rows(usize::MAX, true);
+        self.flyout
+            .set_active_count(rows.iter().filter(|row| row.phase != "completed").count() as i32);
+        self.flyout
+            .set_finished_count(rows.iter().filter(|row| row.phase == "completed").count() as i32);
         if self.flyout_peek.get() {
             rows.retain(|row| {
                 matches!(
@@ -1539,6 +1679,8 @@ impl App {
             });
             self.flyout.set_waiting_total(rows.len() as i32);
             rows.truncate(flyout::PEEK_LIMIT);
+        } else {
+            rows.retain(|row| (row.phase == "completed") == self.flyout.get_finished());
         }
         let visible = self.display.borrow().visible_agents();
         let (good_at, warn_at) = self.config.borrow().taskbar.thresholds();
@@ -1550,17 +1692,16 @@ impl App {
             good_at,
             warn_at,
         );
-        let height = if self.flyout_peek.get() {
-            flyout::peek_height(rows.len())
-        } else {
-            flyout_height(rows.len(), usage_block_height(&usage))
-        };
-        self.flyout.set_sessions(ModelRc::new(VecModel::from(rows)));
-        self.flyout
-            .set_usage_rows(ModelRc::new(VecModel::from(usage)));
-        // A fetch can add reset times after opening. Resize and keep the panel
-        // inside the work area when those extra lines appear or disappear.
-        if height != previous_height
+        let count = rows.len();
+        if self.flyout.get_sessions().iter().collect::<Vec<_>>() != rows {
+            self.flyout.set_sessions(ModelRc::new(VecModel::from(rows)));
+        }
+        if self.flyout.get_usage_rows().iter().collect::<Vec<_>>() != usage {
+            self.flyout
+                .set_usage_rows(ModelRc::new(VecModel::from(usage)));
+        }
+        if self.flyout_peek.get()
+            && count != previous_count
             && let Some((anchor, from)) = self.flyout_anchor.get()
         {
             self.place_flyout(anchor, from);
@@ -1569,23 +1710,22 @@ impl App {
 
     fn place_flyout(&self, anchor: Rect, from: Anchor) {
         let rows = self.flyout.get_sessions().row_count();
-        let usage: Vec<ui::UsageRow> = self.flyout.get_usage_rows().iter().collect();
-        let height = if self.flyout_peek.get() {
-            flyout::peek_height(rows)
+        let (width, height) = if self.flyout_peek.get() {
+            (FLYOUT_WIDTH, flyout::peek_height(rows))
         } else {
-            flyout_height(rows, usage_block_height(&usage))
+            (DETAIL_WIDTH, DETAIL_HEIGHT)
         };
-        let scale = {
-            let scale = self.flyout.window().scale_factor();
-            if scale > 0.0 { scale } else { 1.0 }
-        };
+        let scale = self.flyout.window().scale_factor().max(1.0);
+        let area = win::work_area_at(anchor.left, anchor.top);
+        let width =
+            width.min(((area.right - area.left - 2 * FLYOUT_MARGIN) as f32 / scale).max(1.0));
+        let height =
+            height.min(((area.bottom - area.top - 2 * FLYOUT_MARGIN) as f32 / scale).max(1.0));
         self.flyout
             .window()
-            .set_size(slint::LogicalSize::new(FLYOUT_WIDTH, height));
-
-        let area = win::work_area_at(anchor.left, anchor.top);
+            .set_size(slint::LogicalSize::new(width, height));
         let size = (
-            (FLYOUT_WIDTH * scale).round() as i32,
+            (width * scale).round() as i32,
             (height * scale).round() as i32,
         );
         let (x, y) = match from {
@@ -1652,25 +1792,26 @@ impl App {
 
     fn open_settings(self: &Rc<Self>) {
         self.close_flyout();
-        if let Some(window) = self.settings_window.borrow().as_ref() {
-            let _ = window.show();
+        if let Some(editor) = self.codex_tui_editor.borrow().as_ref() {
+            let _ = editor.show();
             self.heal_readout();
             self.refresh_settings();
             return;
         }
-
-        let Ok(window) = ui::SettingsWindow::new() else {
-            errln!("agent-companion: could not open the settings window");
-            return;
-        };
-        window.set_taskbar_enabled(self.bar.is_shown());
-
-        let app = Rc::downgrade(self);
-        window.on_customize_codex_tui(move || {
-            if let Some(app) = app.upgrade() {
-                app.open_codex_tui();
-            }
+        let editor = agent_companion_core::install::codex_home().and_then(|home| {
+            codex_tui::Editor::new(home.join("config.toml")).map_err(io::Error::other)
         });
+        let editor = match editor {
+            Ok(editor) => editor,
+            Err(error) => {
+                errln!("agent-companion: could not open settings: {error}");
+                return;
+            }
+        };
+        let window = editor.window.clone_strong();
+        window.set_windows_preferences(true);
+        window.set_window_title("Agent Companion · Settings".into());
+        window.set_taskbar_enabled(self.bar.is_shown());
 
         let app = Rc::downgrade(self);
         window.on_install(move || {
@@ -1699,9 +1840,12 @@ impl App {
         let app = Rc::downgrade(self);
         window.on_set_completion_notifications(move |enabled| {
             if let Some(app) = app.upgrade() {
-                let mut config = app.config.borrow_mut();
-                config.completion_notifications = enabled;
-                config.save();
+                {
+                    let mut config = app.config.borrow_mut();
+                    config.completion_notifications = enabled;
+                    config.save();
+                }
+                app.refresh_app_preferences();
             }
         });
         let app = Rc::downgrade(self);
@@ -1739,54 +1883,21 @@ impl App {
             slint::CloseRequestResponse::HideWindow
         });
 
-        let _ = window.show();
+        let _ = editor.show();
         *self.settings_window.borrow_mut() = Some(window);
+        *self.codex_tui_editor.borrow_mut() = Some(editor);
         self.heal_readout();
         self.refresh_settings();
-    }
-
-    /// Open the native status-bar editor without changing the Codex config.
-    fn open_codex_tui(self: &Rc<Self>) {
-        if self.codex_tui_editor.borrow().is_none() {
-            let editor = agent_companion_core::install::codex_home()
-                .map_err(|error| error.to_string())
-                .and_then(|home| {
-                    codex_tui::Editor::new(home.join("config.toml"))
-                        .map_err(|error| error.to_string())
-                });
-            match editor {
-                Ok(editor) => {
-                    let app = Rc::downgrade(self);
-                    editor.window.window().on_close_requested(move || {
-                        if let Some(app) = app.upgrade() {
-                            app.heal_readout();
-                        }
-                        slint::CloseRequestResponse::HideWindow
-                    });
-                    *self.codex_tui_editor.borrow_mut() = Some(editor);
-                }
-                Err(error) => {
-                    self.note_settings(&format!("Could not open the Codex TUI editor: {error}"));
-                    return;
-                }
-            }
-        }
-        if let Some(editor) = self.codex_tui_editor.borrow().as_ref()
-            && let Err(error) = editor.show()
-        {
-            self.note_settings(&format!("Could not show the Codex TUI editor: {error}"));
-        }
-        self.heal_readout();
     }
 
     /// Put one line under the settings window's buttons.
     fn note_settings(&self, message: &str) {
         if let Some(window) = self.settings_window.borrow().as_ref() {
-            window.set_message(message.into());
+            window.set_app_message(message.into());
         }
     }
 
-    fn refresh_settings(&self) {
+    fn refresh_app_preferences(&self) {
         let open = self.settings_window.borrow();
         let Some(window) = open.as_ref() else { return };
         window.set_taskbar_enabled(self.bar.is_shown());
@@ -1800,7 +1911,12 @@ impl App {
             window.set_warn_at(config.taskbar.warn_at as i32);
             window.set_completion_notifications(config.completion_notifications);
         }
+    }
 
+    fn refresh_settings(&self) {
+        self.refresh_app_preferences();
+        let open = self.settings_window.borrow();
+        let Some(window) = open.as_ref() else { return };
         let codex_home = agent_companion_core::install::codex_home();
         window.set_codex_present(codex_home.as_ref().is_ok_and(|home| home.is_dir()));
         match codex_home.and_then(|home| agent_companion_core::install::status_codex(&home)) {
@@ -1868,6 +1984,7 @@ impl App {
             config.save();
         }
         self.refresh_bar();
+        self.refresh_app_preferences();
     }
 
     /// The colour thresholds — saved, and applied everywhere a tier shows.
@@ -1879,6 +1996,7 @@ impl App {
             config.save();
         }
         self.refresh();
+        self.refresh_app_preferences();
     }
 
     /// Wire or unwire the login launch, pointing the registry at the installed
@@ -1905,6 +2023,7 @@ impl App {
                 self.note_settings(&format!("Could not update the login launch: {error}"));
             }
         }
+        self.refresh_app_preferences();
     }
 
     /// Preserve an enabled login launch across the rename, and move the old
@@ -1969,11 +2088,6 @@ enum Anchor {
     Tray,
     Readout,
 }
-
-/// How tall one detail-panel row is, mirrored in `ui/flyout.slint`.
-const HEADING_ROW: f32 = 26.0;
-const WINDOW_ROW: f32 = 17.0;
-const RESET_ROW: f32 = 18.0;
 
 /// The detail panel's usage block: an agent per section, its tightest number
 /// large in the heading, and one bar per window under it.
@@ -2048,24 +2162,6 @@ fn usage_sections(
     rows
 }
 
-/// The detail panel's usage block, in logical pixels.
-fn usage_block_height(rows: &[ui::UsageRow]) -> f32 {
-    if rows.is_empty() {
-        return 15.0;
-    }
-    rows.iter()
-        .map(|row| {
-            if row.heading {
-                HEADING_ROW
-            } else if row.resets.is_empty() {
-                WINDOW_ROW
-            } else {
-                WINDOW_ROW + RESET_ROW
-            }
-        })
-        .sum()
-}
-
 /// The longest a session's label may run before it is elided.
 const TITLE_LIMIT: usize = 40;
 
@@ -2133,18 +2229,6 @@ fn tray_tooltip(sessions: usize, waiting: usize, usage: &str) -> String {
 /// icons per second.
 fn quantise(value: f32) -> f32 {
     (value.clamp(0.0, 1.0) * 8.0).round() / 8.0
-}
-
-/// The detail panel's height for this many session rows and this much usage
-/// block. Mirrors the paddings and spacings in `ui/flyout.slint`.
-fn flyout_height(rows: usize, usage_height: f32) -> f32 {
-    let rows_height = if rows == 0 {
-        0.0
-    } else {
-        rows as f32 * 32.0 + (rows - 1) as f32 * 9.0
-    };
-    // padding + header + spacing + rows + spacing + rule + spacing + usage
-    28.0 + 14.0 + 10.0 + rows_height + 10.0 + 1.0 + 10.0 + usage_height
 }
 
 /// Put the panel beside the tray icon, on the same side of the screen the
@@ -2273,26 +2357,14 @@ mod tests {
         }
     }
 
-    /// The usage block is sized from what it actually draws: headings are
-    /// taller than the window rows under them, so a count is not enough.
     #[test]
-    fn the_usage_block_is_measured_row_by_row() {
+    fn expired_usage_windows_drop_their_reset_labels() {
         let rows = usage_sections(&both_agents(), &AGENTS, NOW, 0, 50, 20);
-        // claude + 3 windows, codex + 2 windows.
         assert_eq!(rows.len(), 7);
         assert_eq!(rows.iter().filter(|row| row.heading).count(), 2);
-        assert_eq!(
-            usage_block_height(&rows),
-            2.0 * HEADING_ROW + 5.0 * WINDOW_ROW + 3.0 * RESET_ROW
-        );
-        // Expired reset times disappear without leaving blank lines behind.
+        assert_eq!(rows.iter().filter(|row| !row.resets.is_empty()).count(), 3);
         let expired = usage_sections(&both_agents(), &AGENTS, NOW + 6 * 86_400, 0, 50, 20);
-        assert_eq!(
-            usage_block_height(&expired),
-            2.0 * HEADING_ROW + 5.0 * WINDOW_ROW
-        );
-        // An empty block still leaves room for the line that says so.
-        assert_eq!(usage_block_height(&[]), 15.0);
+        assert!(expired.iter().all(|row| row.resets.is_empty()));
     }
 
     /// The heading carries the number the panel was opened for, and each row

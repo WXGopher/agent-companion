@@ -1,38 +1,19 @@
-import { Button, CheckBox, ScrollView, VerticalBox, HorizontalBox } from "std-widgets.slint";
+import { Button } from "std-widgets.slint";
 import { MacSettings } from "macos-settings.slint";
+import { AppSettings } from "settings.slint";
+import { SettingsColors } from "settings-common.slint";
+import { StatusBarSettings } from "statusbar-settings.slint";
 import { StatusComponent } from "status-component.slint";
 export { StatusComponent }
 export { Palette } from "std-widgets.slint";
 
-component ComponentOption inherits Rectangle {
-    in property <StatusComponent> item;
-    in property <bool> available;
-    callback toggle(string, bool);
-    min-height: 34px;
-    Tooltip { text: @markdown("\{root.item.description}"); }
-    HorizontalLayout {
-        padding-left: 2px;
-        padding-right: 12px;
-        VerticalLayout {
-            alignment: center;
-            spacing: 2px;
-            CheckBox {
-                text: root.item.label;
-                checked: root.item.selected;
-                enabled: root.available;
-                toggled => { root.toggle(root.item.id, self.checked); }
-            }
-        }
-    }
-}
-
 export component CodexTuiWindow inherits Window {
     in property <string> window-title: "Agent Companion · Codex TUI";
     title: root.window-title;
-    preferred-width: root.macos-preferences ? 920px : 740px;
+    preferred-width: root.macos-preferences ? 920px : 820px;
     preferred-height: root.macos-preferences ? 760px : 720px;
-    min-width: root.macos-preferences ? 820px : 620px;
-    min-height: root.macos-preferences ? 660px : 620px;
+    min-width: root.macos-preferences ? 820px : 720px;
+    min-height: root.macos-preferences ? 660px : 640px;
     in property <[StatusComponent]> left-components;
     in property <[StatusComponent]> right-components;
     in property <string> preview;
@@ -45,6 +26,49 @@ export component CodexTuiWindow inherits Window {
     in property <bool> error;
     in property <string> config-path;
     in property <string> catalog-version;
+    in property <bool> claude-installed;
+    // Human-readable state of the hook wiring, e.g. "8 of 8 hooks installed".
+    in property <string> claude-status: "checking…";
+    // Whether Claude Code's own directory exists on this machine at all. A
+    // machine without it is a normal machine; the row says what it found.
+    in property <bool> claude-present: true;
+    in property <bool> codex-installed;
+    in property <bool> codex-present: true;
+    in property <string> codex-status: "checking…";
+    callback install-codex();
+    callback uninstall-codex();
+
+    in property <bool> completion-notifications: true;
+    callback set-completion-notifications(bool);
+
+    // The outcome of the last button press, shown along the bottom.
+    in property <string> app-message;
+
+    callback install();
+    callback uninstall();
+
+    in property <bool> taskbar-enabled: true;
+    // What the readout actually managed to do — embedded in the taskbar, or
+    // floating against it because the shell would not take a child.
+    in property <string> taskbar-status;
+    callback set-taskbar-enabled(bool);
+
+    // Read from the registry, which is the mechanism itself, so this can never
+    // drift from what Windows will actually do.
+    in property <bool> run-at-login;
+    callback set-run-at-login(bool);
+
+    in property <bool> show-claude: true;
+    in property <bool> show-codex: true;
+    // "claude" | "codex", and whether it gets its block in the readout.
+    callback set-agent-shown(string, bool);
+
+    // Where the percentage-left colour turns; see `usage_cache::left_tier`.
+    in property <int> good-at: 50;
+    in property <int> warn-at: 20;
+    callback set-thresholds(int, int);
+
+    in property <bool> windows-preferences;
     in property <bool> macos-preferences;
     in-out property <int> settings-page: 0;
     in property <bool> show-dock-icon;
@@ -86,118 +110,76 @@ export component CodexTuiWindow inherits Window {
         restore-defaults => { root.restore-defaults(); }
     }
 
-    if !root.macos-preferences: VerticalBox {
-        padding: 20px;
-        spacing: 12px;
+    if !root.macos-preferences: Rectangle {
+        background: SettingsColors.background;
         VerticalLayout {
-            spacing: 4px;
-            Text { text: "Make the status bar yours"; font-size: 22px; font-weight: 600; }
-            Text { text: "Choose what stays at the bottom of Codex CLI."; font-size: 12px; }
-        }
-
-        Rectangle {
-            height: 174px;
-            background: #14171b;
-            border-radius: 6px;
-            VerticalLayout {
-                padding: 16px;
-                spacing: 8px;
-                HorizontalLayout {
-                    Text { text: "›_ Codex CLI"; color: #cdd3db; font-family: root.mono-font; font-size: 12px; }
-                    Text { text: "Preview · sample values"; color: #98a3af; font-size: 11px; horizontal-alignment: right; }
-                }
-                Text { text: "• Ready to work on agent-companion."; color: #98a3af; font-family: root.mono-font; font-size: 12px; }
-                Rectangle { height: 1px; background: #3e444d; }
-                Text { text: "› Ask Codex to do anything"; color: #ebeff5; font-family: root.mono-font; font-size: 12px; }
-                Rectangle {
-                    background: #222831;
-                    border-radius: 3px;
-                    min-height: 40px;
-                    ScrollView {
-                        viewport-width: self.width;
-                        VerticalLayout {
-                            padding: 8px;
-                            Text {
-                                text: !root.ready ? "Preview unavailable" : root.selected-count == 0 ? "Status bar hidden" : root.preview;
-                                color: #a8c6e6;
-                                font-family: root.mono-font;
-                                font-size: 12px;
-                                wrap: word-wrap;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        HorizontalLayout {
-            Text { text: "Visible components"; font-weight: 600; }
-            Text {
-                text: root.ready ? root.selected-count + " selected · check to show" : "";
-                font-size: 11px;
-                horizontal-alignment: right;
-            }
-        }
-        ScrollView {
-            vertical-stretch: 1;
-            viewport-width: self.width;
+            padding: 24px;
+            spacing: 18px;
             HorizontalLayout {
-                spacing: 14px;
-                VerticalLayout {
-                    alignment: start;
-                    for item in root.left-components: ComponentOption {
-                        item: item;
-                        available: root.ready;
-                        toggle(id, enabled) => { root.toggle(id, enabled); }
-                    }
+                Text { text: root.windows-preferences ? "Settings" : "Codex CLI"; font-size: 24px; font-weight: 700; color: SettingsColors.text; }
+                Text { text: "Agent Companion"; font-size: 12px; color: SettingsColors.secondary; horizontal-alignment: right; vertical-alignment: center; }
+            }
+            if root.windows-preferences: HorizontalLayout {
+                height: 36px;
+                spacing: 8px;
+                for label[index] in ["Codex CLI", "Taskbar & app", "Integrations"]: Button {
+                    text: label;
+                    primary: root.settings-page == index;
+                    clicked => { root.settings-page = index; }
                 }
-                VerticalLayout {
-                    alignment: start;
-                    for item in root.right-components: ComponentOption {
-                        item: item;
-                        available: root.ready;
-                        toggle(id, enabled) => { root.toggle(id, enabled); }
-                    }
+                Rectangle { horizontal-stretch: 1; }
+            }
+            Rectangle {
+                vertical-stretch: 1;
+                StatusBarSettings {
+                    visible: !root.windows-preferences || root.settings-page == 0;
+                    left-components: root.left-components;
+                    right-components: root.right-components;
+                    preview: root.preview;
+                    mono-font: root.mono-font;
+                    selected-count: root.selected-count;
+                    ready: root.ready;
+                    dirty: root.dirty;
+                    custom: root.custom;
+                    message: root.message;
+                    error: root.error;
+                    config-path: root.config-path;
+                    catalog-version: root.catalog-version;
+                    toggle(id, enabled) => { root.toggle(id, enabled); }
+                    apply => { root.apply(); }
+                    restore-defaults => { root.restore-defaults(); }
+                }
+                AppSettings {
+                    visible: root.windows-preferences && root.settings-page != 0;
+                    integrations: root.settings-page == 2;
+                    dirty: root.dirty;
+                    review => { root.settings-page = 0; }
+                    claude-installed: root.claude-installed;
+                    claude-status: root.claude-status;
+                    claude-present: root.claude-present;
+                    codex-installed: root.codex-installed;
+                    codex-present: root.codex-present;
+                    codex-status: root.codex-status;
+                    completion-notifications: root.completion-notifications;
+                    app-message: root.app-message;
+                    taskbar-enabled: root.taskbar-enabled;
+                    taskbar-status: root.taskbar-status;
+                    run-at-login: root.run-at-login;
+                    show-claude: root.show-claude;
+                    show-codex: root.show-codex;
+                    good-at: root.good-at;
+                    warn-at: root.warn-at;
+                    install() => { root.install(); }
+                    uninstall() => { root.uninstall(); }
+                    install-codex() => { root.install-codex(); }
+                    uninstall-codex() => { root.uninstall-codex(); }
+                    set-completion-notifications(enabled) => { root.set-completion-notifications(enabled); }
+                    set-taskbar-enabled(enabled) => { root.set-taskbar-enabled(enabled); }
+                    set-run-at-login(enabled) => { root.set-run-at-login(enabled); }
+                    set-agent-shown(agent, shown) => { root.set-agent-shown(agent, shown); }
+                    set-thresholds(good, warn) => { root.set-thresholds(good, warn); }
                 }
             }
-        }
-        Text {
-            text: "Components appear in Codex when data is available. Preview wraps to show your full selection.";
-            font-size: 11px;
-            wrap: word-wrap;
-        }
-        Rectangle { height: 1px; background: #80808040; }
-        HorizontalBox {
-            padding: 0px;
-            Button {
-                text: "Restore Codex defaults";
-                enabled: root.ready && (root.custom || root.dirty);
-                clicked => { root.restore-defaults(); }
-            }
-            Rectangle { horizontal-stretch: 1; }
-            Text {
-                text: root.dirty ? "Unapplied changes" : root.ready ? (root.custom ? "Custom status bar" : "Codex defaults") : "";
-                vertical-alignment: center;
-                font-size: 11px;
-            }
-            Button {
-                text: "Apply";
-                primary: true;
-                enabled: root.ready && root.dirty;
-                clicked => { root.apply(); }
-            }
-        }
-        Text {
-            text: root.message;
-            color: root.error ? #c42b1c : #808080;
-            font-size: 12px;
-            wrap: word-wrap;
-            min-height: 34px;
-        }
-        Text {
-            text: "User configuration · " + root.config-path + "\nComponent catalog: Codex CLI " + root.catalog-version;
-            font-size: 11px;
-            wrap: word-wrap;
         }
     }
 }

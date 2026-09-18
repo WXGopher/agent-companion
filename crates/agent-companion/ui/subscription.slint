@@ -1,0 +1,134 @@
+import { Theme, UsageRow, UsageBar } from "common.slint";
+
+export struct SubscriptionView {
+    loading: bool,
+    updated: string,
+    message: string,
+    limits-error: string,
+    token-error: string,
+    has-reading: bool,
+    has-tokens: bool,
+    total: string,
+    total-exact: string,
+    peak: string,
+    peak-exact: string,
+    current-streak: string,
+    longest-streak: string,
+    longest-turn: string,
+}
+
+export struct UsageDay {
+    date: string,
+    value: string,
+    exact: string,
+    fill: float,
+}
+
+export component QuotaRows inherits VerticalLayout {
+    in property <[UsageRow]> rows;
+    spacing: 8px;
+    for row in root.rows: VerticalLayout {
+        spacing: 5px;
+        HorizontalLayout {
+            Text { text: row.label; color: row.heading ? Theme.text : Theme.dim; font-size: 11px; font-weight: row.heading ? 600 : 400; overflow: elide; }
+            Text { text: row.value; color: row.tier == "low" ? Theme.spent : row.tier == "warn" ? Theme.thin : row.tier == "good" ? Theme.plenty : Theme.dim; font-size: 11px; horizontal-alignment: right; horizontal-stretch: 0; }
+        }
+        if !row.heading && row.value != "": UsageBar { fill: row.fill; tier: row.tier; }
+        if row.resets != "": Text { text: row.resets; color: Theme.faint; font-size: 10px; wrap: word-wrap; }
+    }
+}
+
+component Metric inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    in property <string> exact;
+    background: #55c98d14;
+    border-radius: 9px;
+    height: 62px;
+    Tooltip { text: @markdown("\{root.exact} tokens"); }
+    VerticalLayout {
+        padding: 10px;
+        spacing: 4px;
+        Text { text: root.label; color: Theme.dim; font-size: 10px; }
+        Text { text: root.value; color: Theme.plenty; font-size: 15px; font-weight: 600; }
+    }
+}
+
+component Detail inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value;
+    Text { text: root.label; color: Theme.dim; font-size: 11px; }
+    Text { text: root.value; color: Theme.text; font-size: 11px; horizontal-alignment: right; }
+}
+
+export component SubscriptionContent inherits VerticalLayout {
+    in property <SubscriptionView> data;
+    in property <[UsageRow]> limits;
+    in property <[UsageDay]> days;
+    alignment: start;
+    spacing: 14px;
+    if root.data.message != "": Text {
+        text: root.data.message;
+        color: Theme.body-text;
+        font-size: 12px;
+        wrap: word-wrap;
+    }
+    if root.data.has-reading: VerticalLayout {
+        spacing: 10px;
+        Text { text: "SUBSCRIPTION LIMITS"; color: Theme.dim; font-size: 10px; font-weight: 600; }
+        if root.data.limits-error != "": Text { text: root.data.limits-error; color: Theme.thin; font-size: 11px; wrap: word-wrap; }
+        if root.limits.length > 0: Rectangle {
+            background: Theme.soft;
+            border-radius: 9px;
+            VerticalLayout {
+                padding: 12px;
+                QuotaRows { rows: root.limits; }
+            }
+        }
+        Text { text: "TOKEN ACTIVITY"; color: Theme.dim; font-size: 10px; font-weight: 600; }
+        if root.data.token-error != "": Text { text: root.data.token-error; color: Theme.thin; font-size: 11px; wrap: word-wrap; }
+        if root.data.has-tokens: VerticalLayout {
+            spacing: 10px;
+            HorizontalLayout {
+                spacing: 8px;
+                Metric { label: "All time"; value: root.data.total; exact: root.data.total-exact; }
+                Metric { label: "Daily peak"; value: root.data.peak; exact: root.data.peak-exact; }
+            }
+            Rectangle {
+                border-radius: 9px;
+                background: Theme.soft;
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+                    Text { text: root.days.length > 0 ? "Last " + root.days.length + " reported days" : "Daily history is not available."; color: Theme.dim; font-size: 10px; }
+                    for day in root.days: VerticalLayout {
+                        spacing: 4px;
+                        HorizontalLayout {
+                            Text { text: day.date; color: Theme.dim; font-size: 10px; }
+                            Text { text: day.value + " tokens"; color: Theme.text; font-size: 10px; horizontal-alignment: right; Tooltip { text: @markdown("\{day.exact} tokens"); } }
+                        }
+                        Rectangle {
+                            height: 4px;
+                            border-radius: 2px;
+                            background: Theme.trough;
+                            Rectangle { width: parent.width * day.fill; height: parent.height; border-radius: 2px; background: Theme.plenty; }
+                        }
+                    }
+                }
+            }
+            Rectangle {
+                border-radius: 9px;
+                background: Theme.soft;
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+                    Detail { label: "Current streak"; value: root.data.current-streak; }
+                    Detail { label: "Longest streak"; value: root.data.longest-streak; }
+                    Detail { label: "Longest turn"; value: root.data.longest-turn; }
+                }
+            }
+            Text { text: "— = not reported. Account input/output breakdown unavailable."; color: Theme.faint; font-size: 10px; wrap: word-wrap; }
+        }
+        Text { text: "Codex account activity may be delayed. Token totals do not measure remaining allowance."; color: Theme.faint; font-size: 10px; wrap: word-wrap; }
+    }
+}

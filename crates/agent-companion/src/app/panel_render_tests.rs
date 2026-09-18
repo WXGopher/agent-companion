@@ -8,7 +8,15 @@ use slint::{ComponentHandle, ModelRc, Rgb8Pixel, VecModel};
 
 struct TestPlatform(Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>);
 
+thread_local! {
+    static RENDER_TIME: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 impl Platform for TestPlatform {
+    fn duration_since_start(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(RENDER_TIME.get())
+    }
+
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
         let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
         self.0.borrow_mut().push(window.clone());
@@ -16,9 +24,12 @@ impl Platform for TestPlatform {
     }
 }
 
-fn draw(window: &MinimalSoftwareWindow, name: &str) {
+fn draw(window: &MinimalSoftwareWindow, name: &str) -> Vec<Rgb8Pixel> {
+    RENDER_TIME.set(RENDER_TIME.get() + 250);
+    slint::platform::update_timers_and_animations();
     window.request_redraw();
     let mut rendered = false;
+    let mut pixels = Vec::new();
     window.draw_if_needed(|renderer| {
         let size = window.size();
         let mut buffer = vec![Rgb8Pixel::default(); (size.width * size.height) as usize];
@@ -32,8 +43,10 @@ fn draw(window: &MinimalSoftwareWindow, name: &str) {
             std::fs::write(dir.join(format!("{name}.ppm")), bytes).unwrap();
         }
         rendered = true;
+        pixels = buffer;
     });
     assert!(rendered);
+    pixels
 }
 
 fn click(window: &MinimalSoftwareWindow, x: f32, y: f32) {
@@ -108,22 +121,7 @@ fn waiting_preview_renders_and_opens_full_details_at_common_scales() {
     }
     panel.hide().unwrap();
 
-    let settings = super::ui::SettingsWindow::new().unwrap();
-    settings.set_claude_status("Not installed".into());
-    settings.set_codex_status("8 of 8 hooks installed".into());
-    settings.set_codex_installed(true);
-    settings.set_taskbar_status("Sitting in the taskbar, above the notification area.".into());
-    settings
-        .set_message("Review the new Codex hooks with /hooks, then start a new session.".into());
-    settings
-        .window()
-        .set_size(slint::LogicalSize::new(460.0, 380.0));
-    settings.show().unwrap();
-    let window = windows.borrow().last().unwrap().clone();
-    draw(&window, "settings-setup");
-    click(&window, 260.0, 23.0);
-    draw(&window, "settings-general");
-    settings.hide().unwrap();
+    flyout_pages_render_and_preserve_scroll(&panel, &windows);
 
     let card = super::ui::CardWindow::new().unwrap();
     card.set_card(3);
@@ -183,34 +181,38 @@ fn codex_tui_editor_renders_and_applies_only_explicit_actions(
     let original = "# keep my config\n[features]\nhooks = true\n[tui]\ntheme = \"nord\"\n";
     std::fs::write(&path, original).unwrap();
     let editor = super::codex_tui::Editor::new(path.clone()).unwrap();
+    editor.window.set_windows_preferences(true);
+    editor
+        .window
+        .set_window_title("Agent Companion · Settings".into());
+    editor.window.set_claude_status("Not installed".into());
+    editor
+        .window
+        .set_codex_status("8 of 8 hooks installed".into());
+    editor.window.set_codex_installed(true);
+    editor
+        .window
+        .set_taskbar_status("Sitting in the taskbar, above the notification area.".into());
     editor.show().unwrap();
     // The displayed path is illustrative in the screenshots; all writes still
     // go to the explicit temporary path held by the controller.
     editor.window.set_config_path("~/.codex/config.toml".into());
     let window = windows.borrow().last().unwrap().clone();
     assert_eq!(editor.window.get_selected_count(), 3);
+    window.dispatch_event(WindowEvent::WindowActiveChanged(true));
     assert!(!editor.window.get_dirty());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
     for scale in [1.0, 1.5, 2.0] {
         window.dispatch_event(WindowEvent::ScaleFactorChanged {
             scale_factor: scale,
         });
-        for (width, height) in [(740.0, 720.0), (620.0, 620.0)] {
+        for (width, height) in [(820.0, 720.0), (720.0, 640.0)] {
             editor
                 .window
                 .window()
                 .set_size(slint::LogicalSize::new(width, height));
             draw(&window, &format!("codex-tui-default-{width}-{scale}"));
-            if width == 740.0 && scale == 1.0 {
-                window.dispatch_event(WindowEvent::WindowActiveChanged(true));
-                window.dispatch_event(WindowEvent::KeyPressed {
-                    text: slint::platform::Key::Tab.into(),
-                });
-                window.dispatch_event(WindowEvent::KeyReleased {
-                    text: slint::platform::Key::Tab.into(),
-                });
-            }
-            click(&window, 31.0, 307.0);
+            click(&window, 49.0, 339.0);
             assert_eq!(
                 editor.window.get_selected_count(),
                 2,
@@ -231,7 +233,7 @@ fn codex_tui_editor_renders_and_applies_only_explicit_actions(
     editor
         .window
         .window()
-        .set_size(slint::LogicalSize::new(740.0, 720.0));
+        .set_size(slint::LogicalSize::new(820.0, 720.0));
     editor
         .window
         .invoke_toggle("model-with-reasoning".into(), false);
@@ -239,8 +241,34 @@ fn codex_tui_editor_renders_and_applies_only_explicit_actions(
     assert!(!editor.window.get_preview().contains("gpt-6-astra"));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
     editor.window.invoke_toggle("git-branch".into(), true);
-    draw(&window, "codex-tui-draft");
-    click(&window, 690.0, 600.0);
+    let pixels = draw(&window, "codex-tui-draft");
+    let checked_blue = (334..344)
+        .flat_map(|y| (44..54).map(move |x| y * 820 + x))
+        .filter(|index| pixels[*index].b as i16 - pixels[*index].r as i16 > 60)
+        .count();
+    assert_eq!(
+        checked_blue, 0,
+        "the checkbox must repaint when the draft deselects it"
+    );
+    let draft = editor.window.get_preview();
+    for scheme in [
+        slint::language::ColorScheme::Light,
+        slint::language::ColorScheme::Dark,
+    ] {
+        editor
+            .window
+            .global::<super::ui::Palette>()
+            .set_color_scheme(scheme);
+        for page in [1, 2, 0] {
+            click(&window, [64.0, 162.0, 265.0][page as usize], 88.0);
+            assert_eq!(editor.window.get_settings_page(), page);
+            draw(&window, &format!("settings-page-{page}-{scheme:?}"));
+            assert!(editor.window.get_dirty());
+            assert_eq!(editor.window.get_preview(), draft);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        }
+    }
+    click(&window, 743.0, 655.0);
     assert!(
         !editor.window.get_error(),
         "{}",
@@ -258,7 +286,7 @@ fn codex_tui_editor_renders_and_applies_only_explicit_actions(
     draw(&window, "codex-tui-hidden");
     editor.window.invoke_apply();
     assert_eq!(config::read(&path).unwrap().items, Some(vec![]));
-    click(&window, 100.0, 600.0);
+    click(&window, 618.0, 655.0);
     assert_eq!(config::read(&path).unwrap().items, None);
     assert!(!editor.window.get_custom());
     assert_eq!(editor.window.get_selected_count(), 3);
@@ -289,4 +317,141 @@ fn codex_tui_editor_renders_and_applies_only_explicit_actions(
     assert_eq!(editor.window.get_selected_count(), 2);
     assert!(editor.window.get_preview().contains("[future-component]"));
     editor.window.hide().unwrap();
+}
+
+fn flyout_pages_render_and_preserve_scroll(
+    panel: &super::ui::FlyoutWindow,
+    windows: &Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>,
+) {
+    panel.set_compact(false);
+    panel.set_active_count(20);
+    panel.set_finished_count(2);
+    panel.set_sessions(ModelRc::new(VecModel::from(
+        (0..20)
+            .map(|n| super::ui::SessionRow {
+                id: format!("session-{n}").into(),
+                title: "项目 · Windows settings and usage".into(),
+                detail: "Working · review changes".into(),
+                phase: "running".into(),
+                source: "codex".into(),
+                jumpable: true,
+            })
+            .collect::<Vec<_>>(),
+    )));
+    panel.set_subscription(super::ui::SubscriptionView {
+        updated: "Updated 14:32".into(),
+        has_reading: true,
+        has_tokens: true,
+        total: "12.3M".into(),
+        total_exact: "12345678".into(),
+        peak: "1.2M".into(),
+        peak_exact: "1234567".into(),
+        current_streak: "8 days".into(),
+        longest_streak: "24 days".into(),
+        longest_turn: "1h 12m".into(),
+        ..Default::default()
+    });
+    panel.set_subscription_limits(ModelRc::new(VecModel::from(vec![
+        super::ui::UsageRow {
+            heading: true,
+            label: "Codex · plus".into(),
+            ..Default::default()
+        },
+        super::ui::UsageRow {
+            label: "5 hours".into(),
+            value: "81%".into(),
+            fill: 0.81,
+            tier: "good".into(),
+            resets: "Resets 18:30".into(),
+            ..Default::default()
+        },
+        super::ui::UsageRow {
+            label: "Weekly".into(),
+            value: "34%".into(),
+            fill: 0.34,
+            tier: "warn".into(),
+            resets: "Resets Mon 00:40".into(),
+            ..Default::default()
+        },
+    ])));
+    panel.set_usage_days(ModelRc::new(VecModel::from(
+        (1..=7)
+            .rev()
+            .map(|day| super::ui::UsageDay {
+                date: format!("2026-09-{day:02}").into(),
+                value: format!("{day}00K").into(),
+                exact: format!("{day}00000").into(),
+                fill: day as f32 / 7.0,
+            })
+            .collect::<Vec<_>>(),
+    )));
+    panel.show().unwrap();
+    let window = windows.borrow().last().unwrap().clone();
+    let selected = Rc::new(std::cell::Cell::new(false));
+    panel.on_select_page({
+        let selected = selected.clone();
+        move |usage| selected.set(usage)
+    });
+    let refreshed = Rc::new(std::cell::Cell::new(0));
+    panel.on_refresh_usage({
+        let refreshed = refreshed.clone();
+        move || refreshed.set(refreshed.get() + 1)
+    });
+    for scale in [1.0, 1.5, 2.0] {
+        window.dispatch_event(WindowEvent::ScaleFactorChanged {
+            scale_factor: scale,
+        });
+        for height in [super::DETAIL_HEIGHT, 360.0] {
+            panel
+                .window()
+                .set_size(slint::LogicalSize::new(super::DETAIL_WIDTH, height));
+            panel.set_usage_page(false);
+            panel.set_task_scroll_y(0.0);
+            panel.set_usage_scroll_y(0.0);
+            draw(&window, &format!("tasks-{height}-{scale}"));
+            let size = window.size();
+            panel.set_task_scroll_y(-120.0);
+            draw(&window, "tasks-scrolled");
+            click(&window, 116.0, 28.0);
+            assert!(
+                selected.get() && panel.get_usage_page(),
+                "Usage tab must be clickable"
+            );
+            draw(&window, &format!("usage-{height}-{scale}"));
+            panel.set_usage_scroll_y(-100.0);
+            draw(&window, &format!("usage-scrolled-{height}-{scale}"));
+            click(&window, 42.0, 28.0);
+            draw(&window, "tasks-return");
+            assert!(!selected.get() && !panel.get_usage_page());
+            assert_eq!(panel.get_task_scroll_y(), -120.0);
+            click(&window, 116.0, 28.0);
+            draw(&window, "usage-return");
+            assert_eq!(panel.get_usage_scroll_y(), -100.0);
+            assert_eq!(
+                window.size(),
+                size,
+                "switching pages must not resize the panel"
+            );
+            let before = refreshed.get();
+            click(&window, 330.0, 80.0);
+            assert_eq!(refreshed.get(), before + 1);
+        }
+    }
+    let mut subscription = panel.get_subscription();
+    subscription.loading = true;
+    panel.set_subscription(subscription);
+    draw(&window, "usage-loading");
+    let before = refreshed.get();
+    click(&window, 330.0, 80.0);
+    assert_eq!(
+        refreshed.get(),
+        before,
+        "loading disables duplicate refreshes"
+    );
+    panel.set_subscription(super::ui::SubscriptionView {
+        message: "Sign in to Codex with your ChatGPT subscription, then refresh. Subscription usage does not use an API key.".into(),
+        ..Default::default()
+    });
+    draw(&window, "usage-signed-out");
+    panel.hide().unwrap();
 }

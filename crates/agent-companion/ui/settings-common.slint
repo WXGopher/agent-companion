@@ -1,0 +1,63 @@
+import { CheckBox, Palette } from "std-widgets.slint";
+import { StatusComponent } from "status-component.slint";
+
+export global SettingsColors {
+    out property <bool> dark: Palette.color-scheme == ColorScheme.dark;
+    out property <color> background: dark ? #1d201f : #f4f6f5;
+    out property <color> card: dark ? #272b29 : #ffffff;
+    out property <color> text: dark ? #f0f3f1 : #202925;
+    out property <color> secondary: dark ? #a6b1ab : #65736b;
+    out property <color> border: dark ? #3a413d : #e0e7e2;
+    out property <color> selected: dark ? #293b33 : #edf7f0;
+    out property <color> accent: dark ? #7adab0 : #27734e;
+    out property <color> error: dark ? #ffb2a8 : #ad342b;
+}
+
+export component SettingsCard inherits Rectangle {
+    background: SettingsColors.card;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: SettingsColors.border;
+}
+
+export component ComponentChoice inherits Rectangle {
+    in property <StatusComponent> item;
+    in property <bool> available;
+    callback toggle(string, bool);
+    height: 34px;
+    border-radius: 8px;
+    background: root.item.selected ? SettingsColors.selected : SettingsColors.card;
+    // Native checkboxes keep their own state after a click. Reapply model
+    // changes for Apply, Restore and externally refreshed drafts, too.
+    changed item => { checkbox.checked = root.item.selected; }
+    Tooltip { text: @markdown("\{root.item.description}"); }
+    HorizontalLayout {
+        padding: 8px;
+        spacing: 8px;
+        checkbox := CheckBox {
+            width: 16px;
+            checked: root.item.selected;
+            enabled: root.available;
+            accessible-label: root.item.label;
+            toggled => { checkbox.focus(); root.toggle(root.item.id, self.checked); }
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            Text {
+                width: parent.width;
+                height: parent.height;
+                text: root.item.label;
+                color: root.available ? SettingsColors.text : SettingsColors.secondary;
+                font-size: 11px;
+                horizontal-alignment: left;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            TouchArea {
+                enabled: root.available;
+                mouse-cursor: pointer;
+                clicked => { checkbox.focus(); root.toggle(root.item.id, !root.item.selected); }
+            }
+        }
+    }
+}

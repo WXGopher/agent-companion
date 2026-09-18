@@ -1,7 +1,7 @@
 //! A local Codex TUI launch with a transparent app-server relay.
 //! All RPCs still reach Codex. Only native user-input requests are mirrored to
 //! Agent Companion; the first answer wins, whether it came from the TUI or the card.
-mod job;
+pub(crate) mod job;
 
 use agent_companion_core::protocol::{
     Command, Envelope, HookPayload, HookSource, Response, events,
@@ -111,7 +111,7 @@ fn attach_console() {
     }
 }
 
-fn executable(explicit: Option<&PathBuf>) -> io::Result<PathBuf> {
+pub(crate) fn executable(explicit: Option<&PathBuf>) -> io::Result<PathBuf> {
     if let Some(path) = explicit {
         return path.canonicalize();
     }
