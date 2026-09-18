@@ -47,7 +47,6 @@ final class NotchSurfaceView: NSView {
     private let measurement: NotchContentView
     private let outline = CAShapeLayer()
     private var tracking: NSTrackingArea?
-    private var showsDetails = false
     private var detailsHeight: CGFloat?
     private var contentHeight: CGFloat = 0
     var hover: (() -> Void)?
@@ -56,8 +55,11 @@ final class NotchSurfaceView: NSView {
 
     init(model: CompanionModel) {
         self.model = model
-        host = NotchContentView(rootView: CompanionView(model: model, showsDetails: false, drawsBackground: false))
-        measurement = NotchContentView(rootView: CompanionView(model: model, showsDetails: false, drawsBackground: false))
+        // Keep the same full layout even while the panel clips it to the strip.
+        // Removing the details changes SwiftUI's text raster alignment on
+        // macOS 14, shifting the counters by a pixel on the first open frame.
+        host = NotchContentView(rootView: CompanionView(model: model, showsDetails: true, drawsBackground: false))
+        measurement = NotchContentView(rootView: CompanionView(model: model, showsDetails: true, drawsBackground: false))
         super.init(frame: .zero)
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
@@ -72,18 +74,17 @@ final class NotchSurfaceView: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func measure(showDetails: Bool, maximumHeight: CGFloat) -> CGFloat {
+    func measure(maximumHeight: CGFloat) -> CGFloat {
         // Measure an unbounded copy without removing/recreating the visible
         // scroll view. Refreshes must preserve its scroll position and focus.
-        measurement.rootView = CompanionView(model: model, showsDetails: showDetails, drawsBackground: false)
+        measurement.rootView = CompanionView(model: model, showsDetails: true, drawsBackground: false)
         measurement.layoutSubtreeIfNeeded()
         let naturalHeight = max(model.compactHeight, measurement.fittingSize.height)
         contentHeight = min(maximumHeight, naturalHeight)
-        let limit = showDetails && naturalHeight > maximumHeight ? contentHeight - model.compactHeight : nil
-        if showsDetails != showDetails || detailsHeight != limit {
-            showsDetails = showDetails
+        let limit = naturalHeight > maximumHeight ? contentHeight - model.compactHeight : nil
+        if detailsHeight != limit {
             detailsHeight = limit
-            host.rootView = CompanionView(model: model, showsDetails: showDetails, drawsBackground: false, detailsHeight: limit)
+            host.rootView = CompanionView(model: model, showsDetails: true, drawsBackground: false, detailsHeight: limit)
         }
         host.layoutSubtreeIfNeeded()
         needsLayout = true
@@ -145,9 +146,7 @@ final class NotchPresentation {
         metrics = model.metrics
         maximumHeight = limit
         width = model.compactWidth
-        if model.expanded {
-            expandedHeight = surface.measure(showDetails: true, maximumHeight: maximumHeight)
-        }
+        expandedHeight = surface.measure(maximumHeight: maximumHeight)
         let target = model.expanded ? expandedHeight : model.compactHeight
         motion.retarget(target, animated: animated && !geometryChanged && !reduceMotion())
         render()
@@ -181,7 +180,6 @@ final class NotchPresentation {
         let frame = CGRect(x: screen.midX + model.centerOffset - width / 2,
                            y: screen.maxY - height, width: width, height: height)
         surface.expansion = min(1, max(0, (height - model.compactHeight) / max(1, expandedHeight - model.compactHeight)))
-        if !motion.isMoving && !model.expanded { _ = surface.measure(showDetails: false, maximumHeight: maximumHeight) }
         if panel.frame != frame { panel.setFrame(frame, display: false) }
         surface.needsLayout = true
         surface.layoutSubtreeIfNeeded()

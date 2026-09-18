@@ -49,6 +49,18 @@ struct LayoutTests {
             try TaskTabTests.run(output: output)
             return
         }
+        if CommandLine.arguments.contains("--page-switches") {
+            try PageSwitchTests.run(output: output)
+            return
+        }
+        if CommandLine.arguments.contains("--morph") {
+            for camera in [false, true] {
+                let directory = output.appendingPathComponent(camera ? "camera-morph" : "external-morph")
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                try verifyMorphing(output: directory, camera: camera)
+            }
+            return
+        }
         let model = CompanionModel()
         if ProcessInfo.processInfo.environment["AGENT_COMPANION_TEST_SNAPSHOT"] != nil {
             model.refresh()
@@ -64,9 +76,12 @@ struct LayoutTests {
         precondition(model.visibleTasks.count == 2 && model.weeklyText == "68%")
         precondition(model.workingCount == 1 && model.needsInput, "Waiting sessions must not inflate the working count")
         precondition(model.summaryDescription.contains("1 working, approval or input needed"))
+        // Tasks and Usage reserve one shared page height, including on first
+        // open. This budget includes the 330-point (density-scaled) usage list.
+        let standardPageHeight: ClosedRange<CGFloat> = 450...500
         try render(model, name: "compact-external", output: output, height: 28...28)
         model.expanded = true
-        try render(model, name: "active-external", output: output, height: 300...480)
+        try render(model, name: "active-external", output: output, height: standardPageHeight)
         model.expanded = false
         model.metrics = cameraMetrics()
         try render(model, name: "compact-notched", output: output, height: 32...32)
@@ -109,10 +124,10 @@ struct LayoutTests {
         precondition(model.cameraRightWidth <= 52, "Large counts exceeded the compact side-indicator budget")
         model.snapshot.tasks = tasks
         model.expanded = true
-        let largeCountsSize = try render(model, name: "large-counts-expanded", output: output, height: 300...440)
+        let largeCountsSize = try render(model, name: "large-counts-expanded", output: output, height: standardPageHeight)
         model.snapshot.activeCount = 2
         model.snapshot.completedCount = 1
-        let activeSize = try render(model, name: "active", output: output, height: 300...420)
+        let activeSize = try render(model, name: "active", output: output, height: standardPageHeight)
         precondition(largeCountsSize.height == activeSize.height, "Large counts wrapped the tabs instead of fitting the compact layout")
         model.metrics = cameraMetrics(width: 156, height: 28)
         try render(model, name: "active-small-camera", output: output, height: 300...460)
@@ -123,7 +138,7 @@ struct LayoutTests {
         model.metrics = cameraMetrics()
         model.showingCompleted = true
         precondition(model.visibleTasks.count == 1)
-        let finishedSize = try render(model, name: "finished", output: output, height: 300...440)
+        let finishedSize = try render(model, name: "finished", output: output, height: standardPageHeight)
         precondition(finishedSize == activeSize, "Task tabs must share the same panel size")
         model.showingCompleted = false
         model.failedTask = model.snapshot.tasks[0]
@@ -136,16 +151,17 @@ struct LayoutTests {
         model.failedTask = nil
         model.snapshot = CodexSnapshot(loading: false)
         precondition(model.weeklyText == "—" && model.visibleTasks.isEmpty)
-        try render(model, name: "empty", output: output, height: 300...480)
+        try render(model, name: "empty", output: output, height: standardPageHeight)
         model.snapshot.weekly = WeeklyUsage(usedPercent: 100, resetsAt: 0, expired: true)
         precondition(model.weeklyText == "—")
         model.snapshot.error = "Could not read Codex sessions: permission denied."
         try render(model, name: "read-error", output: output, height: 330...510)
         model.snapshot = CodexSnapshot(loading: true)
-        try render(model, name: "loading", output: output, height: 300...480)
+        try render(model, name: "loading", output: output, height: standardPageHeight)
         verifyDisplaySizing()
         verifyResize()
         try TaskTabTests.run(output: output)
+        try PageSwitchTests.run(output: output)
         try verifyBoundedContent(output: output)
         verifySnapshotRefresh()
         try verifyMorphing(output: output)
@@ -705,13 +721,14 @@ struct LayoutTests {
         presentation.update(screen: screen, animated: false)
         let compact = panel.frame
         let content = presentation.surface.subviews[0]
+        let contentFrame = content.frame
         precondition(compact.height == model.compactHeight && compact.width == model.compactWidth)
         func checkAnchor() {
             precondition(abs(panel.frame.maxY - screen.maxY) < 0.01, "The notch detached from the menu bar during animation")
             precondition(panel.frame.width == compact.width && panel.frame.midX == screen.midX + model.centerOffset,
                          "Expansion occupied more menu-bar space")
-            precondition(content === presentation.surface.subviews[0] && content.frame.minY == 0,
-                         "The compact strip was replaced or moved during animation")
+            precondition(content === presentation.surface.subviews[0] && content.frame == contentFrame && content.frame.minY == 0,
+                         "Expansion relaid out the content instead of revealing its stable layout")
             precondition(panel.frame.height >= compact.height)
         }
         @discardableResult func capture(_ name: String, header expected: [UInt8]? = nil) throws -> [UInt8] {
@@ -725,22 +742,46 @@ struct LayoutTests {
             // a fade or a vertically centered SwiftUI root would otherwise pass.
             let scale = CGFloat(pixels.pixelsWide) / surface.bounds.width
             var header: [UInt8] = []
-            let horizontalInset: CGFloat = camera ? 8 : 28
-            let verticalInset: CGFloat = camera ? 4 : 2
-            for y in stride(from: Int(verticalInset * scale), to: Int((model.compactHeight - verticalInset) * scale), by: 4) {
-                for x in stride(from: Int(horizontalInset * scale), to: pixels.pixelsWide - Int(horizontalInset * scale), by: 4) {
+            // Include the short counters at both edges. A wide inset can
+            // accidentally compare only the empty center of an external strip.
+            for y in stride(from: Int(2 * scale), to: Int((model.compactHeight - 2) * scale), by: 2) {
+                for x in stride(from: Int(2 * scale), to: pixels.pixelsWide - Int(2 * scale), by: 2) {
                     let color = pixels.colorAt(x: x, y: y)!.usingColorSpace(.deviceRGB)!
-                    header += [color.redComponent, color.greenComponent, color.blueComponent, color.alphaComponent]
-                        .map { UInt8((min(1, max(0, $0)) * 255).rounded()) }
+                    // Compare visible ink, including its opacity. The black
+                    // silhouette's alpha changes intentionally while growing.
+                    header += [color.redComponent, color.greenComponent, color.blueComponent]
+                        .map { UInt8((min(1, max(0, $0 * color.alphaComponent)) * 255).rounded()) }
                 }
             }
             if let expected {
-                precondition(zip(header, expected).allSatisfy { abs(Int($0) - Int($1)) <= 2 },
-                             "The compact counters moved or faded in \(name)")
+                let differences = zip(header, expected).enumerated().filter { abs(Int($0.element.0) - Int($0.element.1)) > 2 }
+                if !differences.isEmpty {
+                    let samples = differences.prefix(12).map { "\($0.offset):\($0.element.1)→\($0.element.0)" }.joined(separator: ", ")
+                    print("Morph pixel differences: camera \(camera), frame \(panel.frame), content \(content.frame), bitmap \(pixels.pixelsWide)×\(pixels.pixelsHigh), scale \(scale), samples \(samples)")
+                }
+                precondition(differences.isEmpty, "The compact counters moved or faded in \(name)")
             }
             return header
         }
-        let header = try capture("morph-compact")
+        // NSHostingView installs its window appearance and first text layers
+        // asynchronously. Compare expansion against a visibly painted, idle
+        // strip, as seen before a user hovers, rather than its creation frame.
+        var header = try capture("morph-cold")
+        var stableFrames = 0
+        let paintDeadline = Date().addingTimeInterval(2)
+        while stableFrames < 2 && Date() < paintDeadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            let painted = try capture("morph-compact")
+            let hasCounters = painted.contains { $0 > 32 }
+            if painted == header && hasCounters {
+                stableFrames += 1
+            } else {
+                if painted != header { print("Compact strip finished its initial paint: camera \(camera)") }
+                stableFrames = 0
+            }
+            header = painted
+        }
+        precondition(stableFrames == 2, "The idle compact strip did not finish painting")
         model.expanded = true
         presentation.update(screen: screen)
         precondition(panel.frame == compact, "Opening jumped straight to the expanded window")
