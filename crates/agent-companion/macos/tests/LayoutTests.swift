@@ -741,13 +741,15 @@ struct LayoutTests {
             // a fade or a vertically centered SwiftUI root would otherwise pass.
             let scale = CGFloat(pixels.pixelsWide) / surface.bounds.width
             var header: [UInt8] = []
-            let horizontalInset: CGFloat = camera ? 8 : 28
-            let verticalInset: CGFloat = camera ? 4 : 2
-            for y in stride(from: Int(verticalInset * scale), to: Int((model.compactHeight - verticalInset) * scale), by: 4) {
-                for x in stride(from: Int(horizontalInset * scale), to: pixels.pixelsWide - Int(horizontalInset * scale), by: 4) {
+            // Include the short counters at both edges. A wide inset can
+            // accidentally compare only the empty center of an external strip.
+            for y in stride(from: Int(2 * scale), to: Int((model.compactHeight - 2) * scale), by: 2) {
+                for x in stride(from: Int(2 * scale), to: pixels.pixelsWide - Int(2 * scale), by: 2) {
                     let color = pixels.colorAt(x: x, y: y)!.usingColorSpace(.deviceRGB)!
-                    header += [color.redComponent, color.greenComponent, color.blueComponent, color.alphaComponent]
-                        .map { UInt8((min(1, max(0, $0)) * 255).rounded()) }
+                    // Compare visible ink, including its opacity. The black
+                    // silhouette's alpha changes intentionally while growing.
+                    header += [color.redComponent, color.greenComponent, color.blueComponent]
+                        .map { UInt8((min(1, max(0, $0 * color.alphaComponent)) * 255).rounded()) }
                 }
             }
             if let expected {
@@ -769,7 +771,7 @@ struct LayoutTests {
         while stableFrames < 2 && Date() < paintDeadline {
             RunLoop.main.run(until: Date().addingTimeInterval(0.02))
             let painted = try capture("morph-compact")
-            let hasCounters = painted.enumerated().contains { $0.offset % 4 != 3 && $0.element > 32 }
+            let hasCounters = painted.contains { $0 > 32 }
             if painted == header && hasCounters {
                 stableFrames += 1
             } else {
