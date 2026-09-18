@@ -53,6 +53,14 @@ struct LayoutTests {
             try PageSwitchTests.run(output: output)
             return
         }
+        if CommandLine.arguments.contains("--morph") {
+            for camera in [false, true] {
+                let directory = output.appendingPathComponent(camera ? "camera-morph" : "external-morph")
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                try verifyMorphing(output: directory, camera: camera)
+            }
+            return
+        }
         let model = CompanionModel()
         if ProcessInfo.processInfo.environment["AGENT_COMPANION_TEST_SNAPSHOT"] != nil {
             model.refresh()
@@ -743,8 +751,12 @@ struct LayoutTests {
                 }
             }
             if let expected {
-                precondition(zip(header, expected).allSatisfy { abs(Int($0) - Int($1)) <= 2 },
-                             "The compact counters moved or faded in \(name)")
+                let differences = zip(header, expected).enumerated().filter { abs(Int($0.element.0) - Int($0.element.1)) > 2 }
+                if !differences.isEmpty {
+                    let samples = differences.prefix(12).map { "\($0.offset):\($0.element.1)→\($0.element.0)" }.joined(separator: ", ")
+                    print("Morph pixel differences: camera \(camera), frame \(panel.frame), content \(content.frame), bitmap \(pixels.pixelsWide)×\(pixels.pixelsHigh), scale \(scale), samples \(samples)")
+                }
+                precondition(differences.isEmpty, "The compact counters moved or faded in \(name)")
             }
             return header
         }

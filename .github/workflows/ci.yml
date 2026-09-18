@@ -46,6 +46,15 @@ jobs:
       - name: Common backend and migration tests
         run: cargo test -p agent-companion-core --features server --target ${{ matrix.target }} --locked
 
+      - name: Preserve failed macOS UI renders
+        if: failure() && runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-ui-diagnostics
+          path: target/native-ui-tests/renders/
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Package Apple Silicon app
         if: runner.os == 'macOS'
         run: python3 scripts/package-macos.py --binary target/${{ matrix.target }}/debug/agent-companion --output dist
