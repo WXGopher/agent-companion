@@ -721,13 +721,14 @@ struct LayoutTests {
         presentation.update(screen: screen, animated: false)
         let compact = panel.frame
         let content = presentation.surface.subviews[0]
+        let contentFrame = content.frame
         precondition(compact.height == model.compactHeight && compact.width == model.compactWidth)
         func checkAnchor() {
             precondition(abs(panel.frame.maxY - screen.maxY) < 0.01, "The notch detached from the menu bar during animation")
             precondition(panel.frame.width == compact.width && panel.frame.midX == screen.midX + model.centerOffset,
                          "Expansion occupied more menu-bar space")
-            precondition(content === presentation.surface.subviews[0] && content.frame.minY == 0,
-                         "The compact strip was replaced or moved during animation")
+            precondition(content === presentation.surface.subviews[0] && content.frame == contentFrame && content.frame.minY == 0,
+                         "Expansion relaid out the content instead of revealing its stable layout")
             precondition(panel.frame.height >= compact.height)
         }
         @discardableResult func capture(_ name: String, header expected: [UInt8]? = nil) throws -> [UInt8] {
