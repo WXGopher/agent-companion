@@ -10,6 +10,22 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  native-animation:
+    name: Native macOS animation
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check compact counter pixels through expansion
+        run: sh scripts/test-macos-ui.sh --morph
+      - name: Preserve failed animation renders
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-animation-diagnostics
+          path: target/native-ui-tests/renders/
+          if-no-files-found: ignore
+          retention-days: 7
+
   build:
     name: Build & test (${{ matrix.target }})
     strategy:
