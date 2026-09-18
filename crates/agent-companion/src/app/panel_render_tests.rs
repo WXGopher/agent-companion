@@ -376,9 +376,9 @@ fn flyout_pages_render_and_preserve_scroll(
     ])));
     panel.set_usage_days(ModelRc::new(VecModel::from(
         (1..=7)
-            .rev()
             .map(|day| super::ui::UsageDay {
                 date: format!("2026-09-{day:02}").into(),
+                label: format!("{day:02}").into(),
                 value: format!("{day}00K").into(),
                 exact: format!("{day}00000").into(),
                 fill: day as f32 / 7.0,

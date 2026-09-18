@@ -1650,8 +1650,10 @@ impl App {
         let peak = days.iter().map(|day| day.tokens).max().unwrap_or(1).max(1) as f64;
         let days: Vec<_> = days
             .into_iter()
+            .rev()
             .map(|day| ui::UsageDay {
                 date: day.start_date.as_str().into(),
+                label: day.start_date.rsplit('-').next().unwrap_or_default().into(),
                 value: subscription::number(Some(day.tokens)).into(),
                 exact: day.tokens.to_string().into(),
                 fill: (day.tokens as f64 / peak) as f32,

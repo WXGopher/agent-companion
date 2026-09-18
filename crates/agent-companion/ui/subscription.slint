@@ -19,6 +19,7 @@ export struct SubscriptionView {
 
 export struct UsageDay {
     date: string,
+    label: string,
     value: string,
     exact: string,
     fill: float,
@@ -94,28 +95,63 @@ export component SubscriptionContent inherits VerticalLayout {
                 Metric { label: "All time"; value: root.data.total; exact: root.data.total-exact; }
                 Metric { label: "Daily peak"; value: root.data.peak; exact: root.data.peak-exact; }
             }
-            Rectangle {
+            if root.days.length > 0: Rectangle {
                 border-radius: 9px;
                 background: Theme.soft;
                 VerticalLayout {
                     padding: 12px;
                     spacing: 8px;
-                    Text { text: root.days.length > 0 ? "Last " + root.days.length + " reported days" : "Daily history is not available."; color: Theme.dim; font-size: 10px; }
-                    for day in root.days: VerticalLayout {
-                        spacing: 4px;
-                        HorizontalLayout {
-                            Text { text: day.date; color: Theme.dim; font-size: 10px; }
-                            Text { text: day.value + " tokens"; color: Theme.text; font-size: 10px; horizontal-alignment: right; Tooltip { text: @markdown("\{day.exact} tokens"); } }
-                        }
-                        Rectangle {
-                            height: 4px;
-                            border-radius: 2px;
-                            background: Theme.trough;
-                            Rectangle { width: parent.width * day.fill; height: parent.height; border-radius: 2px; background: Theme.plenty; }
+                    HorizontalLayout {
+                        Text { text: "Latest day"; color: Theme.dim; font-size: 10px; }
+                        Text { text: root.days[root.days.length - 1].date; color: Theme.dim; font-size: 10px; horizontal-alignment: right; }
+                    }
+                    Text {
+                        text: root.days[root.days.length - 1].value + " tokens";
+                        color: Theme.text;
+                        font-size: 15px;
+                        font-weight: 600;
+                        Tooltip { text: @markdown("\{root.days[root.days.length - 1].exact} tokens"); }
+                    }
+                    HorizontalLayout {
+                        spacing: 5px;
+                        for day in root.days: Rectangle {
+                            height: 56px;
+                            horizontal-stretch: 1;
+                            Tooltip { text: @markdown("\{day.date}: \{day.exact} tokens"); }
+                            Rectangle {
+                                x: 0px;
+                                y: 0px;
+                                width: parent.width;
+                                height: 38px;
+                                border-radius: 2px;
+                                background: #ffffff0d;
+                                Rectangle {
+                                    x: 0px;
+                                    y: parent.height - self.height;
+                                    width: parent.width;
+                                    height: parent.height * day.fill;
+                                    border-radius: 2px;
+                                    background: Theme.plenty;
+                                    opacity: 0.75;
+                                }
+                            }
+                            Text {
+                                x: 0px;
+                                y: 42px;
+                                width: parent.width;
+                                height: 14px;
+                                text: day.label;
+                                color: Theme.dim;
+                                font-size: 9px;
+                                horizontal-alignment: center;
+                                accessible-label: day.date + ": " + day.exact + " tokens";
+                            }
                         }
                     }
+                    Text { text: "Last " + root.days.length + " reported days"; color: Theme.dim; font-size: 9px; }
                 }
             }
+            if root.days.length == 0: Text { text: "Daily history is not available."; color: Theme.dim; font-size: 10px; }
             Rectangle {
                 border-radius: 9px;
                 background: Theme.soft;
