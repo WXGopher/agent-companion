@@ -16,6 +16,13 @@ struct CodexTask: Decodable, Identifiable {
     let state: String
     let updatedAt: TimeInterval
     let transcriptPath: String?
+    var sessionId: String? = nil
+    var instanceId: String? = nil
+    var instanceLabel: String? = nil
+
+    var conversationID: String { sessionId ?? id }
+    var sourceID: String { instanceId ?? "codex" }
+    var sourceLabel: String { instanceLabel ?? "Codex" }
 
     var isActive: Bool { state == "running" || state == "waiting" }
     var symbol: String {
@@ -40,16 +47,28 @@ struct CodexTask: Decodable, Identifiable {
         if state == "waiting" || state == "failed" { return .orange }
         return isActive ? CompanionModel.accent : .white.opacity(0.55)
     }
-    var resumeCommand: String? {
-        guard UUID(uuidString: id) != nil else { return nil }
-        return "codex resume \(id)"
-    }
 }
 
 struct WeeklyUsage: Decodable {
     let usedPercent: Int
     let resetsAt: TimeInterval?
     let expired: Bool
+}
+
+struct CodexInstance: Decodable, Identifiable {
+    var instanceId: String
+    var label: String
+    var codexHome: String
+    var appPath: String? = nil
+    var executablePath: String? = nil
+    var databasePath: String? = nil
+    var weekly: WeeklyUsage? = nil
+    var error: String? = nil
+    var id: String { instanceId }
+    var usageSource: SubscriptionSource {
+        SubscriptionSource(instanceID: instanceId, codexHome: codexHome,
+                           executablePath: executablePath, databasePath: databasePath)
+    }
 }
 
 struct CodexSnapshot: Decodable {
@@ -61,6 +80,7 @@ struct CodexSnapshot: Decodable {
     var codexHome = ""
     var updatedAt: TimeInterval = 0
     var loading = true
+    var instances: [CodexInstance]? = nil
 }
 
 final class CompanionModel: ObservableObject {
@@ -74,24 +94,28 @@ final class CompanionModel: ObservableObject {
     }
     @Published var showingCompleted = false
     @Published var showingUsage = false
+    @Published var selectedInstanceID = "codex"
     @Published var subscriptionUsage = SubscriptionUsage()
     @Published var usageLoading = false
     @Published var metrics = NotchMetrics()
     @Published var message: String?
     @Published var failedTask: CodexTask?
     @Published var jumpingID: String?
+    @Published var dashboardError: String?
     var expand: (() -> Void)?
     var collapse: (() -> Void)?
     var quit: (() -> Void)?
+    var settingsAction: (() -> Void)?
     private var timer: Timer?
     private var settingsProcess: Process?
     private var settingsApplication: NSRunningApplication?
     private var openingSettings = false
     private var presentationRevision: UInt64 = 0
-    private let openTask: (CodexTask, String, @escaping (String?) -> Void) -> Void
+    private let openTask: (CodexTask, CodexInstance, @escaping (String?) -> Void) -> Void
     private let subscriptionMonitor: SubscriptionMonitor
+    private var usageSource: SubscriptionSource?
 
-    init(openTask: @escaping (CodexTask, String, @escaping (String?) -> Void) -> Void = TerminalJump.open,
+    init(openTask: @escaping (CodexTask, CodexInstance, @escaping (String?) -> Void) -> Void = TerminalJump.open,
          usageReader: SubscriptionReading = CodexSubscriptionReader()) {
         self.openTask = openTask
         subscriptionMonitor = SubscriptionMonitor(reader: usageReader)
@@ -102,6 +126,21 @@ final class CompanionModel: ObservableObject {
     }
 
     var hasCamera: Bool { metrics.hasCamera }
+    var instances: [CodexInstance] {
+        if let instances = snapshot.instances, !instances.isEmpty { return instances }
+        return [CodexInstance(instanceId: "codex", label: "Codex", codexHome: snapshot.codexHome,
+                              weekly: snapshot.weekly, error: snapshot.error)]
+    }
+    var selectedInstance: CodexInstance {
+        instances.first { $0.id == selectedInstanceID } ?? instances[0]
+    }
+    func selectInstance(_ id: String) {
+        guard instances.contains(where: { $0.id == id }), selectedInstanceID != id else { return }
+        selectedInstanceID = id
+        subscriptionUsage = SubscriptionUsage()
+        usageLoading = false
+        refreshUsage()
+    }
     var workingCount: Int { snapshot.tasks.filter { $0.state == "running" }.count }
     var needsInput: Bool { snapshot.tasks.contains { $0.state == "waiting" } }
     var quotaTint: Color {
@@ -109,7 +148,7 @@ final class CompanionModel: ObservableObject {
         return remaining <= 10 ? .orange : Self.accent
     }
     var summaryDescription: String {
-        "Codex: \(workingCount) working\(needsInput ? ", approval or input needed" : ""). Weekly quota remaining: \(weeklyText)"
+        "\(instances.map(\.label).joined(separator: " + ")): \(workingCount) working\(needsInput ? ", approval or input needed" : ""). \(selectedInstance.label) weekly quota remaining: \(weeklyText)"
     }
     private func cameraWingWidth(text: String, accessories: CGFloat = 0) -> CGFloat {
         guard hasCamera else { return 0 }
@@ -132,25 +171,31 @@ final class CompanionModel: ObservableObject {
     }
     var compactHeight: CGFloat { metrics.compactHeight }
     func countText(_ count: Int) -> String { count > 99 ? "99+" : "\(count)" }
-    var weeklyUsage: WeeklyUsage? {
-        // A fresh account read also updates the compact strip. Otherwise keep
-        // the existing local-log source, which does not require a network read.
-        if let readAt = subscriptionUsage.readAt, Date().timeIntervalSince(readAt) < 300,
-           let limits = subscriptionUsage.limits,
+    var weeklyUsage: WeeklyUsage? { weeklyUsage(for: selectedInstance) }
+    func weeklyUsage(for instance: CodexInstance) -> WeeklyUsage? {
+        // Each card uses only its own account cache or local snapshot. Showing
+        // all instances on Tasks must not start additional account requests.
+        let hasCurrentReading = usageSource == instance.usageSource || (usageSource == nil && subscriptionUsage.readAt != nil)
+        let usage = instance.id == selectedInstance.id && hasCurrentReading
+            ? subscriptionUsage : subscriptionMonitor.cachedUsage(for: instance.usageSource)
+        if let readAt = usage?.readAt, Date().timeIntervalSince(readAt) < 300,
+           let limits = usage?.limits,
            let bucket = limits.buckets.first(where: { $0.id == "codex" }),
            let window = [bucket.value.primary, bucket.value.secondary].compactMap({ $0 })
                .first(where: { $0.windowDurationMins == 10080 }) {
             return WeeklyUsage(usedPercent: window.usedPercent, resetsAt: window.resetsAt,
                                expired: window.remaining() == nil)
         }
-        return snapshot.weekly
+        return instance.weekly
     }
-    var weeklyRemainingPercent: Int? {
-        guard let usage = weeklyUsage, !usage.expired else { return nil }
+    var weeklyRemainingPercent: Int? { weeklyRemainingPercent(for: selectedInstance) }
+    func weeklyRemainingPercent(for instance: CodexInstance) -> Int? {
+        guard let usage = weeklyUsage(for: instance), !usage.expired else { return nil }
         return 100 - min(100, max(0, usage.usedPercent))
     }
-    var weeklyText: String {
-        guard let remaining = weeklyRemainingPercent else { return "—" }
+    var weeklyText: String { weeklyText(for: selectedInstance) }
+    func weeklyText(for instance: CodexInstance) -> String {
+        guard let remaining = weeklyRemainingPercent(for: instance) else { return "—" }
         return "\(remaining)%"
     }
     var visibleTasks: [CodexTask] {
@@ -178,6 +223,12 @@ final class CompanionModel: ObservableObject {
         refreshUsage()
     }
 
+    func showUsage(for instanceID: String) {
+        guard instances.contains(where: { $0.id == instanceID }) else { return }
+        selectedInstanceID = instanceID
+        showUsage()
+    }
+
     func showTasks() {
         showingUsage = false
         subscriptionMonitor.stop()
@@ -185,7 +236,13 @@ final class CompanionModel: ObservableObject {
     }
 
     func refreshUsage(force: Bool = false) {
-        subscriptionMonitor.refresh(codexHome: snapshot.codexHome, force: force)
+        let source = selectedInstance.usageSource
+        if usageSource != source {
+            usageSource = source
+            subscriptionUsage = SubscriptionUsage()
+            usageLoading = false
+        }
+        subscriptionMonitor.refresh(source: source, force: force)
     }
 
     func refresh() {
@@ -193,14 +250,26 @@ final class CompanionModel: ObservableObject {
         defer { releaseSnapshot(pointer) }
         do {
             snapshot = try JSONDecoder().decode(CodexSnapshot.self, from: Data(String(cString: pointer).utf8))
+            dashboardError = nil
         } catch {
-            snapshot.error = "Could not read the local Codex dashboard. Try reopening Agent Companion."
+            dashboardError = "Could not read the local Codex dashboard. Try reopening Agent Companion."
             snapshot.loading = false
+        }
+        subscriptionMonitor.retainSources(Set(instances.map(\.usageSource)))
+        if !instances.contains(where: { $0.id == selectedInstanceID }) {
+            selectedInstanceID = instances[0].id
+            subscriptionUsage = SubscriptionUsage()
+        }
+        if let usageSource, usageSource != selectedInstance.usageSource {
+            self.usageSource = nil
+            subscriptionUsage = SubscriptionUsage()
+            usageLoading = false
         }
         if expanded && showingUsage { refreshUsage() }
     }
 
     func openSettings() {
+        if let settingsAction { settingsAction(); return }
         if let application = settingsApplication, !application.isTerminated {
             application.activate(options: [.activateAllWindows])
             collapse?()
@@ -248,10 +317,12 @@ final class CompanionModel: ObservableObject {
     }
 
     func openCodex() {
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.openai.codex") else {
+        guard let path = instances.first(where: { $0.id == "codex" })?.appPath,
+              FileManager.default.fileExists(atPath: path) else {
             message = "Codex.app is not installed. Start Codex CLI in your terminal to see its tasks here."
             return
         }
+        let url = URL(fileURLWithPath: path)
         let revision = presentationRevision
         NSWorkspace.shared.openApplication(at: url, configuration: .init()) { [weak self] _, error in
             DispatchQueue.main.async {
@@ -264,11 +335,15 @@ final class CompanionModel: ObservableObject {
 
     func jump(to task: CodexTask) {
         guard jumpingID == nil else { return }
+        guard let instance = instances.first(where: { $0.id == task.sourceID }) else {
+            message = "This task's instance is no longer enabled. Check its deployment in Settings."
+            return
+        }
         jumpingID = task.id
         message = nil
         failedTask = nil
         let revision = presentationRevision
-        openTask(task, snapshot.codexHome) { [weak self] error in
+        openTask(task, instance) { [weak self] error in
             guard let self else { return }
             jumpingID = nil
             // A slow terminal/Automation response belongs to the presentation
@@ -282,10 +357,18 @@ final class CompanionModel: ObservableObject {
     }
 
     func copyResume(_ task: CodexTask) {
-        guard let command = task.resumeCommand else { return }
+        guard let command = resumeCommand(for: task) else {
+            message = "The exact Codex runtime for this task could not be located. Check its deployment in Settings."
+            return
+        }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(command, forType: .string)
         message = "Copied resume command. Paste it into your terminal when ready."
         failedTask = nil
+    }
+
+    func resumeCommand(for task: CodexTask) -> String? {
+        guard let instance = instances.first(where: { $0.id == task.sourceID }) else { return nil }
+        return TerminalJump.resumeCommand(task, instance: instance)
     }
 }

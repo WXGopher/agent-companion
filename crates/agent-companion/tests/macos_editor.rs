@@ -5,9 +5,13 @@
 #[path = "../src/codex_tui.rs"]
 mod codex_tui;
 #[cfg(target_os = "macos")]
-#[allow(dead_code)]
+#[allow(dead_code, unused_imports)]
 #[path = "../src/macos.rs"]
 mod macos;
+#[cfg(target_os = "macos")]
+#[allow(dead_code, unused_imports)]
+#[path = "../src/macos_deployment.rs"]
+mod macos_deployment;
 #[cfg(target_os = "macos")]
 pub mod ui {
     slint::include_modules!();
@@ -39,8 +43,9 @@ fn check_editor_startup() {
     });
     let home = tempfile::tempdir().unwrap();
     let config_path = home.path().join("config.toml");
+    let second_config_path = home.path().join("dodex/config.toml");
     macos::prepare_editor().unwrap();
-    let editor = codex_tui::Editor::new(config_path.clone()).unwrap();
+    let editor = codex_tui::Editor::new_isolated(config_path.clone()).unwrap();
     // Freeze live preferences while rendering synthetic UI states. This never
     // writes the user's display choice or changes the actual primary screen.
     editor.preference_timer.stop();
@@ -64,8 +69,15 @@ fn check_editor_startup() {
         .global::<ui::Palette>()
         .set_color_scheme(ColorScheme::Light);
     editor.show().unwrap();
+    editor
+        .window
+        .set_config_path("/Users/example/.codex/config.toml".into());
+    editor.window.set_show_dock_icon(true);
+    editor.window.set_show_menu_bar(true);
+    editor.window.set_show_notch(false);
     slint::Timer::single_shot(Duration::ZERO, macos::start_editor_preferences);
     let weak = editor.window.as_weak();
+    let weak_editor = std::rc::Rc::downgrade(&editor);
     let timer = slint::Timer::default();
     let mut phase = 0;
     timer.start(slint::TimerMode::Repeated, Duration::from_millis(250), move || {
@@ -115,6 +127,12 @@ fn check_editor_startup() {
                         "compact-error",
                         "all-components",
                         "hidden",
+                        "dual-default",
+                        "dual-progress",
+                        "dual-error",
+                        "dual-deployed",
+                        "dual-instance",
+                        "all-entries-hidden",
                     ][phase]
                 ))
             };
@@ -149,6 +167,8 @@ fn check_editor_startup() {
                 window.global::<ui::Palette>().set_color_scheme(ColorScheme::Light);
                 window.set_display_error(true);
                 window.set_dock_error(true);
+                window.set_menu_bar_error(true);
+                window.set_notch_error(true);
                 window.set_error(true);
                 window.set_message("Could not save: the status bar was changed outside Agent Companion. Reopen Settings to load the latest configuration.".into());
             }
@@ -168,7 +188,7 @@ fn check_editor_startup() {
                     window.invoke_toggle(item.id.into(), false);
                 }
             }
-            _ => {
+            8 => {
                 assert_eq!(window.get_selected_count(), 0);
                 // A selection that disappeared before saving must restore the
                 // persisted choice, without touching real display preferences.
@@ -180,6 +200,67 @@ fn check_editor_startup() {
                     window.get_selected_display() as usize,
                     displays.options.iter().position(|option| option.id == displays.selected_id).unwrap()
                 );
+                window.set_settings_page(2);
+                window.set_dual_message("创建独立环境，首次使用需要自行登录。".into());
+            }
+            9 => {
+                assert!(!window.get_dual_enabled());
+                assert!(!window.get_dual_deployed());
+                assert!(!window.get_dual_busy());
+                window.set_dual_busy(true);
+                window.set_dual_phase("正在验证隔离与签名…".into());
+                window.set_dual_message("正在检查应用与隔离目录…".into());
+            }
+            10 => {
+                assert!(window.get_dual_busy());
+                assert!(window.get_dirty());
+                assert!(!config_path.exists());
+                window.set_dual_busy(false);
+                window.set_dual_error(true);
+                window.set_dual_message("Codex 应用签名无效或不是 OpenAI 官方签名；未修改现有环境。请检查后重试。".into());
+            }
+            11 => {
+                assert!(window.get_dual_error());
+                assert!(!window.get_dual_busy(), "A failed operation must allow retry");
+                window.set_dual_deployed(true);
+                window.set_dual_enabled(true);
+                window.set_dual_error(false);
+                window.set_dual_message("在应用程序中打开 Dodex，首次使用请登录。".into());
+                weak_editor.upgrade().unwrap().add_isolated_secondary(second_config_path.clone());
+            }
+            12 => {
+                assert!(window.get_dual_deployed());
+                window.set_settings_page(0);
+                window.invoke_select_instance("Dodex".into());
+                assert_eq!(window.get_selected_instance(), 1);
+                assert_eq!(window.get_config_path(), second_config_path.to_string_lossy().as_ref());
+                assert!(!window.get_dirty(), "Codex draft must not become the Dodex draft");
+                window.invoke_toggle("weekly-limit".into(), true);
+                window.invoke_apply();
+                assert!(!window.get_dirty());
+                assert!(second_config_path.exists());
+                assert!(!config_path.exists(), "Saving Dodex wrote the primary configuration");
+                assert!(agent_companion_core::install::codex_tui::read(&second_config_path).unwrap().visible_items().contains(&"weekly-limit".to_string()));
+                window.set_config_path("/Users/example/Library/Application Support/AgentCompanion/Dodex/codex-home/config.toml".into());
+            }
+            13 => {
+                window.invoke_select_instance("Codex".into());
+                assert!(window.get_dirty(), "Switching instances discarded the Codex draft");
+                assert_eq!(window.get_selected_count(), 0);
+                assert!(!config_path.exists());
+                window.set_settings_page(1);
+                window.set_show_dock_icon(false);
+                window.set_show_menu_bar(false);
+                window.set_show_notch(false);
+                window.set_display_error(false);
+                window.set_dock_error(false);
+                window.set_menu_bar_error(false);
+                window.set_notch_error(false);
+            }
+            _ => {
+                assert!(!window.get_show_dock_icon());
+                assert!(!window.get_show_menu_bar());
+                assert!(!window.get_show_notch());
                 slint::quit_event_loop().unwrap();
             }
         }
@@ -190,6 +271,6 @@ fn check_editor_startup() {
     finished.send(()).unwrap();
     watchdog.join().unwrap();
     println!(
-        "PASS: opaque AppKit settings frame; both settings sections, light/dark, minimum size, long/hidden preview and display errors; navigation preserves the draft without saving; no user config or display preference writes"
+        "PASS: opaque AppKit settings frame; three settings sections, light/dark, minimum size, long/hidden preview, entry/display errors, deployment default/progress/retry/success, isolated instance saves and hidden-entry recovery; navigation preserves separate drafts; no user config, deployment or display preference writes"
     );
 }

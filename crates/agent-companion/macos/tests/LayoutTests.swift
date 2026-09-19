@@ -41,8 +41,16 @@ struct LayoutTests {
         _ = NSApplication.shared
         let output = URL(fileURLWithPath: CommandLine.arguments[1])
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        if CommandLine.arguments.contains("--entries") {
+            EntryPreferenceTests.run()
+            return
+        }
         if CommandLine.arguments.contains("--subscription-usage") {
             try SubscriptionUsageTests.run(output: output)
+            return
+        }
+        if CommandLine.arguments.contains("--instance-quotas") {
+            try InstanceQuotaTests.run(output: output)
             return
         }
         if CommandLine.arguments.contains("--task-tabs") {
@@ -173,8 +181,10 @@ struct LayoutTests {
         verifyHoverLifecycle()
         verifyScreenEdgeHover()
         try verifyDockPreferencePersistence()
+        EntryPreferenceTests.run()
         try verifyDisplayPreferences()
         try SubscriptionUsageTests.run(output: output)
+        try InstanceQuotaTests.run(output: output)
         print("PASS: 21 native SwiftUI layouts; working/waiting summaries, remaining quota, errors and constant-width expansion")
     }
 
@@ -607,10 +617,10 @@ struct LayoutTests {
             CFPreferencesSetAppValue("showDockIcon" as CFString, nil, domain as CFString)
             CFPreferencesAppSynchronize(domain as CFString)
         }
-        precondition(!store.read(), "A fresh install must not show a Dock icon")
+        precondition(store.read(), "A fresh install must show a Dock icon")
         let preferences = DockPreferences(store: store)
         preferences.start()
-        precondition(NSApp.activationPolicy() == .accessory)
+        precondition(NSApp.activationPolicy() == .regular)
         for visible in [true, false] {
             let child = Process()
             child.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
@@ -626,7 +636,7 @@ struct LayoutTests {
             precondition(NSApp.activationPolicy() == expected, "The other process's Dock change was not applied")
             precondition(store.read() == visible, "Dock preference did not persist across processes")
         }
-        print("Dock preference: hidden by default; native policy changes and cross-process persistence passed")
+        print("Dock preference: visible by default; native policy changes and cross-process persistence passed")
     }
 
     @MainActor private static func verifyNavigationLifecycle() {

@@ -73,6 +73,10 @@ enum SubscriptionUsageTests {
     @MainActor static func run(output: URL) throws {
         try parsing()
         monitorLifecycle()
+        cacheFreshness()
+        cacheCancellation()
+        cacheSourceIdentity()
+        try instanceIsolation()
         try readerLifecycle()
         try layouts(output: output)
         try pinnedNavigation(output: output)
@@ -113,10 +117,194 @@ enum SubscriptionUsageTests {
         var completions: [(SubscriptionUsage) -> Void] = []
         var homes: [String] = []
         var cancelled = 0
+        var sources: [SubscriptionSource] = []
+        func read(source: SubscriptionSource, completion: @escaping (SubscriptionUsage) -> Void) {
+            sources.append(source)
+            read(codexHome: source.codexHome, completion: completion)
+        }
         func read(codexHome: String, completion: @escaping (SubscriptionUsage) -> Void) {
             homes.append(codexHome); completions.append(completion)
         }
         func cancel() { cancelled += 1 }
+    }
+
+    @MainActor private static func cacheFreshness() {
+        let reader = FakeReader()
+        var now = Date(timeIntervalSince1970: 1000)
+        let monitor = SubscriptionMonitor(reader: reader, clock: { now })
+        var latest: SubscriptionUsage?
+        var loading = false
+        var notifications = 0
+        monitor.onChange = { value, busy in
+            if let value { latest = value }
+            loading = busy
+            notifications += 1
+        }
+        monitor.refresh(codexHome: "/synthetic/slow")
+        now += 90
+        reader.completions[0](fixture)
+        latest = nil
+        let beforeCacheHit = notifications
+        now += 299
+        monitor.refresh(codexHome: "/synthetic/slow")
+        precondition(reader.homes.count == 1 && latest?.tokens != nil && !loading,
+                     "A slow read shortened the cache lifetime or reopening did not restore the result")
+        precondition(notifications == beforeCacheHit + 1,
+                     "A cache hit must immediately deliver its result without a loading transition")
+        now += 1
+        monitor.refresh(codexHome: "/synthetic/slow")
+        monitor.refresh(codexHome: "/synthetic/slow", force: true)
+        precondition(reader.homes.count == 2 && loading,
+                     "A result exactly five minutes old must launch one refresh")
+        now += 45
+        reader.completions[1](.failure("Synthetic offline result"))
+        latest = nil
+        now += 299
+        monitor.stop()
+        monitor.refresh(codexHome: "/synthetic/slow")
+        precondition(reader.homes.count == 2 && latest?.error == "Synthetic offline result" && !loading,
+                     "A completed failure must also be cached for five minutes from completion")
+        now += 1
+        monitor.refresh(codexHome: "/synthetic/slow")
+        precondition(reader.homes.count == 3 && loading, "An expired failure prevented retry")
+        monitor.stop()
+    }
+
+    @MainActor private static func cacheCancellation() {
+        let reader = FakeReader()
+        var now = Date(timeIntervalSince1970: 1000)
+        let monitor = SubscriptionMonitor(reader: reader, clock: { now })
+        var latest: SubscriptionUsage?
+        var loading = false
+        monitor.onChange = { value, busy in if let value { latest = value }; loading = busy }
+        monitor.refresh(codexHome: "/synthetic/cancelled")
+        monitor.stop()
+        reader.completions[0](fixture)
+        monitor.refresh(codexHome: "/synthetic/cancelled")
+        precondition(reader.homes.count == 2 && loading && latest?.tokens == nil,
+                     "A cancelled request with no result was treated as cached")
+        reader.completions[1](fixture)
+        now += 60
+        monitor.refresh(codexHome: "/synthetic/cancelled", force: true)
+        monitor.refresh(codexHome: "/synthetic/cancelled", force: true)
+        precondition(reader.homes.count == 3 && loading,
+                     "Manual refresh must bypass a valid result without duplicating an active read")
+        monitor.stop()
+        reader.completions[2](.failure("Synthetic cancelled refresh"))
+        latest = nil
+        now += 239
+        monitor.refresh(codexHome: "/synthetic/cancelled")
+        precondition(reader.homes.count == 3 && latest?.tokens != nil && latest?.error == nil && !loading,
+                     "Cancelling manual refresh discarded or replaced the still-fresh completed result")
+        now += 1
+        monitor.refresh(codexHome: "/synthetic/cancelled")
+        precondition(reader.homes.count == 4 && loading,
+                     "Cancelling manual refresh incorrectly extended the previous result's lifetime")
+        monitor.stop()
+    }
+
+    @MainActor private static func cacheSourceIdentity() {
+        let reader = FakeReader()
+        let monitor = SubscriptionMonitor(reader: reader, clock: { Date(timeIntervalSince1970: 1000) })
+        var latest: SubscriptionUsage?
+        monitor.onChange = { value, _ in if let value { latest = value } }
+        let primary = SubscriptionSource(instanceID: "codex", codexHome: "/synthetic/shared",
+            executablePath: "/synthetic/runtime/codex", databasePath: "/synthetic/database")
+        var secondary = primary; secondary.instanceID = "dodex"
+        var movedHome = secondary; movedHome.codexHome = "/synthetic/other-home"
+        var movedRuntime = secondary; movedRuntime.executablePath = "/synthetic/new-runtime/codex"
+        var movedDatabase = secondary; movedDatabase.databasePath = "/synthetic/new-database"
+        let sources = [primary, secondary, movedHome, movedRuntime, movedDatabase]
+        for (index, source) in sources.enumerated() {
+            monitor.refresh(source: source)
+            precondition(reader.sources.count == index + 1 && latest?.error == nil,
+                         "A different instance, home, runtime or database reused another source's result")
+            reader.completions[index](.failure("Synthetic source \(index)"))
+        }
+        for (index, source) in sources.enumerated().reversed() {
+            latest = nil
+            monitor.stop()
+            monitor.refresh(source: source)
+            precondition(reader.sources.count == sources.count && latest?.error == "Synthetic source \(index)",
+                         "Switching sources lost an independently cached result or crossed account boundaries")
+        }
+    }
+
+    @MainActor private static func instanceIsolation() throws {
+        let reader = FakeReader()
+        var routed: CodexInstance?
+        let model = CompanionModel(openTask: { _, instance, completion in routed = instance; completion(nil) }, usageReader: reader)
+        let primary = CodexInstance(instanceId: "codex", label: "Codex", codexHome: "/synthetic/main",
+            executablePath: "/synthetic/main/codex", databasePath: "/synthetic/main/sqlite",
+            weekly: WeeklyUsage(usedPercent: 25, resetsAt: nil, expired: false))
+        let secondary = CodexInstance(instanceId: "dodex", label: "Dodex", codexHome: "/synthetic/second",
+            executablePath: "/synthetic/second/codex", databasePath: "/synthetic/second/sqlite",
+            weekly: WeeklyUsage(usedPercent: 80, resetsAt: nil, expired: false), error: "Synthetic second error")
+        model.snapshot.instances = [primary, secondary]
+        model.expanded = true
+        model.showUsage()
+        reader.completions[0](fixture)
+        model.selectInstance("dodex")
+        precondition(model.subscriptionUsage.tokens == nil && model.weeklyText == "20%")
+        precondition(reader.sources == [primary.usageSource, secondary.usageSource])
+        reader.completions[1](.failure("Synthetic second account error"))
+        model.selectInstance("codex")
+        precondition(reader.sources.count == 2 && model.subscriptionUsage.tokens != nil,
+                     "Switching instances lost the primary cache or read another account")
+        model.selectInstance("dodex")
+        precondition(reader.sources.count == 2 && model.subscriptionUsage.error == "Synthetic second account error")
+        let id = "1b966260-04f3-4281-9179-219ee11f60a0"
+        let secondTask = CodexTask(id: "dodex:\(id)", title: "Synthetic second task", project: "fixture", cwd: nil,
+            client: "desktop", state: "running", updatedAt: 0, transcriptPath: nil,
+            sessionId: id, instanceId: "dodex", instanceLabel: "Dodex")
+        model.jump(to: secondTask)
+        precondition(routed?.id == "dodex", "Task navigation followed selected account instead of task source")
+        precondition(!TerminalJump.sameApplication("/Applications/Codex.app", "/synthetic/Runtime.app"))
+        precondition(TerminalJump.resumeCommand(secondTask, instance: primary) == nil)
+        let sanitized = InstanceEnvironment.isolated([
+            "OPENAI_API_KEY": "synthetic-only", "CHATGPT_TOKEN": "synthetic-only", "CODEX_HOME": "/wrong",
+            "CODEX_SQLITE_HOME": "/wrong", "CODEX_APP_SERVER_WS_URL": "synthetic-only", "ELECTRON_RUN_AS_NODE": "1",
+            "DYLD_INSERT_LIBRARIES": "/synthetic", "NODE_OPTIONS": "synthetic-only", "PATH": "/usr/bin:/bin"
+        ], source: secondary.usageSource)
+        precondition(sanitized == ["CODEX_HOME": "/synthetic/second", "CODEX_SQLITE_HOME": "/synthetic/second/sqlite", "PATH": "/usr/bin:/bin"])
+
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("companion-instance-'" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = directory.appendingPathComponent("fake-codex")
+        let script = """
+        #!/usr/bin/python3
+        import json, os, sys
+        forbidden = [key for key in os.environ if key.startswith(('OPENAI_', 'CHATGPT_', 'ELECTRON_', 'DYLD_')) or key in ('CODEX_AUTH_TOKEN', 'CODEX_APP_SERVER_WS_URL', 'NODE_OPTIONS')]
+        with open(__file__ + '.result', 'w') as output:
+            json.dump({'clean': not forbidden, 'home': os.environ.get('CODEX_HOME'), 'database': os.environ.get('CODEX_SQLITE_HOME'), 'args': sys.argv[1:]}, output)
+        """
+        try script.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        var commandInstance = secondary
+        commandInstance.executablePath = executable.path
+        commandInstance.codexHome = directory.appendingPathComponent("home '").path
+        commandInstance.databasePath = directory.appendingPathComponent("sqlite '").path
+        let command = TerminalJump.resumeCommand(secondTask, instance: commandInstance)!
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", command]
+        process.environment = ["HOME": directory.path, "PATH": "/usr/bin:/bin", "OPENAI_API_KEY": "synthetic-only",
+            "CODEX_HOME": "/wrong", "CODEX_APP_SERVER_WS_URL": "synthetic-only", "NODE_OPTIONS": "synthetic-only"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run(); process.waitUntilExit()
+        precondition(process.terminationStatus == 0)
+        let result = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: executable.path + ".result"))) as! [String: Any]
+        precondition(result["clean"] as? Bool == true)
+        precondition(result["home"] as? String == commandInstance.codexHome && result["database"] as? String == commandInstance.databasePath)
+        let arguments = result["args"] as! [String]
+        precondition(arguments.suffix(2) == ["resume", id] && arguments.contains("cli_auth_credentials_store=\"file\""))
+        precondition(arguments.contains { $0.hasPrefix("sqlite_home=") })
+        let isolated = CodexSubscriptionReader(executable: { executable })
+        var missingResult: SubscriptionUsage?
+        isolated.read(source: SubscriptionSource(instanceID: "dodex", codexHome: directory.path)) { missingResult = $0 }
+        precondition(missingResult?.error?.contains("Dodex runtime") == true, "A secondary usage read discovered the primary executable")
     }
 
     @MainActor private static func monitorLifecycle() {
@@ -245,7 +433,7 @@ enum SubscriptionUsageTests {
             let presentation = NotchPresentation(panel: panel, model: model, reduceMotion: { true })
             defer { presentation.stop(); model.stop(); panel.close() }
             var expected: NSRect?
-            for state in ["loading", "ready", "signed-out", "unsupported"] {
+            for state in ["loading", "ready", "signed-out", "unsupported", "dual"] {
                 model.subscriptionUsage = fixture
                 model.usageLoading = state == "loading"
                 if state == "loading" { model.subscriptionUsage = SubscriptionUsage() }
@@ -253,6 +441,14 @@ enum SubscriptionUsageTests {
                 if state == "unsupported" {
                     model.subscriptionUsage.tokens = nil
                     model.subscriptionUsage.tokenError = "Update Codex CLI to read token activity."
+                }
+                if state == "dual" {
+                    expected = nil
+                    model.snapshot.instances = [
+                        CodexInstance(instanceId: "codex", label: "Codex", codexHome: "/synthetic/main"),
+                        CodexInstance(instanceId: "dodex", label: "Dodex", codexHome: "/synthetic/second")
+                    ]
+                    model.selectedInstanceID = "dodex"
                 }
                 presentation.update(screen: screen, animated: false)
                 RunLoop.main.run(until: Date().addingTimeInterval(0.1))

@@ -102,7 +102,46 @@ enum UsageNumber {
 
 protocol SubscriptionReading: AnyObject {
     func read(codexHome: String, completion: @escaping (SubscriptionUsage) -> Void)
+    func read(source: SubscriptionSource, completion: @escaping (SubscriptionUsage) -> Void)
     func cancel()
+}
+
+extension SubscriptionReading {
+    func read(source: SubscriptionSource, completion: @escaping (SubscriptionUsage) -> Void) {
+        read(codexHome: source.codexHome, completion: completion)
+    }
+}
+
+/// All routing inputs participate in cache identity. A redeployed runtime must
+/// never inherit a prior runtime's account reading, even at the same home.
+struct SubscriptionSource: Hashable {
+    var instanceID = "codex"
+    var codexHome: String
+    var executablePath: String?
+    var databasePath: String?
+}
+
+enum InstanceEnvironment {
+    static let clearedPrefixes = ["CODEX_", "OPENAI_", "CHATGPT_", "ELECTRON_", "DYLD_"]
+    static let clearedNames = ["NODE_OPTIONS", "NODE_PATH"]
+    static func shouldClear(_ key: String) -> Bool {
+        clearedNames.contains(key) || clearedPrefixes.contains { key.hasPrefix($0) }
+    }
+    static func isolated(_ inherited: [String: String], source: SubscriptionSource) -> [String: String] {
+        var result = inherited.filter { !shouldClear($0.key) }
+        result["CODEX_HOME"] = source.codexHome
+        if let database = source.databasePath { result["CODEX_SQLITE_HOME"] = database }
+        return result
+    }
+    static func configurationArguments(_ source: SubscriptionSource) -> [String] {
+        var arguments: [String] = []
+        if source.instanceID != "codex" { arguments += ["-c", "cli_auth_credentials_store=\"file\""] }
+        if let database = source.databasePath,
+           let encoded = try? JSONEncoder().encode(database), let value = String(data: encoded, encoding: .utf8) {
+            arguments += ["-c", "sqlite_home=\(value)"]
+        }
+        return arguments
+    }
 }
 
 /// Main-thread coordinator; the CLI is launched only after opening Usage.
@@ -112,8 +151,9 @@ final class SubscriptionMonitor {
     private let clock: () -> Date
     private var generation = 0
     private var inFlight = false
-    private var lastAttempt: Date?
-    private var sourceHome: String?
+    private struct Cache { let completedAt: Date; let usage: SubscriptionUsage }
+    private var cache: [SubscriptionSource: Cache] = [:]
+    private var source: SubscriptionSource?
     var onChange: ((SubscriptionUsage?, Bool) -> Void)?
 
     init(reader: SubscriptionReading = CodexSubscriptionReader(), clock: @escaping () -> Date = Date.init) {
@@ -122,21 +162,36 @@ final class SubscriptionMonitor {
     }
 
     func refresh(codexHome: String, force: Bool = false) {
-        if sourceHome != codexHome {
+        refresh(source: SubscriptionSource(codexHome: codexHome), force: force)
+    }
+
+    func refresh(source: SubscriptionSource, force: Bool = false) {
+        let changedSource = self.source != source
+        if changedSource {
             stop()
-            sourceHome = codexHome
-            lastAttempt = nil
-            onChange?(SubscriptionUsage(), false)
+            self.source = source
         }
-        guard !inFlight, force || lastAttempt == nil || clock().timeIntervalSince(lastAttempt!) >= 300 else { return }
+        guard !inFlight else { return }
+        if !force, let cached = cache[source] {
+            let age = clock().timeIntervalSince(cached.completedAt)
+            if age >= 0 && age < 300 {
+                // Restore the result immediately even when reopening the same
+                // source. No CLI or loading state is needed for a cache hit.
+                onChange?(cached.usage, false)
+                return
+            }
+        }
+        if changedSource { onChange?(cache[source]?.usage ?? SubscriptionUsage(), false) }
         inFlight = true
-        lastAttempt = clock()
         generation &+= 1
         let request = generation
         onChange?(nil, true)
-        reader.read(codexHome: codexHome) { [weak self] result in
+        reader.read(source: source) { [weak self] result in
             guard let self, request == self.generation else { return }
             self.inFlight = false
+            // A slow request must not consume any of the result's five-minute
+            // lifetime. Cache only completed reads, independently per source.
+            self.cache[source] = Cache(completedAt: self.clock(), usage: result)
             // Replace the entire snapshot, including on failure. This avoids
             // displaying another account's cached data after a login change.
             self.onChange?(result, false)
@@ -146,9 +201,17 @@ final class SubscriptionMonitor {
     func stop() {
         generation &+= 1
         reader.cancel()
-        // Reopening a completed read within five minutes uses the existing
-        // snapshot. An interrupted request is retried on the next visit.
-        if inFlight { lastAttempt = nil }
+        // Cancellation creates no cache entry. A previous completed result
+        // remains usable for the rest of its own five-minute lifetime.
         inFlight = false
+    }
+
+    func cachedUsage(for source: SubscriptionSource) -> SubscriptionUsage? {
+        cache[source]?.usage
+    }
+
+    func retainSources(_ sources: Set<SubscriptionSource>) {
+        if let source, !sources.contains(source) { stop(); self.source = nil }
+        cache = cache.filter { sources.contains($0.key) }
     }
 }

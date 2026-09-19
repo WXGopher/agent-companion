@@ -73,12 +73,29 @@ export component CodexTuiWindow inherits Window {
     in-out property <int> settings-page: 0;
     in property <bool> show-dock-icon;
     in property <bool> dock-error;
+    in property <bool> show-menu-bar: true;
+    in property <bool> menu-bar-error;
+    in property <bool> show-notch;
+    in property <bool> notch-error;
+    in property <bool> dual-enabled;
+    in property <bool> dual-deployed;
+    in property <bool> dual-busy;
+    in property <bool> dual-error;
+    in property <string> dual-phase;
+    in property <string> dual-message;
+    in property <[string]> instance-options: ["Codex"];
+    in-out property <int> selected-instance;
     in property <[string]> display-options;
     in-out property <int> selected-display;
     in property <string> display-status;
     in property <bool> display-error;
     callback select-display(string);
     callback toggle-dock-icon(bool);
+    callback toggle-menu-bar(bool);
+    callback toggle-notch(bool);
+    callback deploy-dual();
+    callback toggle-dual(bool);
+    callback select-instance(string);
     callback toggle(string, bool);
     callback apply();
     callback restore-defaults();
@@ -99,12 +116,29 @@ export component CodexTuiWindow inherits Window {
         catalog-version: root.catalog-version;
         show-dock-icon: root.show-dock-icon;
         dock-error: root.dock-error;
+        show-menu-bar: root.show-menu-bar;
+        menu-bar-error: root.menu-bar-error;
+        show-notch: root.show-notch;
+        notch-error: root.notch-error;
+        dual-enabled: root.dual-enabled;
+        dual-deployed: root.dual-deployed;
+        dual-busy: root.dual-busy;
+        dual-error: root.dual-error;
+        dual-phase: root.dual-phase;
+        dual-message: root.dual-message;
+        instance-options: root.instance-options;
+        selected-instance <=> root.selected-instance;
         display-options: root.display-options;
         selected-display <=> root.selected-display;
         display-status: root.display-status;
         display-error: root.display-error;
         select-display(label) => { root.select-display(label); }
         toggle-dock-icon(visible) => { root.toggle-dock-icon(visible); }
+        toggle-menu-bar(visible) => { root.toggle-menu-bar(visible); }
+        toggle-notch(visible) => { root.toggle-notch(visible); }
+        deploy-dual => { root.deploy-dual(); }
+        toggle-dual(enabled) => { root.toggle-dual(enabled); }
+        select-instance(label) => { root.select-instance(label); }
         toggle(id, enabled) => { root.toggle(id, enabled); }
         apply => { root.apply(); }
         restore-defaults => { root.restore-defaults(); }

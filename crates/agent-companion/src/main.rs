@@ -23,6 +23,8 @@ mod codex_tui;
 mod headless;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "macos")]
+mod macos_deployment;
 mod out;
 
 pub mod ui {

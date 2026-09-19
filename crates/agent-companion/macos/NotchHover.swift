@@ -43,7 +43,11 @@ final class NotchHover {
     }
 
     func start() {
-        guard !stopped, pollingTimer == nil else { return }
+        guard pollingTimer == nil else { return }
+        stopped = false
+        inside = nil
+        pinned = false
+        dismissed = false
         update()
         // Menu-bar tracking and a pointer clamped to the screen edge may not
         // deliver mouseMoved/entered events. This also covers the hover margin

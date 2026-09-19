@@ -5,9 +5,23 @@ use std::io;
 use std::sync::{Mutex, OnceLock, mpsc};
 use std::time::Duration;
 
-use agent_companion_core::dashboard::{Dashboard, Snapshot};
+use crate::macos_deployment::InstanceConfig;
+use agent_companion_core::dashboard::{Dashboard, Instance, Snapshot};
 
 static SNAPSHOT: OnceLock<Mutex<Snapshot>> = OnceLock::new();
+
+/// A launcher must not redirect the primary monitor through its inherited
+/// CODEX_HOME (for example when Companion is opened from Dodex's terminal).
+pub fn primary_home() -> io::Result<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .map(|home| std::path::PathBuf::from(home).join(".codex"))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "could not determine the home directory",
+            )
+        })
+}
 
 unsafe extern "C" {
     fn agent_companion_run_notch() -> i32;
@@ -15,6 +29,11 @@ unsafe extern "C" {
     fn agent_companion_start_editor_preferences();
     fn agent_companion_dock_visible() -> bool;
     fn agent_companion_set_dock_visible(visible: bool) -> bool;
+    fn agent_companion_menu_bar_visible() -> bool;
+    fn agent_companion_notch_visible() -> bool;
+    fn agent_companion_set_menu_bar_visible(visible: bool) -> bool;
+    fn agent_companion_set_notch_visible(visible: bool) -> bool;
+    fn agent_companion_reopen_settings();
     fn agent_companion_display_settings_json() -> *mut c_char;
     fn agent_companion_free_native_string(pointer: *mut c_char);
     fn agent_companion_select_display(identifier: *const c_char) -> bool;
@@ -85,6 +104,23 @@ pub fn dock_visible() -> bool {
     unsafe { agent_companion_dock_visible() }
 }
 
+pub fn menu_bar_visible() -> bool {
+    // SAFETY: main-thread preferences bridge, no borrowed storage.
+    unsafe { agent_companion_menu_bar_visible() }
+}
+pub fn notch_visible() -> bool {
+    // SAFETY: main-thread preferences bridge, no borrowed storage.
+    unsafe { agent_companion_notch_visible() }
+}
+pub fn set_menu_bar_visible(visible: bool) -> bool {
+    // SAFETY: called by the editor on its main UI thread.
+    unsafe { agent_companion_set_menu_bar_visible(visible) }
+}
+pub fn set_notch_visible(visible: bool) -> bool {
+    // SAFETY: called by the editor on its main UI thread.
+    unsafe { agent_companion_set_notch_visible(visible) }
+}
+
 pub fn start_editor_preferences() {
     // SAFETY: invoked by a Slint timer after its main-thread event loop starts.
     unsafe { agent_companion_start_editor_preferences() }
@@ -114,7 +150,7 @@ unsafe extern "C" fn agent_companion_release_json(pointer: *mut c_char) {
 }
 
 pub fn run() -> io::Result<()> {
-    let home = agent_companion_core::install::codex_home()?;
+    let home = primary_home()?;
     let user_home = std::env::var_os("HOME").ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
@@ -132,7 +168,11 @@ pub fn run() -> io::Result<()> {
         .open(state_dir.join("notch.lock"))?;
     match instance.try_lock() {
         Ok(()) => {}
-        Err(std::fs::TryLockError::WouldBlock) => return Ok(()),
+        Err(std::fs::TryLockError::WouldBlock) => {
+            // SAFETY: notification-only main-thread bridge to the existing app.
+            unsafe { agent_companion_reopen_settings() };
+            return Ok(());
+        }
         Err(std::fs::TryLockError::Error(error)) => return Err(error),
     }
     let state = SNAPSHOT.get_or_init(|| {
@@ -146,9 +186,12 @@ pub fn run() -> io::Result<()> {
     let worker = std::thread::Builder::new()
         .name("codex-monitor".into())
         .spawn(move || {
-            let mut dashboard = Dashboard::new(home);
+            let mut dashboard = InstanceDashboards::new(home);
             loop {
-                let snapshot = dashboard.poll(agent_companion_core::now_unix_secs());
+                let snapshot = dashboard.poll(
+                    crate::macos_deployment::active_instance(),
+                    agent_companion_core::now_unix_secs(),
+                );
                 *state.lock().unwrap_or_else(|error| error.into_inner()) = snapshot;
                 if stopped.recv_timeout(Duration::from_secs(2))
                     != Err(mpsc::RecvTimeoutError::Timeout)
@@ -166,5 +209,144 @@ pub fn run() -> io::Result<()> {
         Ok(())
     } else {
         Err(io::Error::other("could not start the macOS notch"))
+    }
+}
+
+struct InstanceDashboards {
+    primary_home: std::path::PathBuf,
+    primary: Dashboard,
+    primary_instance: Instance,
+    secondary: Option<(InstanceConfig, Dashboard)>,
+}
+
+impl InstanceDashboards {
+    fn new(home: std::path::PathBuf) -> Self {
+        let (instance, database) = Self::primary_descriptor(&home);
+        Self {
+            primary_home: home.clone(),
+            primary_instance: instance,
+            primary: Dashboard::with_database_home(home, database),
+            secondary: None,
+        }
+    }
+
+    fn primary_descriptor(home: &std::path::Path) -> (Instance, std::path::PathBuf) {
+        let database = agent_companion_core::dashboard::database_home(home);
+        let app = [
+            std::path::PathBuf::from("/Applications/Codex.app"),
+            home.parent().unwrap_or(home).join("Applications/Codex.app"),
+        ]
+        .into_iter()
+        .find(|app| app.join("Contents/MacOS/ChatGPT").is_file());
+        let executable = app
+            .as_ref()
+            .map(|app| app.join("Contents/Resources/codex"))
+            .filter(|path| path.is_file());
+        (
+            Instance {
+                instance_id: "codex".into(),
+                label: "Codex".into(),
+                codex_home: home.to_string_lossy().into_owned(),
+                app_path: app.map(|path| path.to_string_lossy().into_owned()),
+                executable_path: executable.map(|path| path.to_string_lossy().into_owned()),
+                database_path: Some(database.to_string_lossy().into_owned()),
+            },
+            database,
+        )
+    }
+
+    fn poll(&mut self, enabled: Option<InstanceConfig>, now: u64) -> Snapshot {
+        // Installing Codex or changing its database location should recover
+        // while Companion stays open, including after a failed deployment retry.
+        let (primary, database) = Self::primary_descriptor(&self.primary_home);
+        if primary.database_path != self.primary_instance.database_path {
+            self.primary = Dashboard::with_database_home(self.primary_home.clone(), database);
+        }
+        self.primary_instance = primary;
+        if self.secondary.as_ref().map(|(config, _)| config) != enabled.as_ref() {
+            self.secondary = enabled.map(|config| {
+                let dashboard = Dashboard::with_database_home(
+                    config.codex_home.clone(),
+                    config.database_dir.clone(),
+                );
+                (config, dashboard)
+            });
+        }
+        let mut snapshots = vec![
+            self.primary
+                .poll(now)
+                .with_instance(self.primary_instance.clone()),
+        ];
+        if let Some((config, dashboard)) = &mut self.secondary {
+            snapshots.push(dashboard.poll(now).with_instance(Instance {
+                instance_id: config.id.clone(),
+                label: config.label.clone(),
+                codex_home: config.codex_home.to_string_lossy().into_owned(),
+                app_path: Some(config.runtime_app.to_string_lossy().into_owned()),
+                executable_path: Some(config.cli_path.to_string_lossy().into_owned()),
+                database_path: Some(config.database_dir.to_string_lossy().into_owned()),
+            }));
+        }
+        Snapshot::merge(snapshots)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn primary_database_changes_refresh_metadata_and_reader_without_restart() {
+        let root = tempfile::tempdir().unwrap();
+        let mut monitor = InstanceDashboards::new(root.path().to_owned());
+        let first = monitor.poll(None, 1000);
+        let database = root.path().join("custom-database");
+        std::fs::write(
+            root.path().join("config.toml"),
+            format!("sqlite_home = {:?}\n", database.to_string_lossy()),
+        )
+        .unwrap();
+        let next = monitor.poll(None, 1001);
+        assert_ne!(
+            first.instances[0].instance.database_path,
+            next.instances[0].instance.database_path
+        );
+        assert_eq!(
+            next.instances[0].instance.database_path.as_deref(),
+            database.to_str()
+        );
+    }
+
+    #[test]
+    fn second_monitor_exists_only_while_explicitly_enabled() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("main");
+        let second = root.path().join("second");
+        let config = InstanceConfig {
+            id: "dodex".into(),
+            label: "Dodex".into(),
+            codex_home: second.clone(),
+            desktop_user_data: second.join("desktop"),
+            database_dir: second.join("sqlite"),
+            runtime_app: second.join("Runtime.app"),
+            launcher_app: second.join("Dodex.app"),
+            cli_path: second.join("Runtime.app/Contents/Resources/codex"),
+        };
+        let mut monitor = InstanceDashboards::new(home);
+        assert_eq!(monitor.poll(None, 1000).instances.len(), 1);
+        assert!(monitor.secondary.is_none() && !second.exists());
+        let enabled = monitor.poll(Some(config), 1001);
+        assert_eq!(enabled.instances.len(), 2);
+        assert_eq!(enabled.instances[1].instance.instance_id, "dodex");
+        assert!(monitor.secondary.is_some());
+        assert_eq!(monitor.poll(None, 1002).instances.len(), 1);
+        assert!(
+            monitor.secondary.is_none(),
+            "disable must drop second-instance caches"
+        );
+        assert!(
+            !second.exists(),
+            "monitoring must never create deployment files"
+        );
     }
 }

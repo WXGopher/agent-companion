@@ -20,12 +20,29 @@ export component MacSettings inherits Rectangle {
     in property <string> catalog-version;
     in property <bool> show-dock-icon;
     in property <bool> dock-error;
+    in property <bool> show-menu-bar: true;
+    in property <bool> menu-bar-error;
+    in property <bool> show-notch;
+    in property <bool> notch-error;
+    in property <bool> dual-enabled;
+    in property <bool> dual-deployed;
+    in property <bool> dual-busy;
+    in property <bool> dual-error;
+    in property <string> dual-phase;
+    in property <string> dual-message;
+    in property <[string]> instance-options;
+    in-out property <int> selected-instance;
     in property <[string]> display-options;
     in-out property <int> selected-display;
     in property <string> display-status;
     in property <bool> display-error;
     callback select-display(string);
     callback toggle-dock-icon(bool);
+    callback toggle-menu-bar(bool);
+    callback toggle-notch(bool);
+    callback deploy-dual();
+    callback toggle-dual(bool);
+    callback select-instance(string);
     callback toggle(string, bool);
     callback apply();
     callback restore-defaults();
@@ -73,6 +90,20 @@ export component MacSettings inherits Rectangle {
                 title: "Codex CLI";
                 VerticalLayout {
                     padding-top: 20px;
+                    spacing: 10px;
+                    if root.dual-enabled: HorizontalLayout {
+                        height: 30px;
+                        spacing: 12px;
+                        Text { text: "Instance"; font-size: 11px; color: SettingsColors.secondary; vertical-alignment: center; }
+                        ComboBox {
+                            width: 180px;
+                            model: root.instance-options;
+                            current-index <=> root.selected-instance;
+                            accessible-label: "Status bar configuration instance";
+                            selected(label) => { root.select-instance(label); }
+                        }
+                        Text { text: "Each instance keeps its own draft and saved settings."; font-size: 10px; color: SettingsColors.secondary; vertical-alignment: center; }
+                    }
                     StatusBarSettings {
                         left-components: root.left-components;
                         right-components: root.right-components;
@@ -96,7 +127,7 @@ export component MacSettings inherits Rectangle {
                 title: "Notch & app";
                 VerticalLayout {
                     padding-top: 20px;
-                    spacing: 18px;
+                    spacing: 12px;
                     VerticalLayout {
                         spacing: 5px;
                         Text { text: "Notch & app"; font-size: 16px; font-weight: 600; color: SettingsColors.text; }
@@ -106,8 +137,26 @@ export component MacSettings inherits Rectangle {
                     SettingsCard {
                         vertical-stretch: 0;
                         VerticalLayout {
-                            padding: 18px;
-                            spacing: 14px;
+                            padding: 14px;
+                            spacing: 10px;
+                            HorizontalLayout {
+                                spacing: 24px;
+                                VerticalLayout {
+                                    spacing: 5px;
+                                    Text { text: "Show notch"; font-size: 12px; font-weight: 600; color: SettingsColors.text; }
+                                    Text {
+                                        text: root.notch-error ? "Could not save. Please try again." : "Show tasks and usage at the top of your screen.";
+                                        font-size: 10.5px;
+                                        color: root.notch-error ? SettingsColors.error : SettingsColors.secondary;
+                                    }
+                                }
+                                Switch {
+                                    checked: root.show-notch;
+                                    accessible-label: "Show Agent Companion notch";
+                                    toggled => { root.toggle-notch(self.checked); }
+                                }
+                            }
+                            Rectangle { height: 1px; background: SettingsColors.border; }
                             HorizontalLayout {
                                 spacing: 24px;
                                 VerticalLayout {
@@ -121,7 +170,7 @@ export component MacSettings inherits Rectangle {
                                     height: 32px;
                                     model: root.display-options;
                                     current-index <=> root.selected-display;
-                                    enabled: root.display-options.length > 0;
+                                    enabled: root.show-notch && root.display-options.length > 0;
                                     accessible-label: "Notch display";
                                     selected(label) => { root.select-display(label); }
                                 }
@@ -139,14 +188,37 @@ export component MacSettings inherits Rectangle {
                     SettingsCard {
                         vertical-stretch: 0;
                         HorizontalLayout {
-                            padding: 18px;
+                            padding: 14px;
+                            spacing: 24px;
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 5px;
+                                Text { text: "Show in menu bar"; font-size: 12px; font-weight: 600; color: SettingsColors.text; }
+                                Text {
+                                    text: root.menu-bar-error ? "Could not save. Please try again." : "Click the menu bar icon to see tasks and usage.";
+                                    font-size: 10.5px;
+                                    color: root.menu-bar-error ? SettingsColors.error : SettingsColors.secondary;
+                                    wrap: word-wrap;
+                                }
+                            }
+                            Switch {
+                                checked: root.show-menu-bar;
+                                accessible-label: "Show Agent Companion in the menu bar";
+                                toggled => { root.toggle-menu-bar(self.checked); }
+                            }
+                        }
+                    }
+                    SettingsCard {
+                        vertical-stretch: 0;
+                        HorizontalLayout {
+                            padding: 14px;
                             spacing: 24px;
                             VerticalLayout {
                                 alignment: center;
                                 spacing: 5px;
                                 Text { text: "Show in Dock"; font-size: 12px; font-weight: 600; color: SettingsColors.text; }
                                 Text {
-                                    text: root.dock-error ? "Could not save. Please try again." : "When hidden, open Settings from the notch.";
+                                    text: root.dock-error ? "Could not save. Please try again." : "Click the Dock icon to open Settings.";
                                     font-size: 10.5px;
                                     color: root.dock-error ? SettingsColors.error : SettingsColors.secondary;
                                     wrap: word-wrap;
@@ -158,6 +230,12 @@ export component MacSettings inherits Rectangle {
                                 toggled => { root.toggle-dock-icon(self.checked); }
                             }
                         }
+                    }
+                    Text {
+                        text: "If all three are hidden, reopen Agent Companion from Applications to reach Settings.";
+                        font-size: 10.5px;
+                        color: SettingsColors.secondary;
+                        wrap: word-wrap;
                     }
                     if root.dirty: SettingsCard {
                         vertical-stretch: 0;
@@ -178,6 +256,79 @@ export component MacSettings inherits Rectangle {
                                 clicked => { root.current-page = 0; }
                             }
                         }
+                    }
+                    Rectangle { vertical-stretch: 1; }
+                }
+            }
+            Tab {
+                title: "Codex 双开";
+                VerticalLayout {
+                    padding-top: 20px;
+                    spacing: 18px;
+                    VerticalLayout {
+                        spacing: 8px;
+                        Text { text: "Codex 双开"; font-size: 16px; font-weight: 600; color: SettingsColors.text; }
+                        Text {
+                            text: "创建独立的 Dodex 环境，首次使用需要自行登录。任务按来源合并显示，用量和状态栏配置分别管理。";
+                            font-size: 12px;
+                            color: SettingsColors.secondary;
+                            wrap: word-wrap;
+                        }
+                    }
+                    SettingsCard {
+                        vertical-stretch: 0;
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 14px;
+                            Text {
+                                text: root.dual-busy ? root.dual-phase : root.dual-deployed ? (root.dual-enabled ? "双开支持已启用" : "双开环境已部署 · 支持已停用") : "双开默认关闭";
+                                font-size: 13px;
+                                font-weight: 600;
+                                color: SettingsColors.text;
+                            }
+                            Text {
+                                text: root.dual-message;
+                                font-size: 11px;
+                                color: root.dual-error ? SettingsColors.error : SettingsColors.secondary;
+                                wrap: word-wrap;
+                            }
+                            if !root.dual-deployed: Button {
+                                text: root.dual-busy ? "正在检查与部署…" : root.dual-error ? "重试部署" : "部署双开环境";
+                                enabled: !root.dual-busy;
+                                primary: true;
+                                accessible-label: "部署双开环境";
+                                clicked => { root.deploy-dual(); }
+                            }
+                            if root.dual-deployed: HorizontalLayout {
+                                spacing: 24px;
+                                VerticalLayout {
+                                    spacing: 5px;
+                                    Text { text: "在 Companion 中启用双实例支持"; font-size: 12px; color: SettingsColors.text; }
+                                    Text { text: "停用不会退出 Dodex，也不会删除环境。重新启用时会先验证部署。"; font-size: 10.5px; color: SettingsColors.secondary; wrap: word-wrap; }
+                                }
+                                Switch {
+                                    checked: root.dual-enabled;
+                                    enabled: !root.dual-busy;
+                                    accessible-label: "启用 Codex 双实例支持";
+                                    toggled => { root.toggle-dual(self.checked); }
+                                }
+                            }
+                        }
+                    }
+                    if root.dual-deployed: SettingsCard {
+                        vertical-stretch: 0;
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 8px;
+                            Text { text: "使用 Dodex"; font-size: 12px; font-weight: 600; color: SettingsColors.text; }
+                            Text { text: "在应用程序中打开 Dodex，首次使用请登录。部署完成不会自动启动 Dodex。"; font-size: 11px; color: SettingsColors.secondary; wrap: word-wrap; }
+                        }
+                    }
+                    Text {
+                        text: "部署使用本机已安装且签名有效的官方 Codex 应用。已有 Dodex 环境会先验证，程序、配置和数据不会被覆盖。全新环境不复制主实例的凭证、历史或个人配置。";
+                        font-size: 11px;
+                        color: SettingsColors.secondary;
+                        wrap: word-wrap;
                     }
                     Rectangle { vertical-stretch: 1; }
                 }

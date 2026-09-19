@@ -48,4 +48,11 @@ struct NotchMetrics: Equatable {
         self.init(screen: screen.frame, safeTop: screen.safeAreaInsets.top,
                   topLeft: screen.auxiliaryTopLeftArea, topRight: screen.auxiliaryTopRightArea)
     }
+
+    init(panelWidth: CGFloat) {
+        width = panelWidth
+        cameraWidth = 0
+        cameraHeight = 0
+        centerOffset = 0
+    }
 }

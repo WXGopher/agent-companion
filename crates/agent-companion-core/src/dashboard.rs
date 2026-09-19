@@ -21,12 +21,73 @@ pub struct Snapshot {
     pub codex_home: String,
     pub updated_at: u64,
     pub loading: bool,
+    pub instances: Vec<InstanceSnapshot>,
+}
+
+/// Explicit, validated runtime routing supplied by the macOS deployment layer.
+#[derive(Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Instance {
+    pub instance_id: String,
+    pub label: String,
+    pub codex_home: String,
+    pub app_path: Option<String>,
+    pub executable_path: Option<String>,
+    pub database_path: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceSnapshot {
+    #[serde(flatten)]
+    pub instance: Instance,
+    pub weekly: Option<Weekly>,
+    pub error: Option<String>,
+}
+
+impl Snapshot {
+    /// Scope both task identities and account readings before combining homes.
+    pub fn with_instance(mut self, instance: Instance) -> Self {
+        for task in &mut self.tasks {
+            task.id = format!("{}:{}", instance.instance_id, task.session_id);
+            task.instance_id.clone_from(&instance.instance_id);
+            task.instance_label.clone_from(&instance.label);
+        }
+        self.instances = vec![InstanceSnapshot {
+            instance,
+            weekly: self.weekly.clone(),
+            error: self.error.clone(),
+        }];
+        self
+    }
+
+    /// The first snapshot is the primary instance for legacy single-home UI.
+    /// Instance errors and quota windows remain separate; they are never summed.
+    pub fn merge(snapshots: Vec<Self>) -> Self {
+        let mut iter = snapshots.into_iter();
+        let Some(mut merged) = iter.next() else {
+            return Self::default();
+        };
+        for snapshot in iter {
+            merged.active_count += snapshot.active_count;
+            merged.completed_count += snapshot.completed_count;
+            merged.updated_at = merged.updated_at.max(snapshot.updated_at);
+            merged.loading |= snapshot.loading;
+            merged.tasks.extend(snapshot.tasks);
+            merged.instances.extend(snapshot.instances);
+        }
+        sort_tasks(&mut merged.tasks);
+        merged
+    }
 }
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Task {
     pub id: String,
+    pub session_id: String,
+    pub instance_id: String,
+    pub instance_label: String,
     pub title: String,
     pub project: String,
     pub cwd: Option<String>,
@@ -59,6 +120,7 @@ impl Weekly {
 
 pub struct Dashboard {
     home: PathBuf,
+    database_home: PathBuf,
     sessions: SessionCache,
     last_sessions: Vec<SessionState>,
     sessions_scanned_at: Option<u64>,
@@ -69,8 +131,14 @@ pub struct Dashboard {
 
 impl Dashboard {
     pub fn new(home: PathBuf) -> Self {
+        let database_home = database_home(&home);
+        Self::with_database_home(home, database_home)
+    }
+
+    pub fn with_database_home(home: PathBuf, database_home: PathBuf) -> Self {
         Self {
             home,
+            database_home,
             sessions: SessionCache::default(),
             last_sessions: vec![],
             sessions_scanned_at: None,
@@ -82,27 +150,31 @@ impl Dashboard {
 
     /// Called off the GUI thread. A missing home is a normal empty state.
     pub fn poll(&mut self, now: u64) -> Snapshot {
-        let error = match self.sessions.scan(&self.home, now) {
-            Ok(sessions) => {
-                self.last_sessions = sessions;
-                self.sessions_scanned_at = Some(now);
-                None
-            }
-            Err(error) => {
-                // Liveness was only observed during the last successful scan.
-                // After a short grace period, let cached events expire normally
-                // instead of keeping an inaccessible session active forever.
-                if self
-                    .sessions_scanned_at
-                    .is_none_or(|at| now.saturating_sub(at) >= 30)
-                {
-                    for session in &mut self.last_sessions {
-                        session.observed_alive = false;
-                    }
+        let error =
+            match self
+                .sessions
+                .scan_with_database_home(&self.home, &self.database_home, now)
+            {
+                Ok(sessions) => {
+                    self.last_sessions = sessions;
+                    self.sessions_scanned_at = Some(now);
+                    None
                 }
-                Some(format!("Could not read Codex sessions: {error}"))
-            }
-        };
+                Err(error) => {
+                    // Liveness was only observed during the last successful scan.
+                    // After a short grace period, let cached events expire normally
+                    // instead of keeping an inaccessible session active forever.
+                    if self
+                        .sessions_scanned_at
+                        .is_none_or(|at| now.saturating_sub(at) >= 30)
+                    {
+                        for session in &mut self.last_sessions {
+                            session.observed_alive = false;
+                        }
+                    }
+                    Some(format!("Could not read Codex sessions: {error}"))
+                }
+            };
         self.last_sessions
             .retain(|session| !session.is_stale(now, STALE_AFTER_SECS));
         if self
@@ -139,6 +211,20 @@ impl Dashboard {
         snapshot.error = error.or_else(|| self.usage_error.clone());
         snapshot
     }
+}
+
+/// Read only the configured SQLite directory; never expose the config or
+/// parser diagnostics because unrelated settings can contain credentials.
+pub fn database_home(home: &Path) -> PathBuf {
+    #[cfg(feature = "config-edit")]
+    if let Ok(text) = std::fs::read_to_string(home.join("config.toml"))
+        && let Ok(document) = text.parse::<toml_edit::DocumentMut>()
+        && let Some(path) = document.get("sqlite_home").and_then(|value| value.as_str())
+        && Path::new(path).is_absolute()
+    {
+        return PathBuf::from(path);
+    }
+    home.to_owned()
 }
 
 fn project(sessions: &[SessionState], home: &Path, now: u64) -> Snapshot {
@@ -184,6 +270,9 @@ fn project(sessions: &[SessionState], home: &Path, now: u64) -> Snapshot {
             .unwrap_or_else(|| project.clone());
         snapshot.tasks.push(Task {
             id: session.session_id.clone(),
+            session_id: session.session_id.clone(),
+            instance_id: "codex".into(),
+            instance_label: "Codex".into(),
             title: title.chars().take(200).collect(),
             project,
             cwd: session.cwd.clone(),
@@ -197,14 +286,18 @@ fn project(sessions: &[SessionState], home: &Path, now: u64) -> Snapshot {
             transcript_path: session.transcript_path.clone(),
         });
     }
-    snapshot.tasks.sort_by_key(|task| {
+    sort_tasks(&mut snapshot.tasks);
+    snapshot
+}
+
+fn sort_tasks(tasks: &mut [Task]) {
+    tasks.sort_by_key(|task| {
         (
             !matches!(task.state, "running" | "waiting"),
             std::cmp::Reverse(task.updated_at),
             task.id.clone(),
         )
     });
-    snapshot
 }
 
 #[cfg(test)]
@@ -331,5 +424,73 @@ mod tests {
         .unwrap();
         assert_eq!(weekly.used_percent, 32);
         assert!(weekly.expired);
+    }
+
+    #[test]
+    fn combining_instances_keeps_task_identity_quota_and_errors_isolated() {
+        let session = SessionState::new("same-session", HookSource::Codex, 900);
+        let mut primary = project(
+            std::slice::from_ref(&session),
+            Path::new("/fixture/main"),
+            1000,
+        );
+        primary.weekly = Some(Weekly {
+            used_percent: 20,
+            resets_at: None,
+            expired: false,
+        });
+        let mut secondary = project(&[session], Path::new("/fixture/second"), 1000);
+        secondary.weekly = Some(Weekly {
+            used_percent: 80,
+            resets_at: None,
+            expired: false,
+        });
+        secondary.error = Some("Synthetic second instance read failure".into());
+        let merged = Snapshot::merge(vec![
+            primary.with_instance(Instance {
+                instance_id: "codex".into(),
+                label: "Codex".into(),
+                codex_home: "/fixture/main".into(),
+                ..Instance::default()
+            }),
+            secondary.with_instance(Instance {
+                instance_id: "dodex".into(),
+                label: "Dodex".into(),
+                codex_home: "/fixture/second".into(),
+                ..Instance::default()
+            }),
+        ]);
+        assert_eq!(merged.active_count, 2);
+        assert_eq!(merged.tasks[0].session_id, merged.tasks[1].session_id);
+        assert_ne!(merged.tasks[0].id, merged.tasks[1].id);
+        assert_eq!(merged.tasks[1].instance_label, "Dodex");
+        assert!(merged.error.is_none());
+        assert_eq!(merged.weekly.unwrap().used_percent, 20);
+        assert_eq!(
+            merged.instances[1].weekly.as_ref().unwrap().used_percent,
+            80
+        );
+        assert!(merged.instances[1].error.is_some());
+        let json = serde_json::to_value(&merged.instances[1]).unwrap();
+        assert_eq!(json["instanceId"], "dodex");
+        assert_eq!(json["codexHome"], "/fixture/second");
+    }
+
+    #[cfg(feature = "config-edit")]
+    #[test]
+    fn database_directory_uses_only_an_absolute_top_level_config_value() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("config.toml");
+        assert_eq!(database_home(home.path()), home.path());
+        std::fs::write(&path, "sqlite_home = '/synthetic/database'\n").unwrap();
+        assert_eq!(database_home(home.path()), Path::new("/synthetic/database"));
+        for text in [
+            "sqlite_home = 'relative'",
+            "sqlite_home = [",
+            "[project]\nsqlite_home = '/synthetic/wrong'",
+        ] {
+            std::fs::write(&path, text).unwrap();
+            assert_eq!(database_home(home.path()), home.path());
+        }
     }
 }
