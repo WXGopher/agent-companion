@@ -481,13 +481,15 @@ mod tests {
     fn database_directory_uses_only_an_absolute_top_level_config_value() {
         let home = tempfile::tempdir().unwrap();
         let path = home.path().join("config.toml");
+        let database = home.path().join("database");
+        let configured = toml_edit::Value::from(database.to_str().unwrap());
         assert_eq!(database_home(home.path()), home.path());
-        std::fs::write(&path, "sqlite_home = '/synthetic/database'\n").unwrap();
-        assert_eq!(database_home(home.path()), Path::new("/synthetic/database"));
+        std::fs::write(&path, format!("sqlite_home = {configured}\n")).unwrap();
+        assert_eq!(database_home(home.path()), database);
         for text in [
-            "sqlite_home = 'relative'",
-            "sqlite_home = [",
-            "[project]\nsqlite_home = '/synthetic/wrong'",
+            "sqlite_home = 'relative'".to_owned(),
+            "sqlite_home = [".to_owned(),
+            format!("[project]\nsqlite_home = {configured}"),
         ] {
             std::fs::write(&path, text).unwrap();
             assert_eq!(database_home(home.path()), home.path());
