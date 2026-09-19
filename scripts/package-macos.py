@@ -43,7 +43,7 @@ with (contents / "Info.plist").open("wb") as stream:
         "CFBundleVersion": version,
         "LSMinimumSystemVersion": "14.0",
         "LSArchitecturePriority": ["arm64"],
-        # Apply the saved Dock preference (visible by default) on startup.
+        # Apply the saved Dock preference (hidden by default) on startup.
         "LSUIElement": True,
         "NSHighResolutionCapable": True,
         "NSPrincipalClass": "NSApplication",

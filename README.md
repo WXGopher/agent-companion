@@ -12,7 +12,7 @@
 - **Tasks / Usage**：切换任务与用量，查看剩余额度、重置时间、累计 Token 和最近七个有记录日期的用量柱状图。
 - **状态栏定制**：选择 Codex CLI 状态栏组件，实时预览并保存。
 - **Windows 集成**：任务完成通知、开机启动，以及可选的工具审批和提问卡片。
-- **macOS 入口**：菜单栏弹出任务／用量面板，Dock 打开设置；菜单栏、Dock 和刘海可独立开关。默认显示菜单栏和 Dock，关闭刘海。
+- **macOS 入口**：菜单栏显示有效的每周剩余额度：两份额度有效时上行 Codex、下行 Dodex，仅一份有效时只显示该实例，均无有效额度时显示默认图标；点击弹出任务／用量面板。Dock 图标可选，点击打开设置。菜单栏、Dock 和刘海可在设置中独立开关，默认仅显示菜单栏，已有选择保持不变。
 - **可选 Codex 双开（macOS）**：在设置中手动部署或接入 Dodex，任务标注来源，用量和 CLI 状态栏设置按实例管理。默认关闭，不自动接入或启动 Dodex。
 
 订阅用量复用 Codex CLI 的 ChatGPT 登录，无需 API Key。macOS Usage 查询结果按实例缓存 5 分钟，切换页面直接复用有效缓存；手动刷新可立即重新查询。
@@ -54,7 +54,7 @@ See Codex tasks and subscription usage in the Windows taskbar or macOS menu bar.
 - **Tasks / Usage**: switch to remaining quota, reset times, lifetime tokens and a bar chart of the last seven reported days.
 - **Status bar editor**: choose Codex CLI components with a live preview.
 - **Windows integration**: completion notifications, startup settings, and optional tool approvals and question cards.
-- **macOS entry points**: click the menu bar item for tasks and usage, or the Dock icon for Settings. Menu bar, Dock and notch visibility are independent; the menu bar and Dock are on by default, the notch off.
+- **macOS entry points**: the menu bar shows valid weekly quota readings, with Codex above Dodex when both are available, a single row when only one is available, and the default icon otherwise; click it for tasks and usage. The optional Dock icon opens Settings. Configure menu bar, Dock and notch visibility independently in Settings. Only the menu bar is on by default; saved choices are preserved.
 - **Optional second Codex instance (macOS)**: explicitly deploy or connect Dodex in Settings. Tasks show their source; usage and CLI status bar settings stay separate. Disabled by default, with no automatic adoption or launch.
 
 Subscription usage uses your existing Codex CLI ChatGPT login. No API key is needed. On macOS, Usage results are cached separately for each instance for five minutes; switching pages reuses a fresh result, while manual refresh reads again.

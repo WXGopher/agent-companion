@@ -45,6 +45,10 @@ struct LayoutTests {
             EntryPreferenceTests.run()
             return
         }
+        if CommandLine.arguments.contains("--menu-bar") {
+            try MenuBarUsageTests.run(output: output)
+            return
+        }
         if CommandLine.arguments.contains("--subscription-usage") {
             try SubscriptionUsageTests.run(output: output)
             return
@@ -185,6 +189,7 @@ struct LayoutTests {
         try verifyDisplayPreferences()
         try SubscriptionUsageTests.run(output: output)
         try InstanceQuotaTests.run(output: output)
+        try MenuBarUsageTests.run(output: output)
         print("PASS: 21 native SwiftUI layouts; working/waiting summaries, remaining quota, errors and constant-width expansion")
     }
 
@@ -617,10 +622,10 @@ struct LayoutTests {
             CFPreferencesSetAppValue("showDockIcon" as CFString, nil, domain as CFString)
             CFPreferencesAppSynchronize(domain as CFString)
         }
-        precondition(store.read(), "A fresh install must show a Dock icon")
+        precondition(!store.read(), "A fresh install must hide the Dock icon")
         let preferences = DockPreferences(store: store)
         preferences.start()
-        precondition(NSApp.activationPolicy() == .regular)
+        precondition(NSApp.activationPolicy() == .accessory)
         for visible in [true, false] {
             let child = Process()
             child.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
@@ -636,7 +641,7 @@ struct LayoutTests {
             precondition(NSApp.activationPolicy() == expected, "The other process's Dock change was not applied")
             precondition(store.read() == visible, "Dock preference did not persist across processes")
         }
-        print("Dock preference: visible by default; native policy changes and cross-process persistence passed")
+        print("Dock preference: hidden by default; native policy changes and cross-process persistence passed")
     }
 
     @MainActor private static func verifyNavigationLifecycle() {

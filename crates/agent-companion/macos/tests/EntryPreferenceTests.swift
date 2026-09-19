@@ -13,13 +13,23 @@ enum EntryPreferenceTests {
     @MainActor static func run() {
         let domain = "com.wxgopher.agent-companion.tests.entries.\(UUID().uuidString)"
         let store = EntryPreferenceStore(domain: domain)
+        let dockStore = DockPreferenceStore(domain: domain)
         defer {
             for entry in [CompanionEntry.menuBar, .notch] {
                 CFPreferencesSetAppValue(entry.rawValue as CFString, nil, domain as CFString)
             }
+            CFPreferencesSetAppValue("showDockIcon" as CFString, nil, domain as CFString)
             CFPreferencesAppSynchronize(domain as CFString)
         }
         precondition(store.read(.menuBar) && !store.read(.notch))
+        precondition(!dockStore.read(), "A fresh install must show only the menu bar entry")
+        for visible in [true, false] {
+            precondition(dockStore.write(visible))
+            precondition(DockPreferenceStore(domain: domain).read() == visible,
+                         "Explicit Dock visibility must survive a fresh preference store")
+            precondition(store.read(.menuBar) && !store.read(.notch),
+                         "Changing the Dock preference must preserve the other entry preferences")
+        }
         let preferences = EntryPreferences(store: store)
         var settingsOpened = 0
         let reader = UsageFixture()
