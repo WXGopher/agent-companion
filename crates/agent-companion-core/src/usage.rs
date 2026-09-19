@@ -756,6 +756,18 @@ fn parse_codex_reading(line: &[u8]) -> Option<(CodexUsage, Option<SystemTime>)> 
 
 /// Parse Codex's `rate_limits` object.
 pub fn parse_codex_rate_limits(value: &Value) -> CodexUsage {
+    // A rollout can interleave account usage with other quota buckets. Only
+    // the Codex bucket describes the account allowance shown by Companion;
+    // a later, unused bucket must not turn its weekly card into "100% left".
+    // Older clients omitted the bucket ID, so retain that legacy format.
+    if let Some(id) = value
+        .get("limit_id")
+        .or_else(|| value.get("limitId"))
+        .filter(|id| !id.is_null())
+        && id.as_str() != Some("codex")
+    {
+        return CodexUsage::default();
+    }
     CodexUsage {
         primary: parse_window(value.get("primary")),
         secondary: parse_window(value.get("secondary")),
@@ -1342,6 +1354,136 @@ mod tests {
         assert_eq!(primary.resets_at, Some(NOW + 600));
         assert!(usage.secondary.is_none());
         assert_eq!(usage.plan_type.as_deref(), Some("pro"));
+    }
+
+    #[test]
+    fn explicit_non_codex_buckets_do_not_provide_codex_usage() {
+        for key in ["limit_id", "limitId"] {
+            let mut limits = json!({
+                "primary": {"used_percent": 0, "window_minutes": 300},
+                "secondary": {"used_percent": 0, "window_minutes": 10_080},
+                "plan_type": "pro",
+            });
+            limits[key] = json!("synthetic-other-model");
+            assert_eq!(parse_codex_rate_limits(&limits), CodexUsage::default());
+        }
+    }
+
+    #[test]
+    fn codex_and_legacy_bucket_identifiers_preserve_usage() {
+        for identifier in [
+            json!({"limit_id": "codex"}),
+            json!({"limitId": "codex"}),
+            json!({"limit_id": null}),
+            json!({"limitId": null}),
+            json!({}),
+        ] {
+            let mut limits = identifier;
+            limits["secondary"] = json!({"used_percent": 33, "window_minutes": 10_080});
+            assert_eq!(
+                parse_codex_rate_limits(&limits)
+                    .secondary
+                    .unwrap()
+                    .used_percent,
+                33.0
+            );
+        }
+    }
+
+    fn bucket_token_count(bucket: &str, weekly_used: f64, timestamp: &str) -> Value {
+        let mut record = token_count(
+            json!(null),
+            json!({"used_percent": weekly_used, "window_minutes": 10_080}),
+            "pro",
+        );
+        record["timestamp"] = json!(timestamp);
+        record["payload"]["rate_limits"]["limit_id"] = json!(bucket);
+        record
+    }
+
+    #[test]
+    fn later_other_bucket_does_not_replace_codex_in_one_rollout() {
+        let home = tempfile::tempdir().unwrap();
+        let path = write_rollout(
+            home.path(),
+            "2026/08/23",
+            "rollout-multiple-buckets.jsonl",
+            &[
+                bucket_token_count("codex", 33.0, "2026-08-23T10:00:00.000Z"),
+                bucket_token_count("synthetic-other-model", 0.0, "2026-08-23T10:00:01.000Z"),
+            ],
+        );
+
+        let usage = read_codex_rollout(&path).unwrap().unwrap();
+        assert_eq!(usage.secondary.unwrap().used_percent, 33.0);
+    }
+
+    #[test]
+    fn newer_other_bucket_rollout_does_not_replace_codex_usage() {
+        let home = tempfile::tempdir().unwrap();
+        let codex = write_rollout(
+            home.path(),
+            "2026/08/23",
+            "rollout-codex.jsonl",
+            &[bucket_token_count(
+                "codex",
+                33.0,
+                "2026-08-23T10:00:00.000Z",
+            )],
+        );
+        let other = write_rollout(
+            home.path(),
+            "2026/08/23",
+            "rollout-other-bucket.jsonl",
+            &[bucket_token_count(
+                "synthetic-other-model",
+                0.0,
+                "2026-08-23T11:00:00.000Z",
+            )],
+        );
+        set_mtime(&codex, SystemTime::UNIX_EPOCH + Duration::from_secs(NOW));
+        set_mtime(
+            &other,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(NOW + 3600),
+        );
+
+        let usage = scan_codex_usage(home.path()).unwrap().unwrap();
+        assert_eq!(usage.secondary.unwrap().used_percent, 33.0);
+        assert_eq!(usage.source, Some(codex));
+    }
+
+    #[test]
+    fn other_buckets_alone_leave_codex_usage_unavailable() {
+        let home = tempfile::tempdir().unwrap();
+        let path = write_rollout(
+            home.path(),
+            "2026/08/23",
+            "rollout-other-only.jsonl",
+            &[bucket_token_count(
+                "synthetic-other-model",
+                0.0,
+                "2026-08-23T10:00:00.000Z",
+            )],
+        );
+
+        assert!(read_codex_rollout(&path).unwrap().is_none());
+        assert!(scan_codex_usage(home.path()).unwrap().is_none());
+    }
+
+    #[test]
+    fn an_unused_codex_bucket_still_has_all_of_its_quota() {
+        let home = tempfile::tempdir().unwrap();
+        write_rollout(
+            home.path(),
+            "2026/08/23",
+            "rollout-codex-unused.jsonl",
+            &[bucket_token_count("codex", 0.0, "2026-08-23T10:00:00.000Z")],
+        );
+
+        let usage = scan_codex_usage(home.path()).unwrap().unwrap();
+        let weekly = usage.secondary.unwrap();
+        assert_eq!(weekly.used_percent, 0.0);
+        assert_eq!(100 - weekly.rounded(), 100);
     }
 
     #[test]

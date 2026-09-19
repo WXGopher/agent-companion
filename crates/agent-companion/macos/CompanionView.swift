@@ -148,7 +148,9 @@ struct CompanionView: View {
                 .accessibilityHidden(model.showingUsage)
             pageViewport {
                 SubscriptionUsageView(usage: model.subscriptionUsage, loading: model.usageLoading,
-                                      scale: model.metrics.detailScale, refresh: { model.refreshUsage(force: true) })
+                                      scale: model.metrics.detailScale, refresh: { model.refreshUsage(force: true) },
+                                      instances: model.instances, selectedInstanceID: model.selectedInstanceID,
+                                      selectInstance: model.selectInstance)
             }
                 .opacity(model.showingUsage ? 1 : 0)
                 .allowsHitTesting(model.showingUsage)
@@ -212,15 +214,21 @@ struct CompanionView: View {
 
     private var taskContent: some View {
         VStack(alignment: .leading, spacing: scaled(13)) {
-            Button { model.showUsage() } label: { weekly }
-                .buttonStyle(.plain).help("View subscription limits and token activity")
-                .accessibilityLabel("Weekly quota, \(model.weeklyText). View subscription usage")
+            ForEach(model.instances) { instance in
+                Button { model.showUsage(for: instance.id) } label: { weekly(instance) }
+                    .buttonStyle(.plain).help("View \(instance.label) subscription limits and token activity")
+                    .accessibilityIdentifier("weekly-quota-\(instance.id)")
+                    .accessibilityLabel("\(instance.label) weekly quota, \(model.weeklyText(for: instance)). View subscription usage")
+            }
             HStack(spacing: scaled(8)) {
                 tab("Active", count: model.snapshot.activeCount, completed: false)
                 tab("Finished", count: model.snapshot.completedCount, completed: true)
                 Spacer(minLength: 0)
             }
-            if let error = model.snapshot.error { notice(error, symbol: "exclamationmark.triangle") }
+            if let error = model.dashboardError { notice(error, symbol: "exclamationmark.triangle") }
+            ForEach(model.instances) { instance in
+                if let error = instance.error { notice("\(instance.label): \(error)", symbol: "exclamationmark.triangle") }
+            }
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(spacing: 0) {
@@ -230,7 +238,7 @@ struct CompanionView: View {
                                 .frame(height: taskViewportHeight)
                         } else if model.visibleTasks.isEmpty {
                             empty(model.showingCompleted ? "No recently finished tasks" : "No active tasks",
-                                  detail: model.showingCompleted ? "Finished, stopped and failed tasks stay here for 15 minutes." : "Start a task in Codex.app or Codex CLI. It will appear here automatically.",
+                                  detail: model.showingCompleted ? "Finished, stopped and failed tasks stay here for 15 minutes." : "Start a task in \(model.instances.map(\.label).joined(separator: " or ")) or Codex CLI. It will appear here automatically.",
                                   symbol: model.showingCompleted ? "checkmark.circle" : "terminal")
                                 .frame(height: taskViewportHeight)
                         } else {
@@ -284,28 +292,30 @@ struct CompanionView: View {
         .buttonStyle(.plain).font(.system(size: fontSize(11))).foregroundStyle(.secondary)
     }
 
-    private var weekly: some View {
-        VStack(alignment: .leading, spacing: scaled(7)) {
+    private func weekly(_ instance: CodexInstance) -> some View {
+        let usage = model.weeklyUsage(for: instance)
+        let remaining = model.weeklyRemainingPercent(for: instance)
+        return VStack(alignment: .leading, spacing: scaled(7)) {
             HStack(spacing: scaled(8)) {
-                Text("Weekly quota").font(.system(size: fontSize(11))).foregroundStyle(.secondary)
+                Text("\(instance.label) weekly quota").font(.system(size: fontSize(11))).foregroundStyle(.secondary)
                 Spacer()
-                Text(model.weeklyText + (model.weeklyRemainingPercent == nil ? "" : " left"))
+                Text(model.weeklyText(for: instance) + (remaining == nil ? "" : " left"))
                     .font(.system(size: fontSize(12), weight: .medium)).monospacedDigit()
             }
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
                     Capsule().fill(.white.opacity(0.10))
-                    if let remaining = model.weeklyRemainingPercent {
+                    if let remaining {
                         Capsule().fill(remaining <= 10 ? Color.orange : CompanionModel.accent)
                             .frame(width: geometry.size.width * CGFloat(remaining) / 100)
                     }
                 }
             }.frame(height: scaled(3)).accessibilityHidden(true)
-            if let usage = model.weeklyUsage, !usage.expired, let resets = usage.resetsAt {
+            if let usage, !usage.expired, let resets = usage.resetsAt {
                 Text("Resets \(Date(timeIntervalSince1970: resets).formatted(date: .abbreviated, time: .shortened))")
                     .font(.system(size: fontSize(10))).foregroundStyle(.secondary)
             } else {
-                Text(model.weeklyUsage?.expired == true ? "Waiting for a new Codex usage reading after reset." : "Usage appears after Codex records a rate limit reading.")
+                Text(usage?.expired == true ? "Waiting for a new \(instance.label) usage reading after reset." : "Usage appears after \(instance.label) records a rate limit reading.")
                     .font(.system(size: fontSize(10))).foregroundStyle(.secondary)
             }
         }
@@ -339,6 +349,7 @@ struct CompanionView: View {
                             Text(task.project).lineLimit(1)
                             Text("·")
                         }
+                        Text(task.sourceLabel).foregroundStyle(CompanionModel.accent).lineLimit(1).fixedSize()
                         Text(task.status).lineLimit(1).fixedSize()
                         Spacer(minLength: scaled(4))
                         Text(age(task.updatedAt)).monospacedDigit().fixedSize()
@@ -358,16 +369,16 @@ struct CompanionView: View {
             else if hoveredTask == task.id { hoveredTask = nil }
         }
         .help("\(task.title)\n\(task.cwd ?? task.project)\nOpen this \(task.client == "desktop" ? "Codex conversation" : "session")")
-        .accessibilityLabel("\(task.title), \(task.status), \(task.project). Open session")
+        .accessibilityLabel("\(task.sourceLabel), \(task.title), \(task.status), \(task.project). Open session")
         .contextMenu {
             Button("Open session") { model.jump(to: task) }
-            if task.resumeCommand != nil { Button("Copy resume command") { model.copyResume(task) } }
+            if model.resumeCommand(for: task) != nil { Button("Copy resume command") { model.copyResume(task) } }
         }
     }
 
     @ViewBuilder private func recoveryButtons(_ task: CodexTask) -> some View {
         Button("Try again") { model.jump(to: task) }
-        if task.resumeCommand != nil {
+        if model.resumeCommand(for: task) != nil {
             Button("Copy command") { model.copyResume(task) }
                 .accessibilityLabel("Copy resume command")
                 .help("Copy the command to resume this Codex session")

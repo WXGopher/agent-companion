@@ -189,5 +189,6 @@ final class NotchPresentation {
     func stop() {
         timer?.invalidate()
         timer = nil
+        motion.finish()
     }
 }

@@ -6,11 +6,32 @@ struct SubscriptionUsageView: View {
     let loading: Bool
     let scale: CGFloat
     let refresh: () -> Void
+    var instances: [CodexInstance] = []
+    var selectedInstanceID = "codex"
+    var selectInstance: (String) -> Void = { _ in }
     private func s(_ value: CGFloat) -> CGFloat { (value * scale).rounded() }
     private func f(_ value: CGFloat) -> CGFloat { max(9, value * scale) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: s(10)) {
+            if instances.count > 1 {
+                HStack(spacing: s(3)) {
+                    ForEach(instances) { instance in
+                        Button { selectInstance(instance.id) } label: {
+                            Text(instance.label).font(.system(size: f(11), weight: .medium))
+                                .foregroundStyle(instance.id == selectedInstanceID ? CompanionModel.accent : Color.white.opacity(0.65))
+                                .frame(maxWidth: .infinity, minHeight: s(25))
+                                .contentShape(Rectangle())
+                                .background(.white.opacity(instance.id == selectedInstanceID ? 0.12 : 0.035),
+                                            in: RoundedRectangle(cornerRadius: s(6)))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("\(instance.label) subscription usage")
+                        .accessibilityAddTraits(instance.id == selectedInstanceID ? .isSelected : [])
+                    }
+                }
+                .accessibilityIdentifier("usage-instance-picker")
+            }
             HStack {
                 Text(loading ? "Refreshing…" : updatedText)
                     .font(.system(size: f(10))).foregroundStyle(.secondary).lineLimit(1)
@@ -166,17 +187,20 @@ struct SubscriptionUsageView: View {
     }
 
     private func metric(_ title: String, value: Int64?) -> some View {
-        VStack(alignment: .leading, spacing: s(6)) {
+        let amount = UsageNumber.short(value)
+        let label = title + ": " + UsageNumber.full(value) + " tokens"
+        let valueText = Text(amount).font(.system(size: f(15), weight: .semibold))
+            .monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+            .foregroundStyle(CompanionModel.accent)
+        return VStack(alignment: .leading, spacing: s(6)) {
             Text(title).font(.system(size: f(10))).foregroundStyle(.secondary)
-            Text(UsageNumber.short(value)).font(.system(size: f(15), weight: .semibold))
-                .monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
-                .foregroundStyle(CompanionModel.accent)
+            valueText
         }
         .frame(maxWidth: .infinity, alignment: .leading).padding(s(10))
         .background(CompanionModel.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: s(11)))
-        .help(title + ": " + UsageNumber.full(value) + " tokens")
+        .help(label)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(title + ": " + UsageNumber.full(value) + " tokens")
+        .accessibilityLabel(label)
     }
 
     private func dailyChart(_ days: [SubscriptionTokens.Day]) -> some View {

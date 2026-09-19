@@ -56,14 +56,13 @@ private final class UsageRPCSession {
     private var received = 0
     private var replies: [Int: UsageRPCReply] = [:]
 
-    init(executable: URL, codexHome: String, cancellation: UsageCancellation, timeout: TimeInterval) throws {
+    init(executable: URL, source: SubscriptionSource, cancellation: UsageCancellation, timeout: TimeInterval) throws {
         self.cancellation = cancellation
         deadline = ProcessInfo.processInfo.systemUptime + timeout
         process.executableURL = executable
         process.arguments = ["app-server", "--listen", "stdio://", "-c", "analytics.enabled=false"]
-        var environment = ProcessInfo.processInfo.environment
-        if !codexHome.isEmpty { environment["CODEX_HOME"] = codexHome }
-        process.environment = environment
+            + InstanceEnvironment.configurationArguments(source)
+        process.environment = InstanceEnvironment.isolated(ProcessInfo.processInfo.environment, source: source)
         // An editor's working directory must not select an unrelated project's
         // local Codex configuration. No shell or shell startup files are used.
         process.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
@@ -150,8 +149,21 @@ final class CodexSubscriptionReader: SubscriptionReading {
     }
 
     func read(codexHome: String, completion: @escaping (SubscriptionUsage) -> Void) {
+        let home = codexHome.isEmpty ? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex").path : codexHome
+        read(source: SubscriptionSource(codexHome: home), completion: completion)
+    }
+
+    func read(source: SubscriptionSource, completion: @escaping (SubscriptionUsage) -> Void) {
         cancel()
-        guard let executable = executable() else {
+        // Only the primary instance may use CLI discovery. Falling back to it
+        // for Dodex would read the wrong runtime or credential store.
+        let resolved = source.executablePath.map { URL(fileURLWithPath: $0) }
+            ?? (source.instanceID == "codex" ? executable() : nil)
+        guard let executable = resolved, FileManager.default.isExecutableFile(atPath: executable.path) else {
+            if source.instanceID != "codex" {
+                completion(.failure("The Dodex runtime could not be located. Validate its deployment in Settings."))
+                return
+            }
             completion(.failure("Install Codex CLI or Codex.app, then sign in with your ChatGPT subscription."))
             return
         }
@@ -159,7 +171,7 @@ final class CodexSubscriptionReader: SubscriptionReading {
         self.cancellation = cancellation
         let timeout = timeout
         DispatchQueue.global(qos: .utility).async {
-            let result = Self.fetch(executable: executable, codexHome: codexHome, cancellation: cancellation, timeout: timeout)
+            let result = Self.fetch(executable: executable, source: source, cancellation: cancellation, timeout: timeout)
             DispatchQueue.main.async {
                 guard !cancellation.isCancelled else { return }
                 completion(result)
@@ -170,13 +182,13 @@ final class CodexSubscriptionReader: SubscriptionReading {
     func cancel() { cancellation?.cancel(); cancellation = nil }
     deinit { cancel() }
 
-    private static func fetch(executable: URL, codexHome: String, cancellation: UsageCancellation, timeout: TimeInterval) -> SubscriptionUsage {
+    private static func fetch(executable: URL, source: SubscriptionSource, cancellation: UsageCancellation, timeout: TimeInterval) -> SubscriptionUsage {
         struct AccountResponse: Decodable {
             struct Account: Decodable { let type: String }
             let account: Account?
         }
         do {
-            let session = try UsageRPCSession(executable: executable, codexHome: codexHome, cancellation: cancellation, timeout: timeout)
+            let session = try UsageRPCSession(executable: executable, source: source, cancellation: cancellation, timeout: timeout)
             defer { session.close() }
             try session.send(["id": 1, "method": "initialize", "params": [
                 "clientInfo": ["name": "agent_companion_usage", "version": "1"],

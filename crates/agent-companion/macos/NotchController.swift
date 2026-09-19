@@ -3,14 +3,39 @@
 // See THIRD_PARTY_NOTICES.md for the pinned source and license.
 import AppKit
 import Combine
+import SwiftUI
+
+private let reopenSettingsNotification = Notification.Name("com.wxgopher.agent-companion.reopenSettings")
+
+@_cdecl("agent_companion_reopen_settings")
+public func reopenAgentCompanionSettings() {
+    DistributedNotificationCenter.default().postNotificationName(reopenSettingsNotification, object: nil, userInfo: nil, deliverImmediately: true)
+}
 
 private final class NotchPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 }
 
-final class NotchController: NSObject, NSApplicationDelegate {
+final class NotchController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let model = CompanionModel()
+    private let menuModel: CompanionModel
+    private var statusItem: NSStatusItem?
+    private let popover = NSPopover()
+    private var notchEnabled = false
+    private let entries: EntryPreferences
+    private let settingsOverride: (() -> Void)?
+    init(entries: EntryPreferences = .shared, menuModel: CompanionModel = CompanionModel(), settingsOverride: (() -> Void)? = nil) {
+        self.entries = entries
+        self.menuModel = menuModel
+        self.settingsOverride = settingsOverride
+        super.init()
+    }
+    var notchIsVisible: Bool { panel?.isVisible == true }
+    var notchIsAnimating: Bool { presentation?.isAnimating == true }
+    var hasMouseMonitoring: Bool { globalMonitor != nil || localMonitor != nil }
+    var menuBarIsVisible: Bool { statusItem != nil }
+    var menuPanelIsVisible: Bool { popover.isShown }
     private var panel: NotchPanel!
     private var presentation: NotchPresentation!
     private var globalMonitor: Any?
@@ -59,6 +84,21 @@ final class NotchController: NSObject, NSApplicationDelegate {
         model.expand = { [weak self] in self?.expand(activate: true) }
         model.collapse = { [weak self] in self?.collapse() }
         model.quit = { [weak self] in self?.quit() }
+        menuModel.metrics = NotchMetrics(panelWidth: 356)
+        menuModel.expand = { [weak self] in self?.menuModel.expanded = true }
+        menuModel.collapse = { [weak self] in self?.popover.performClose(nil) }
+        menuModel.quit = { [weak self] in self?.quit() }
+        menuModel.settingsAction = { [weak self] in
+            self?.model.openSettings()
+            self?.popover.performClose(nil)
+        }
+        popover.behavior = .transient
+        popover.delegate = self
+        popover.contentSize = NSSize(width: 356, height: 560)
+        popover.contentViewController = NSHostingController(rootView:
+            CompanionView(model: menuModel, showsDetails: true, drawsBackground: false,
+                          detailsHeight: 560 - menuModel.compactHeight)
+                .frame(width: 356, height: 560, alignment: .top).background(Color.black))
         // Defer sizing until @Published has committed the new value.
         changes = model.objectWillChange.sink { [weak self] _ in
             DispatchQueue.main.async { self?.layout() }
@@ -67,6 +107,17 @@ final class NotchController: NSObject, NSApplicationDelegate {
         observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in self?.selectScreen() })
         observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in self?.selectScreen(); self?.model.refresh() })
         DisplayPreferences.shared.start { [weak self] in self?.selectScreen() }
+        observers.append(DistributedNotificationCenter.default().addObserver(forName: reopenSettingsNotification, object: nil, queue: .main) { [weak self] _ in self?.showSettings() })
+        entries.start { [weak self] in self?.applyEntryPreferences() }
+        applyEntryPreferences()
+        model.start()
+        if !entries.menuBarVisible && !DockPreferences.shared.visible && !notchEnabled {
+            showSettings()
+        }
+    }
+
+    private func startMouseMonitoring() {
+        guard globalMonitor == nil, localMonitor == nil else { return }
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDown, .rightMouseDown]) { [weak self] event in
             guard let self else { return }
             if event.type == .mouseMoved { hover.update(); return }
@@ -83,13 +134,61 @@ final class NotchController: NSObject, NSApplicationDelegate {
             }
             return event
         }
-        selectScreen()
-        panel.orderFrontRegardless()
-        model.start()
-        hover.start()
+    }
+
+    private func stopMouseMonitoring() {
+        if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
+        if let localMonitor { NSEvent.removeMonitor(localMonitor) }
+        globalMonitor = nil
+        localMonitor = nil
+    }
+
+    private func applyEntryPreferences() {
+        if entries.menuBarVisible {
+            if statusItem == nil {
+                let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+                item.button?.image = NSImage(systemSymbolName: "terminal", accessibilityDescription: "Agent Companion tasks and usage")
+                item.button?.target = self
+                item.button?.action = #selector(toggleMenuPanel)
+                statusItem = item
+            }
+        } else if let item = statusItem {
+            popover.performClose(nil)
+            NSStatusBar.system.removeStatusItem(item)
+            statusItem = nil
+        }
+        let enabled = entries.notchVisible
+        guard enabled != notchEnabled else { return }
+        notchEnabled = enabled
+        if enabled {
+            selectScreen()
+            startMouseMonitoring()
+            hover.start()
+        } else {
+            hover.stop()
+            stopMouseMonitoring()
+            model.expanded = false
+            presentation.stop()
+            panel.orderOut(nil)
+        }
+    }
+
+    @objc func toggleMenuPanel() {
+        if popover.isShown { popover.performClose(nil); return }
+        guard let button = statusItem?.button else { return }
+        menuModel.showTasks()
+        menuModel.expanded = true
+        menuModel.start()
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        menuModel.expanded = false
+        menuModel.stop()
     }
 
     private func selectScreen() {
+        guard notchEnabled else { panel?.orderOut(nil); return }
         // AppKit's first screen is the configured primary, unlike NSScreen.main
         // which follows keyboard focus. An explicit preference overrides it;
         // an absent display falls back without forgetting the saved identity.
@@ -102,12 +201,13 @@ final class NotchController: NSObject, NSApplicationDelegate {
     }
 
     private func layout(animated: Bool = true) {
-        guard let screen = selectedScreen else { return }
+        guard notchEnabled, let screen = selectedScreen else { return }
         presentation.update(screen: screen.frame, availableHeight: screen.frame.maxY - screen.visibleFrame.minY,
                             animated: animated)
     }
 
     private func expand(activate: Bool) {
+        guard notchEnabled else { return }
         if activate { hover.pin() }
         if !model.expanded {
             model.showingCompleted = false
@@ -130,28 +230,43 @@ final class NotchController: NSObject, NSApplicationDelegate {
         hover.dismiss()
     }
 
-    @objc private func showTasks() { model.showTasks(); expand(activate: true) }
-    @objc private func showUsage() { model.showUsage() }
-    @objc private func showSettings() { model.openSettings() }
+    @objc private func showTasks() {
+        if statusItem != nil { if !popover.isShown { toggleMenuPanel() }; menuModel.showTasks() }
+        else if notchEnabled { model.showTasks(); expand(activate: true) }
+        else { model.openSettings() }
+    }
+    @objc func showUsage() {
+        if statusItem != nil { if !popover.isShown { toggleMenuPanel() }; menuModel.showUsage() }
+        else if notchEnabled { model.showUsage() }
+        else { model.openSettings() }
+    }
+    @objc private func showSettings() {
+        if let settingsOverride { settingsOverride() }
+        else { model.openSettings() }
+    }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        expand(activate: true)
+        showSettings()
         return false
     }
 
-    @objc private func quit() {
+    @objc func quit() {
         guard !quitting else { return }
         quitting = true
         presentation.stop()
         hover.stop()
         model.stop()
+        menuModel.stop()
+        popover.performClose(nil)
+        if let statusItem { NSStatusBar.system.removeStatusItem(statusItem) }
+        entries.stop()
         DisplayPreferences.shared.stop()
         changes?.cancel()
-        if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
-        if let localMonitor { NSEvent.removeMonitor(localMonitor) }
+        stopMouseMonitoring()
         for observer in observers {
             NotificationCenter.default.removeObserver(observer)
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            DistributedNotificationCenter.default().removeObserver(observer)
         }
         panel?.orderOut(nil)
         NSApp.stop(nil)

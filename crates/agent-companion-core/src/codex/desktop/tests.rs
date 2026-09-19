@@ -82,6 +82,32 @@ impl Fixture {
 }
 
 #[test]
+fn desktop_completion_updates_the_single_session_from_duplicate_rollouts() {
+    let fixture = Fixture::new();
+    let started = crate::usage::parse_iso8601("2026-09-05T00:00:00Z").unwrap();
+    fixture
+        .history
+        .execute(
+            "UPDATE thread_turns SET status='completed', started_at=?1, completed_at=?2",
+            ((started + 1) as i64, (started + 3) as i64),
+        )
+        .unwrap();
+    let directory = fixture.dir.path().join("sessions");
+    std::fs::create_dir(&directory).unwrap();
+    let metadata = serde_json::json!({"timestamp":"2026-09-05T00:00:00Z", "type":"session_meta",
+        "payload":{"id":ID, "source":"cli"}});
+    let event = serde_json::json!({"timestamp":"2026-09-05T00:00:01Z", "type":"event_msg",
+        "payload":{"type":"task_started", "turn_id":"turn-1"}});
+    for name in ["rollout-original.jsonl", "rollout-copy.jsonl"] {
+        std::fs::write(directory.join(name), format!("{metadata}\n{event}\n")).unwrap();
+    }
+    let sessions = fixture.scan(started + 4);
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].phase, Phase::Completed);
+    assert_eq!(sessions[0].last_seen, started + 3);
+}
+
+#[test]
 fn desktop_history_works_without_rollouts_and_reads_wal_updates() {
     let fixture = Fixture::new();
     let running = fixture.scan(NOW);
@@ -107,6 +133,38 @@ fn desktop_history_works_without_rollouts_and_reads_wal_updates() {
         .unwrap();
     assert_eq!(fixture.scan(NOW + 3)[0].phase, Phase::Running);
     assert_eq!(fixture.scan(NOW + 3)[0].first_seen, NOW + 2);
+}
+
+#[test]
+fn explicit_database_directory_keeps_locks_at_instance_home_and_clears_old_cache() {
+    let fixture = Fixture::new();
+    let home = tempfile::tempdir().unwrap();
+    let lock_dir = home.path().join("thread-writer-locks");
+    std::fs::create_dir(&lock_dir).unwrap();
+    let lock = File::create(lock_dir.join(format!("{ID}.lock"))).unwrap();
+    lock.lock().unwrap();
+    let mut cache = SessionCache::default();
+    let sessions = cache
+        .scan_with_database_home(home.path(), fixture.dir.path(), NOW)
+        .unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert!(sessions[0].observed_alive);
+    drop(lock);
+    let stopped = cache
+        .scan_with_database_home(home.path(), fixture.dir.path(), NOW + 1)
+        .unwrap();
+    assert_eq!(stopped[0].last_event, "session_disconnected");
+    let missing = home.path().join("other-database");
+    assert!(
+        cache
+            .scan_with_database_home(home.path(), &missing, NOW + 2)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        !missing.exists(),
+        "A read-only scan created the missing database directory"
+    );
 }
 
 #[test]

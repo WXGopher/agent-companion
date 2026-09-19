@@ -21,6 +21,7 @@ struct Snapshot {
 #[derive(Default)]
 pub(super) struct Cache {
     last: Option<(u64, Snapshot)>,
+    source: Option<(std::path::PathBuf, std::path::PathBuf)>,
 }
 
 fn read_only(path: &Path) -> rusqlite::Result<Connection> {
@@ -36,8 +37,24 @@ fn read_only(path: &Path) -> rusqlite::Result<Connection> {
 /// Merge only a fully read snapshot. A busy or migrated database must not
 /// clear the last log observation or leave a partially applied archive list.
 impl Cache {
+    #[cfg(test)]
     pub(super) fn merge(&mut self, home: &Path, now: u64, sessions: &mut Vec<SessionState>) {
-        if let Ok(snapshot) = read(home, now) {
+        self.merge_with_database_home(home, home, now, sessions);
+    }
+
+    pub(super) fn merge_with_database_home(
+        &mut self,
+        home: &Path,
+        database_home: &Path,
+        now: u64,
+        sessions: &mut Vec<SessionState>,
+    ) {
+        let source = (home.to_owned(), database_home.to_owned());
+        if self.source.as_ref() != Some(&source) {
+            self.last = None;
+            self.source = Some(source);
+        }
+        if let Ok(snapshot) = read_with_database_home(home, database_home, now) {
             self.last = Some((now, snapshot));
         }
         let Some((at, snapshot)) = &self.last else {
@@ -92,9 +109,18 @@ fn merge_snapshot(snapshot: Snapshot, sessions: &mut Vec<SessionState>) {
     }
 }
 
+#[cfg(test)]
 fn read(home: &Path, now: u64) -> rusqlite::Result<Snapshot> {
-    let state = read_only(&home.join("state_5.sqlite"))?;
-    let history = read_only(&home.join("thread_history_1.sqlite"))?;
+    read_with_database_home(home, home, now)
+}
+
+fn read_with_database_home(
+    home: &Path,
+    database_home: &Path,
+    now: u64,
+) -> rusqlite::Result<Snapshot> {
+    let state = read_only(&database_home.join("state_5.sqlite"))?;
+    let history = read_only(&database_home.join("thread_history_1.sqlite"))?;
     let mut threads = state.prepare(
         "SELECT id, cwd, COALESCE(NULLIF(name, ''), title), archived, source
          FROM threads

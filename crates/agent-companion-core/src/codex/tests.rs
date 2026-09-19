@@ -30,6 +30,94 @@ fn fixture(source: Value) -> (tempfile::TempDir, PathBuf) {
 }
 
 #[test]
+fn replayed_parent_metadata_cannot_reinclude_a_subagent() {
+    for source in [json!("subagent"), json!({"subagent": {"thread_spawn": {}}})] {
+        for replayed_id in ["parent", "s-1"] {
+            let (dir, path) = fixture(source.clone());
+            append(
+                &path,
+                &[
+                    json!({"timestamp":"2026-09-05T00:00:01Z", "type":"session_meta", "payload": {
+                    "id":replayed_id, "source":"cli", "cwd":"/synthetic/parent"}}),
+                    event(2, "task_started", "turn"),
+                ],
+            );
+            let mut cache = SessionCache::default();
+            assert!(cache.scan(dir.path(), now(3)).unwrap().is_empty());
+            append(&path, &[event(4, "agent_message", "turn")]);
+            assert!(cache.scan(dir.path(), now(5)).unwrap().is_empty());
+        }
+    }
+}
+
+#[test]
+fn a_rollout_keeps_its_own_identity_when_other_metadata_is_replayed() {
+    let (dir, path) = fixture(json!("cli"));
+    append(
+        &path,
+        &[
+            json!({"timestamp":"2026-09-05T00:00:01Z", "type":"session_meta", "payload": {
+            "id":"another-thread", "source":"subagent", "cwd":"/synthetic/other"}}),
+            event(2, "task_started", "turn"),
+        ],
+    );
+    let sessions = SessionCache::default().scan(dir.path(), now(3)).unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].session_id, "s-1");
+    assert_eq!(sessions[0].codex_client, CodexClient::Cli);
+    assert_eq!(
+        sessions[0].cwd.as_deref(),
+        Some("C:/synthetic/agent-companion")
+    );
+}
+
+#[test]
+fn rollout_copies_count_once_and_follow_the_newest_event() {
+    let (dir, path) = fixture(json!("cli"));
+    append(&path, &[event(1, "task_started", "turn")]);
+    let copy = path.with_file_name("rollout-copy.jsonl");
+    fs::copy(&path, &copy).unwrap();
+    let mut cache = SessionCache::default();
+    let active = cache.scan(dir.path(), now(2)).unwrap();
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].phase, Phase::Running);
+    append(&path, &[event(3, "task_complete", "turn")]);
+    let finished = cache.scan(dir.path(), now(4)).unwrap();
+    assert_eq!(finished.len(), 1);
+    assert_eq!(finished[0].phase, Phase::Completed);
+    assert_eq!(
+        Path::new(finished[0].transcript_path.as_deref().unwrap()),
+        path
+    );
+    append(&copy, &[event(5, "task_started", "new-turn")]);
+    let resumed = cache.scan(dir.path(), now(6)).unwrap();
+    assert_eq!(resumed.len(), 1);
+    assert_eq!(resumed[0].phase, Phase::Running);
+    assert_eq!(
+        Path::new(resumed[0].transcript_path.as_deref().unwrap()),
+        copy
+    );
+}
+
+#[test]
+fn tied_rollout_copies_do_not_resurrect_a_completed_turn() {
+    let (dir, path) = fixture(json!("cli"));
+    append(&path, &[event(1, "task_started", "turn")]);
+    let copy = path.with_file_name("rollout-copy.jsonl");
+    fs::copy(&path, &copy).unwrap();
+    append(&copy, &[event(1, "task_complete", "turn")]);
+    for _ in 0..4 {
+        let sessions = SessionCache::default().scan(dir.path(), now(2)).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].phase, Phase::Completed);
+        assert_eq!(
+            Path::new(sessions[0].transcript_path.as_deref().unwrap()),
+            copy
+        );
+    }
+}
+
+#[test]
 fn rollout_metadata_distinguishes_cli_desktop_and_unknown_clients() {
     for (source, originator, expected) in [
         ("cli", "codex-tui", CodexClient::Cli),

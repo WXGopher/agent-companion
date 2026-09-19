@@ -3,23 +3,24 @@
 // Scripts use argv instead of interpolating session data into AppleScript.
 // See THIRD_PARTY_NOTICES.md for attribution and the pinned upstream revision.
 import AppKit
+import Carbon
 
 enum TerminalJump {
     private static let queue = DispatchQueue(label: "agent-companion.jump", qos: .userInitiated)
 
-    static func open(_ task: CodexTask, codexHome: String, completion: @escaping (String?) -> Void) {
-        guard UUID(uuidString: task.id) != nil else {
+    static func open(_ task: CodexTask, instance: CodexInstance, completion: @escaping (String?) -> Void) {
+        guard task.sourceID == instance.id, UUID(uuidString: task.conversationID) != nil else {
             completion("This session has no valid Codex conversation ID.")
             return
         }
         // Paginated desktop history can omit originator metadata. A local
         // Codex conversation link still selects the exact stored thread.
         if task.client != "cli" {
-            openConversation(task.id, completion: completion)
+            openConversation(task.conversationID, instance: instance, completion: completion)
             return
         }
         queue.async {
-            let target = terminalTarget(task, home: codexHome)
+            let target = terminalTarget(task, home: instance.codexHome)
             guard let target else {
                 DispatchQueue.main.async {
                     completion("The original terminal could not be located. It may have closed. You can copy a command to resume this session.")
@@ -54,15 +55,50 @@ enum TerminalJump {
         }
     }
 
-    private static func openConversation(_ id: String, completion: @escaping (String?) -> Void) {
-        guard let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.openai.codex"),
-              let link = URL(string: "codex://threads/\(id)") else {
-            completion("Codex.app is not installed. You can copy a command to resume this conversation in Codex CLI.")
+    private static func openConversation(_ id: String, instance: CodexInstance, completion: @escaping (String?) -> Void) {
+        let applications = NSWorkspace.shared.runningApplications.filter { application in
+            guard let path = instance.appPath, let url = application.bundleURL else { return false }
+            return sameApplication(url.path, path)
+        }
+        guard applications.count == 1, let app = applications.first else {
+            completion("The running \(instance.label) app could not be located. Open \(instance.label) from Applications, then try again.")
             return
         }
-        NSWorkspace.shared.open([link], withApplicationAt: app, configuration: .init()) { _, error in
-            DispatchQueue.main.async { completion(error.map { "Could not open this Codex conversation: \($0.localizedDescription)" }) }
+        // Both runtimes retain the official bundle identifier and signature.
+        // Address the URL event to the exact PID; Launch Services can otherwise
+        // pick a different running app with the same bundle identifier.
+        let event = NSAppleEventDescriptor(eventClass: AEEventClass(kInternetEventClass),
+            eventID: AEEventID(kAEGetURL), targetDescriptor: NSAppleEventDescriptor(processIdentifier: app.processIdentifier),
+            returnID: AEReturnID(kAutoGenerateReturnID), transactionID: AETransactionID(kAnyTransactionID))
+        event.setParam(NSAppleEventDescriptor(string: "codex://threads/\(id)"), forKeyword: AEKeyword(keyDirectObject))
+        do {
+            _ = try event.sendEvent(options: [.noReply], timeout: 5)
+            app.activate(options: [.activateAllWindows])
+            completion(nil)
+        } catch {
+            completion("Could not select the conversation in \(instance.label). Check Automation permission or copy its resume command.")
         }
+    }
+
+    static func sameApplication(_ lhs: String, _ rhs: String) -> Bool {
+        URL(fileURLWithPath: lhs).resolvingSymlinksInPath().standardizedFileURL.path
+            == URL(fileURLWithPath: rhs).resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    static func resumeCommand(_ task: CodexTask, instance: CodexInstance) -> String? {
+        let runtime = instance.executablePath ?? (instance.id == "codex" ? CodexSubscriptionReader.findExecutable()?.path : nil)
+        guard task.sourceID == instance.id, UUID(uuidString: task.conversationID) != nil,
+              instance.codexHome.hasPrefix("/"),
+              let executable = runtime, executable.hasPrefix("/"),
+              let database = instance.databasePath, database.hasPrefix("/"),
+              FileManager.default.isExecutableFile(atPath: executable) else { return nil }
+        func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+        // Start a clean environment at execution time, including when pasted
+        // into a different terminal with inherited auth or instance overrides.
+        let environment = "/usr/bin/env -i HOME=\"$HOME\" PATH=\"$PATH\" TERM=\"${TERM:-xterm-256color}\""
+        let arguments = InstanceEnvironment.configurationArguments(instance.usageSource) + ["resume", task.conversationID]
+        return environment + " CODEX_HOME=" + quote(instance.codexHome) + " CODEX_SQLITE_HOME=" + quote(database)
+            + " " + quote(executable) + " " + arguments.map(quote).joined(separator: " ")
     }
 
     struct TerminalTarget {
@@ -85,10 +121,16 @@ enum TerminalJump {
     /// Only inspect process IDs, ancestry, tty and executable names. Never read
     /// process environments, credentials, terminal contents or shell history.
     private static func terminalTarget(_ task: CodexTask, home: String) -> TerminalTarget? {
-        var paths = [URL(fileURLWithPath: home).appendingPathComponent("thread-writer-locks/\(task.id).lock").path]
-        if let transcript = task.transcriptPath { paths.append(transcript) }
+        guard home.hasPrefix("/") else { return nil }
+        let root = URL(fileURLWithPath: home).resolvingSymlinksInPath().standardizedFileURL.path
+        var paths = [URL(fileURLWithPath: home).appendingPathComponent("thread-writer-locks/\(task.conversationID).lock").path]
+        if let transcript = task.transcriptPath {
+            let resolved = URL(fileURLWithPath: transcript).resolvingSymlinksInPath().standardizedFileURL.path
+            if resolved.hasPrefix(root + "/") { paths.append(resolved) }
+        }
         var writers = Set<Int32>()
         for path in paths where FileManager.default.fileExists(atPath: path) {
+            guard URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path.hasPrefix(root + "/") else { continue }
             let result = run("/usr/sbin/lsof", ["-t", "--", path], timeout: 3)
             for line in result.text.split(separator: "\n") {
                 if let pid = Int32(line) { writers.insert(pid) }

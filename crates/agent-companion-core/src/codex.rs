@@ -73,14 +73,22 @@ impl Events {
                 }
             }
             Some("session_meta") => {
-                self.excluded = payload["source"].get("subagent").is_some()
-                    || payload["source"].as_str() == Some("subagent")
-                    || payload["thread_source"].as_str() == Some("subagent");
-                if let Some(id) = payload["id"]
+                let id = payload["id"]
                     .as_str()
                     .or_else(|| payload["session_id"].as_str())
-                    .filter(|id| !id.is_empty())
+                    .filter(|id| !id.is_empty());
+                // Forked rollouts can replay a parent's metadata after their
+                // own header. That must not rename the child to the parent or
+                // turn an excluded subagent into a second visible parent task.
+                if let (Some(session), Some(id)) = (&self.session, id)
+                    && session.session_id != id
                 {
+                    return true;
+                }
+                self.excluded |= payload["source"].get("subagent").is_some()
+                    || payload["source"].as_str() == Some("subagent")
+                    || payload["thread_source"].as_str() == Some("subagent");
+                if let Some(id) = id {
                     let mut session =
                         SessionState::new(id, HookSource::Codex, timestamp.unwrap_or(0));
                     session.cwd = payload["cwd"].as_str().map(str::to_string);
@@ -247,6 +255,18 @@ impl SessionCache {
     /// `codex_home` is CODEX_HOME, or `<user home>/.codex`. Old files are also
     /// checked for growth: a resumed conversation can live in an old directory.
     pub fn scan(&mut self, codex_home: &Path, now: u64) -> io::Result<Vec<SessionState>> {
+        self.scan_with_database_home(codex_home, codex_home, now)
+    }
+
+    /// Databases may live outside CODEX_HOME; rollouts and writer locks do not.
+    pub fn scan_with_database_home(
+        &mut self,
+        codex_home: &Path,
+        database_home: &Path,
+        now: u64,
+    ) -> io::Result<Vec<SessionState>> {
+        #[cfg(not(feature = "desktop-history"))]
+        let _ = database_home;
         let mut files = Vec::new();
         collect(&codex_home.join("sessions"), &mut files)?;
         let seen: HashSet<_> = files.iter().map(|(path, _, _)| path.clone()).collect();
@@ -272,21 +292,45 @@ impl SessionCache {
             let _ = cached.read(&path, length, modified);
         }
         self.files.retain(|path, _| seen.contains(path));
-        let sessions: Vec<_> = self
+        let mut sessions: Vec<_> = self
             .files
             .iter()
             .filter_map(|(path, cursor)| cursor.events.snapshot(path))
             .collect();
+        // Multiple physical rollouts can describe one conversation. Resolve
+        // them before merging desktop state so stale copies cannot survive the
+        // history update, inflate counts or share a SwiftUI row identity.
+        sessions.sort_unstable_by(|left, right| {
+            left.session_id
+                .cmp(&right.session_id)
+                .then_with(|| right.last_seen.cmp(&left.last_seen))
+                .then_with(|| {
+                    rollout_phase_priority(right.phase).cmp(&rollout_phase_priority(left.phase))
+                })
+                .then_with(|| left.transcript_path.cmp(&right.transcript_path))
+        });
+        sessions.dedup_by(|left, right| left.session_id == right.session_id);
         #[cfg(feature = "desktop-history")]
         let sessions = {
             let mut sessions = sessions;
-            self.desktop.merge(codex_home, now, &mut sessions);
+            self.desktop
+                .merge_with_database_home(codex_home, database_home, now, &mut sessions);
             sessions
         };
         Ok(sessions
             .into_iter()
             .filter(|session| !session.is_stale(now, STALE_AFTER_SECS))
             .collect())
+    }
+}
+
+fn rollout_phase_priority(phase: Phase) -> u8 {
+    // Timestamps have second precision. At a tie prefer an explicit stop or
+    // pending question to an older running observation, then a stable path.
+    match phase {
+        Phase::Completed => 2,
+        Phase::WaitingForApproval | Phase::WaitingForAnswer => 1,
+        Phase::Running => 0,
     }
 }
 
