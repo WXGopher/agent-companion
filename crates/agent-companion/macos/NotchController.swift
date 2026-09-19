@@ -18,15 +18,16 @@ private final class NotchPanel: NSPanel {
 }
 
 final class NotchController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
-    private let model = CompanionModel()
+    private let model: CompanionModel
     private let menuModel: CompanionModel
     private var statusItem: NSStatusItem?
     private let popover = NSPopover()
     private var notchEnabled = false
     private let entries: EntryPreferences
     private let settingsOverride: (() -> Void)?
-    init(entries: EntryPreferences = .shared, menuModel: CompanionModel = CompanionModel(), settingsOverride: (() -> Void)? = nil) {
+    init(entries: EntryPreferences = .shared, model: CompanionModel = CompanionModel(), menuModel: CompanionModel = CompanionModel(), settingsOverride: (() -> Void)? = nil) {
         self.entries = entries
+        self.model = model
         self.menuModel = menuModel
         self.settingsOverride = settingsOverride
         super.init()
@@ -36,12 +37,14 @@ final class NotchController: NSObject, NSApplicationDelegate, NSPopoverDelegate 
     var hasMouseMonitoring: Bool { globalMonitor != nil || localMonitor != nil }
     var menuBarIsVisible: Bool { statusItem != nil }
     var menuPanelIsVisible: Bool { popover.isShown }
+    private(set) var menuBarUsage: MenuBarUsage?
     private var panel: NotchPanel!
     private var presentation: NotchPresentation!
     private var globalMonitor: Any?
     private var localMonitor: Any?
     private var observers: [NSObjectProtocol] = []
     private var changes: AnyCancellable?
+    private var menuChanges: AnyCancellable?
     private lazy var hover = NotchHover(
         containsPointer: { [weak self] in
             guard let self, let panel, panel.isVisible, let screen = selectedScreen else { return false }
@@ -103,6 +106,9 @@ final class NotchController: NSObject, NSApplicationDelegate, NSPopoverDelegate 
         changes = model.objectWillChange.sink { [weak self] _ in
             DispatchQueue.main.async { self?.layout() }
         }
+        menuChanges = Publishers.Merge(model.objectWillChange, menuModel.objectWillChange).sink { [weak self] _ in
+            RunLoop.main.perform(inModes: [.common]) { self?.updateMenuBarUsage() }
+        }
         observers.append(NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in self?.selectScreen() })
         observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in self?.selectScreen() })
         observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in self?.selectScreen(); self?.model.refresh() })
@@ -146,16 +152,17 @@ final class NotchController: NSObject, NSApplicationDelegate, NSPopoverDelegate 
     private func applyEntryPreferences() {
         if entries.menuBarVisible {
             if statusItem == nil {
-                let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-                item.button?.image = NSImage(systemSymbolName: "terminal", accessibilityDescription: "Agent Companion tasks and usage")
+                let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
                 item.button?.target = self
                 item.button?.action = #selector(toggleMenuPanel)
                 statusItem = item
+                updateMenuBarUsage()
             }
         } else if let item = statusItem {
             popover.performClose(nil)
             NSStatusBar.system.removeStatusItem(item)
             statusItem = nil
+            menuBarUsage = nil
         }
         let enabled = entries.notchVisible
         guard enabled != notchEnabled else { return }
@@ -171,6 +178,23 @@ final class NotchController: NSObject, NSApplicationDelegate, NSPopoverDelegate 
             presentation.stop()
             panel.orderOut(nil)
         }
+    }
+
+    private func updateMenuBarUsage() {
+        guard let statusItem else { return }
+        let now = Date()
+        let value = MenuBarUsage(instances: model.instances, now: now) { instance in
+            // Both surfaces retain account caches after closing. Use the most
+            // recent completed reading for this exact source, or its current
+            // local snapshot. The background snapshot also removes disabled
+            // instances immediately, even while the popup is closed.
+            [model.cachedWeeklyUsage(for: instance), menuModel.cachedWeeklyUsage(for: instance)]
+                .compactMap { $0 }.filter { MenuBarUsage.remaining($0.usage, at: now) != nil }
+                .max { $0.readAt < $1.readAt }?.usage ?? instance.weekly
+        }
+        guard value != menuBarUsage else { return }
+        menuBarUsage = value
+        value.apply(to: statusItem)
     }
 
     @objc func toggleMenuPanel() {
@@ -262,6 +286,7 @@ final class NotchController: NSObject, NSApplicationDelegate, NSPopoverDelegate 
         entries.stop()
         DisplayPreferences.shared.stop()
         changes?.cancel()
+        menuChanges?.cancel()
         stopMouseMonitoring()
         for observer in observers {
             NotificationCenter.default.removeObserver(observer)

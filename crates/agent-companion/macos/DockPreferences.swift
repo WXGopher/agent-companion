@@ -11,7 +11,7 @@ struct DockPreferenceStore {
 
     func read() -> Bool {
         CFPreferencesAppSynchronize(domain as CFString)
-        return CFPreferencesCopyAppValue(key, domain as CFString) as? Bool ?? true
+        return CFPreferencesCopyAppValue(key, domain as CFString) as? Bool ?? false
     }
 
     func write(_ visible: Bool) -> Bool {

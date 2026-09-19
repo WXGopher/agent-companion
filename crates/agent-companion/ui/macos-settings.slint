@@ -195,7 +195,7 @@ export component MacSettings inherits Rectangle {
                                 spacing: 5px;
                                 Text { text: "Show in menu bar"; font-size: 12px; font-weight: 600; color: SettingsColors.text; }
                                 Text {
-                                    text: root.menu-bar-error ? "Could not save. Please try again." : "Click the menu bar icon to see tasks and usage.";
+                                    text: root.menu-bar-error ? "Could not save. Please try again." : "Shows valid weekly quotas, Codex above Dodex; an icon when none are available. Click for tasks and usage.";
                                     font-size: 10.5px;
                                     color: root.menu-bar-error ? SettingsColors.error : SettingsColors.secondary;
                                     wrap: word-wrap;
@@ -218,7 +218,7 @@ export component MacSettings inherits Rectangle {
                                 spacing: 5px;
                                 Text { text: "Show in Dock"; font-size: 12px; font-weight: 600; color: SettingsColors.text; }
                                 Text {
-                                    text: root.dock-error ? "Could not save. Please try again." : "Click the Dock icon to open Settings.";
+                                    text: root.dock-error ? "Could not save. Please try again." : "Off by default. Enable the Dock icon to open Settings.";
                                     font-size: 10.5px;
                                     color: root.dock-error ? SettingsColors.error : SettingsColors.secondary;
                                     wrap: word-wrap;

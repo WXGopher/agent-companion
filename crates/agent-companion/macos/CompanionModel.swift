@@ -173,6 +173,9 @@ final class CompanionModel: ObservableObject {
     func countText(_ count: Int) -> String { count > 99 ? "99+" : "\(count)" }
     var weeklyUsage: WeeklyUsage? { weeklyUsage(for: selectedInstance) }
     func weeklyUsage(for instance: CodexInstance) -> WeeklyUsage? {
+        cachedWeeklyUsage(for: instance)?.usage ?? instance.weekly
+    }
+    func cachedWeeklyUsage(for instance: CodexInstance) -> (usage: WeeklyUsage, readAt: Date)? {
         // Each card uses only its own account cache or local snapshot. Showing
         // all instances on Tasks must not start additional account requests.
         let hasCurrentReading = usageSource == instance.usageSource || (usageSource == nil && subscriptionUsage.readAt != nil)
@@ -183,10 +186,10 @@ final class CompanionModel: ObservableObject {
            let bucket = limits.buckets.first(where: { $0.id == "codex" }),
            let window = [bucket.value.primary, bucket.value.secondary].compactMap({ $0 })
                .first(where: { $0.windowDurationMins == 10080 }) {
-            return WeeklyUsage(usedPercent: window.usedPercent, resetsAt: window.resetsAt,
-                               expired: window.remaining() == nil)
+            return (WeeklyUsage(usedPercent: window.usedPercent, resetsAt: window.resetsAt,
+                                expired: window.remaining() == nil), readAt)
         }
-        return instance.weekly
+        return nil
     }
     var weeklyRemainingPercent: Int? { weeklyRemainingPercent(for: selectedInstance) }
     func weeklyRemainingPercent(for instance: CodexInstance) -> Int? {

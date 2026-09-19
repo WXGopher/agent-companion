@@ -1,7 +1,11 @@
 # Optional macOS Codex instance
 
-Agent Companion starts with the menu bar and Dock visible, the notch hidden,
-and second-instance support disabled. Before explicit opt-in, opening Settings
+Agent Companion starts with only the menu bar visible, the Dock and notch hidden,
+and second-instance support disabled. Settings controls each entry independently
+and preserves saved choices across upgrades. The menu bar shows valid weekly
+quota readings: Codex above Dodex when both are available, only the available
+instance when one is valid, and the default terminal icon when neither is valid.
+Before explicit opt-in, opening Settings
 does not discover, deploy, adopt, or launch Dodex. Reopening Companion always reaches Settings,
 including when every entry point is hidden.
 
@@ -73,7 +77,8 @@ Closing the panel preserves completed results; cancelled reads create no cache.
 covers deployment faults, interruptions, concurrent operations, isolated
 configuration saves and dashboard routing. Live-data tests remain ignored.
 `sh scripts/test-macos-ui.sh` checks the SwiftUI layouts and entry lifecycle;
-`--entries` runs just the menu/Dock/notch recovery checks. The `macos_editor`
+`--entries` runs just the menu/Dock/notch recovery checks, and `--menu-bar`
+checks valid single/dual readings, icon fallback and cached quota updates. The `macos_editor`
 integration executable exercises the actual Slint window with synthetic
 configurations and deployment states. None of these tests deploy the local
 Dodex environment.
