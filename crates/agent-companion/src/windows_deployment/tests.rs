@@ -155,6 +155,89 @@ fn usage_and_launcher_commands_bind_paths_and_do_not_inherit_overrides() {
 }
 
 #[test]
+fn cli_launch_keeps_native_arguments_terminal_io_working_directory_and_exit_status() {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+    let temp = tempfile::tempdir().unwrap();
+    let instance = InstanceConfig::at(temp.path());
+    fs::create_dir_all(instance.cli_path.parent().unwrap()).unwrap();
+    // Compile a real native child rather than a cmd/PowerShell shim, whose
+    // quoting rules would hide whether OsString arguments reach Codex intact.
+    let compile = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+        .args(["--crate-name", "dodex_cli_probe", "--edition", "2024"])
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/windows_deployment/fixtures/cli_probe.rs"
+        ))
+        .arg("-o")
+        .arg(&instance.cli_path)
+        .output()
+        .unwrap();
+    assert!(
+        compile.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+
+    let arguments: Vec<OsString> = vec![
+        "exec".into(),
+        "-p".into(),
+        "work profile".into(),
+        "-C".into(),
+        r"C:\用户\a & b's %tools%!\".into(),
+        "-c".into(),
+        r#"model="example model""#.into(),
+        "--".into(),
+        "prompt with \"quotes\", $dollars, `ticks`, and\nnewlines".into(),
+        "".into(),
+        OsString::from_wide(&[b'x' as u16, 0xd800]),
+    ];
+    let blank = cli_command(&instance, &[]);
+    assert_eq!(blank.get_program(), instance.cli_path.as_os_str());
+    assert_eq!(blank.get_args().count(), 0);
+    assert_eq!(blank.get_current_dir(), None);
+    for name in ["TERM", "COLORTERM", "WT_SESSION", "NO_COLOR", "LANG"] {
+        let actual = blank
+            .get_envs()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .and_then(|(_, value)| value);
+        assert_eq!(actual, std::env::var_os(name).as_deref());
+    }
+
+    let input = temp.path().join("input.txt");
+    let output = temp.path().join("output.txt");
+    let error = temp.path().join("error.txt");
+    fs::write(&input, b"CLI stdin is preserved\n").unwrap();
+    let mut command = cli_command(&instance, &arguments);
+    command
+        .stdin(File::open(&input).unwrap())
+        .stdout(File::create(&output).unwrap())
+        .stderr(File::create(&error).unwrap());
+    assert_eq!(
+        wait_for_cli(&mut command).unwrap().code(),
+        Some(0xf1234567u32 as i32)
+    );
+    let actual = fs::read_to_string(output).unwrap();
+    let wide = |value: &std::ffi::OsStr| value.encode_wide().collect::<Vec<_>>();
+    let expected_arguments: Vec<_> = arguments.iter().map(|value| wide(value)).collect();
+    let directory = wide(std::env::current_dir().unwrap().as_os_str());
+    assert!(actual.contains(&format!("arguments={expected_arguments:?}\n")));
+    assert!(actual.contains(&format!("directory={directory:?}\n")));
+    for (key, value) in [
+        ("CODEX_HOME", &instance.codex_home),
+        ("CODEX_SQLITE_HOME", &instance.database_dir),
+    ] {
+        assert!(actual.contains(&format!("{key}=Some({:?})\n", wide(value.as_os_str()))));
+    }
+    assert!(actual.contains("OPENAI_API_KEY=None\nCODEX_THREAD_ID=None\n"));
+    assert!(actual.ends_with("CLI stdin is preserved\n"));
+    assert_eq!(
+        fs::read_to_string(error).unwrap(),
+        "CLI stderr is preserved\n"
+    );
+}
+
+#[test]
 fn deployment_rejects_unknown_and_redirected_existing_profiles() {
     let temp = tempfile::tempdir().unwrap();
     fs::write(temp.path().join("config.toml"), "personal = true").unwrap();

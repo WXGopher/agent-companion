@@ -2,11 +2,12 @@
 //! or personal configuration are copied, and deployment never launches the app.
 use serde::{Deserialize, Serialize};
 use std::{
+    ffi::OsString,
     fs::{self, File},
     io::Write,
     os::windows::{fs::MetadataExt, process::CommandExt},
     path::{Component, Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Command, ExitStatus, Stdio},
     sync::{Mutex, OnceLock},
     time::SystemTime,
 };
@@ -627,6 +628,83 @@ pub fn isolated_command(executable: &Path, home: &Path, database: &Path) -> Comm
         .env("CODEX_HOME", home)
         .env("CODEX_SQLITE_HOME", database);
     command
+}
+
+/// Launch the deployed CLI in the caller's terminal and working directory. The
+/// desktop entry point below deliberately has different window/stdio behavior.
+pub fn launch_cli(arguments: &[OsString]) -> Result<ExitStatus, String> {
+    let manifest = validate(&current_root()?, true)?;
+    prepare_sandbox_bin(&manifest.instance.codex_home)?;
+    wait_for_cli(&mut cli_command(&manifest.instance, arguments))
+        .map_err(|error| format!("无法运行 Dodex CLI：{error}"))
+}
+
+fn cli_command(instance: &InstanceConfig, arguments: &[OsString]) -> Command {
+    let mut command = isolated_command(
+        &instance.cli_path,
+        &instance.codex_home,
+        &instance.database_dir,
+    );
+    // Preserve terminal capabilities and locale without inheriting another
+    // Codex account/session, app-server routing, or Electron/Node overrides.
+    for name in [
+        "TERM",
+        "COLORTERM",
+        "TERM_PROGRAM",
+        "TERM_PROGRAM_VERSION",
+        "WT_SESSION",
+        "WT_PROFILE_ID",
+        "ConEmuANSI",
+        "ANSICON",
+        "NO_COLOR",
+        "CLICOLOR",
+        "CLICOLOR_FORCE",
+        "LANG",
+        "LANGUAGE",
+        "LC_ALL",
+        "LC_CTYPE",
+    ] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    command
+        .args(arguments)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    command
+}
+
+fn wait_for_cli(command: &mut Command) -> std::io::Result<ExitStatus> {
+    use windows::Win32::System::Console::{
+        CTRL_BREAK_EVENT, CTRL_C_EVENT, GetConsoleCP, SetConsoleCtrlHandler,
+    };
+    use windows::core::BOOL;
+
+    unsafe extern "system" fn handle_control(event: u32) -> BOOL {
+        // Codex receives the same console event and owns its interpretation.
+        // Keep this wrapper alive so the shell waits until Codex really exits.
+        BOOL::from(event == CTRL_C_EVENT || event == CTRL_BREAK_EVENT)
+    }
+    struct ConsoleHandler(bool);
+    impl Drop for ConsoleHandler {
+        fn drop(&mut self) {
+            if self.0 {
+                let _ = unsafe { SetConsoleCtrlHandler(Some(handle_control), false) };
+            }
+        }
+    }
+
+    // Custom handlers are not inherited by children (unlike the NULL/ignore
+    // handler), so Codex's Ctrl+C behavior is unchanged.
+    // Redirected noninteractive invocations may have no console at all.
+    let attached = unsafe { GetConsoleCP() } != 0;
+    if attached {
+        unsafe { SetConsoleCtrlHandler(Some(handle_control), true) }?;
+    }
+    let _handler = ConsoleHandler(attached);
+    command.status()
 }
 
 pub fn launch(thread: Option<&str>) -> Result<(), String> {
