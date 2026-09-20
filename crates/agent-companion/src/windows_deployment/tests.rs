@@ -1,6 +1,72 @@
 use super::*;
 
 #[test]
+fn ensure_deploys_once_then_preserves_profile_and_repairs_sandbox_directory() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("official");
+    fs::create_dir_all(source.join("resources")).unwrap();
+    fs::write(source.join("ChatGPT.exe"), b"desktop fixture").unwrap();
+    fs::write(source.join("resources/codex.exe"), b"cli fixture").unwrap();
+    let root = temp.path().join("Dodex");
+    let verify = |_: &Path| Ok("test runtime hash".to_owned());
+    let instance = ensure_instance(&root, || Ok(source.clone()), &verify).unwrap();
+    assert!(instance.runtime_app.is_file());
+    assert!(instance.codex_home.join(".sandbox-bin").is_dir());
+    assert!(!instance.codex_home.join("auth.json").exists());
+    let config = configuration(&instance) + "\nmodel = 'personal-model'\n";
+    fs::write(instance.codex_home.join("config.toml"), &config).unwrap();
+    fs::write(
+        instance.codex_home.join("auth.json"),
+        b"private test credentials",
+    )
+    .unwrap();
+    fs::write(
+        instance.database_dir.join("history.sqlite"),
+        b"private test history",
+    )
+    .unwrap();
+    fs::remove_dir(instance.codex_home.join(".sandbox-bin")).unwrap();
+    let adopted = ensure_instance(
+        &root,
+        || panic!("existing profile must not discover/copy runtime"),
+        &verify,
+    )
+    .unwrap();
+    assert_eq!(adopted, instance);
+    assert!(instance.codex_home.join(".sandbox-bin").is_dir());
+    assert_eq!(
+        fs::read_to_string(instance.codex_home.join("config.toml")).unwrap(),
+        config
+    );
+    assert_eq!(
+        fs::read(instance.codex_home.join("auth.json")).unwrap(),
+        b"private test credentials"
+    );
+    assert_eq!(
+        fs::read(instance.database_dir.join("history.sqlite")).unwrap(),
+        b"private test history"
+    );
+}
+
+#[test]
+fn ensure_rejects_existing_unknown_profile_without_deploying_over_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("Dodex");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("personal.txt"), b"keep me").unwrap();
+    assert!(
+        ensure_instance(
+            &root,
+            || panic!("unknown existing profile must not be overwritten"),
+            &|_| Ok(String::new())
+        )
+        .is_err()
+    );
+    assert_eq!(fs::read(root.join("personal.txt")).unwrap(), b"keep me");
+    assert!(!root.join(MANIFEST).exists());
+}
+
+#[test]
 fn sandbox_preparation_preserves_existing_helpers_and_rejects_files() {
     let home = tempfile::tempdir().unwrap();
     prepare_sandbox_bin(home.path()).unwrap();

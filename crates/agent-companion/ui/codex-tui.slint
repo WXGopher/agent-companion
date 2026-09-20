@@ -229,11 +229,11 @@ export component CodexTuiWindow inherits Window {
                     alignment: start;
                     spacing: 20px;
                     Text { text: "独立的第二个 Codex"; color: SettingsColors.text; font-size: 22px; font-weight: 600; }
-                    Text { text: "Dodex 使用独立账号、历史和配置。部署后打开并登录。"; color: SettingsColors.secondary; wrap: word-wrap; }
+                    Text { text: "启用时自动检查或创建独立环境，并设置 shell 的 dodex 命令。首次打开后登录第二个账号。"; color: SettingsColors.secondary; wrap: word-wrap; }
                     CheckBox {
                         text: "启用 Dodex 支持";
                         checked: root.dual-enabled;
-                        enabled: root.dual-deployed && !root.dual-busy;
+                        enabled: !root.dual-busy;
                         toggled => { root.toggle-dual(self.checked); }
                     }
                     HorizontalLayout {

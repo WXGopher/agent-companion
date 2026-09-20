@@ -14,6 +14,8 @@ use std::{
 const MANIFEST: &str = "companion-deployment.json";
 const READY: &str = "环境已就绪。打开 Dodex 后，请使用第二个账号登录。";
 
+mod shell;
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InstanceConfig {
     pub codex_home: PathBuf,
@@ -141,7 +143,7 @@ pub fn status() -> DeploymentStatus {
                                     } else {
                                         None
                                     };
-                                    Ok((instance, saved.enabled))
+                                    Ok((instance, saved.enabled, None))
                                 });
                             });
                         } else {
@@ -187,7 +189,7 @@ pub fn active_instance() -> Option<InstanceConfig> {
 }
 
 fn perform(
-    action: impl FnOnce() -> Result<(Option<InstanceConfig>, bool), String>,
+    action: impl FnOnce() -> Result<(Option<InstanceConfig>, bool, Option<String>), String>,
 ) -> Result<DeploymentStatus, String> {
     let _guard = OPERATION.try_lock().map_err(|_| "双开操作正在进行。")?;
     {
@@ -217,21 +219,24 @@ fn perform(
     state.status.busy = false;
     state.stamp = current_root().ok().and_then(|root| preference_stamp(&root));
     match result {
-        Ok((instance, enabled)) => {
+        Ok((instance, enabled, message)) => {
             state.status.enabled = enabled;
             state.status.deployed = instance.is_some() || state.status.deployed;
             state.instance = instance;
             state.status.phase = if enabled { "ready" } else { "disabled" }.into();
-            state.status.message = if enabled {
-                READY
-            } else {
-                "双开支持已停用，Dodex 环境仍保留。"
-            }
-            .into();
+            state.status.message = message.unwrap_or_else(|| {
+                if enabled {
+                    READY
+                } else {
+                    "双开支持已停用，Dodex 环境仍保留。"
+                }
+                .into()
+            });
             Ok(state.status.clone())
         }
         Err(error) => {
             state.status.enabled = false;
+            state.status.deployed = current_root().is_ok_and(|root| root.join(MANIFEST).is_file());
             state.instance = None;
             state.status.phase = "failed".into();
             state.status.message = error.clone();
@@ -241,72 +246,91 @@ fn perform(
 }
 
 pub fn set_enabled(enabled: bool) -> Result<DeploymentStatus, String> {
+    if enabled {
+        return deploy();
+    }
     perform(|| {
         let root = current_root()?;
-        let instance = if enabled {
-            Some(validate(&root, true)?.instance)
-        } else {
-            None
-        };
-        save_preference(&root, enabled)?;
-        Ok((instance, enabled))
+        save_preference(&root, false)?;
+        Ok((None, false, None))
     })
 }
 
 pub fn deploy() -> Result<DeploymentStatus, String> {
     perform(|| {
         let root = current_root()?;
-        validate_primary_separation(&root)?;
-        if root.exists() {
-            let manifest = validate(&root, true)?;
-            prepare_sandbox_bin(&manifest.instance.codex_home)?;
-            save_preference(&root, true)?;
-            return Ok((Some(manifest.instance), true));
-        }
-        let source = official_runtime()?;
-        let parent = root.parent().unwrap();
-        fs::create_dir_all(parent).map_err(|_| "无法创建双开目录。")?;
-        no_redirects(parent)?;
-        let stage = tempfile::Builder::new()
-            .prefix("dodex-")
-            .tempdir_in(parent)
-            .map_err(|_| "无法创建部署临时目录。")?;
+        let instance =
+            ensure_instance(&root, official_runtime, &|path| verify_runtime(path, false))?;
         shared()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .status
-            .phase = "copying".into();
-        copy_tree(&source, &stage.path().join("runtime"))?;
-        let instance = InstanceConfig::at(&root);
-        for directory in [
-            "codex-home/sqlite",
-            "desktop-data/logs",
-            "desktop-data/Cache",
-        ] {
-            fs::create_dir_all(stage.path().join(directory)).map_err(|_| "无法创建隔离目录。")?;
-        }
-        prepare_sandbox_bin(&stage.path().join("codex-home"))?;
-        fs::write(
-            stage.path().join("codex-home/config.toml"),
-            configuration(&instance),
-        )
-        .map_err(|_| "无法创建独立配置。")?;
-        let archive_hash = verify_runtime(&stage.path().join("runtime"), false)?;
-        let manifest = Manifest {
-            schema: 1,
-            instance: instance.clone(),
-            archive_hash,
-        };
-        fs::write(
-            stage.path().join(MANIFEST),
-            serde_json::to_vec_pretty(&manifest).unwrap(),
-        )
-        .map_err(|_| "无法保存部署清单。")?;
-        // Renaming a directory never replaces an existing Windows destination.
-        fs::rename(stage.path(), &root).map_err(|_| "已有双开环境或部署冲突；未覆盖任何文件。")?;
+            .phase = "shell".into();
+        let shell = shell::ensure()?;
         save_preference(&root, true)?;
-        Ok((Some(instance), true))
+        Ok((
+            Some(instance),
+            true,
+            Some(format!("{READY} {}", shell.message())),
+        ))
     })
+}
+
+/// Both the checkbox and the deploy/repair button use this path. A valid
+/// existing profile is adopted without copying or rewriting any user data.
+fn ensure_instance(
+    root: &Path,
+    source: impl FnOnce() -> Result<PathBuf, String>,
+    verify: &impl Fn(&Path) -> Result<String, String>,
+) -> Result<InstanceConfig, String> {
+    validate_primary_separation(root)?;
+    no_redirects(root)?;
+    if root.exists() {
+        let manifest = validate_with(root, true, verify)?;
+        prepare_sandbox_bin(&manifest.instance.codex_home)?;
+        return Ok(manifest.instance);
+    }
+    let source = source()?;
+    let parent = root.parent().ok_or("无效的双开目录。")?;
+    fs::create_dir_all(parent).map_err(|_| "无法创建双开目录。")?;
+    no_redirects(parent)?;
+    let stage = tempfile::Builder::new()
+        .prefix("dodex-")
+        .tempdir_in(parent)
+        .map_err(|_| "无法创建部署临时目录。")?;
+    shared()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .status
+        .phase = "copying".into();
+    copy_tree(&source, &stage.path().join("runtime"))?;
+    let instance = InstanceConfig::at(root);
+    for directory in [
+        "codex-home/sqlite",
+        "desktop-data/logs",
+        "desktop-data/Cache",
+    ] {
+        fs::create_dir_all(stage.path().join(directory)).map_err(|_| "无法创建隔离目录。")?;
+    }
+    prepare_sandbox_bin(&stage.path().join("codex-home"))?;
+    fs::write(
+        stage.path().join("codex-home/config.toml"),
+        configuration(&instance),
+    )
+    .map_err(|_| "无法创建独立配置。")?;
+    let manifest = Manifest {
+        schema: 1,
+        instance: instance.clone(),
+        archive_hash: verify(&stage.path().join("runtime"))?,
+    };
+    fs::write(
+        stage.path().join(MANIFEST),
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .map_err(|_| "无法保存部署清单。")?;
+    // Renaming a directory never replaces an existing Windows destination.
+    fs::rename(stage.path(), root).map_err(|_| "已有双开环境或部署冲突；未覆盖任何文件。")?;
+    Ok(instance)
 }
 
 fn configuration(instance: &InstanceConfig) -> String {
@@ -334,6 +358,14 @@ fn prepare_sandbox_bin(home: &Path) -> Result<(), String> {
 }
 
 fn validate(root: &Path, runtime: bool) -> Result<Manifest, String> {
+    validate_with(root, runtime, &|path| verify_runtime(path, false))
+}
+
+fn validate_with(
+    root: &Path,
+    runtime: bool,
+    verify: &impl Fn(&Path) -> Result<String, String>,
+) -> Result<Manifest, String> {
     no_redirects(root)?;
     let manifest: Manifest = read_json(&root.join(MANIFEST))?;
     if manifest.schema != 1 || manifest.instance != InstanceConfig::at(root) {
@@ -366,7 +398,7 @@ fn validate(root: &Path, runtime: bool) -> Result<Manifest, String> {
     }
     let config = fs::read_to_string(config_path).map_err(|_| "独立配置缺失。")?;
     validate_config(&config, instance)?;
-    if runtime && verify_runtime(&root.join("runtime"), false)? != manifest.archive_hash {
+    if runtime && verify(&root.join("runtime"))? != manifest.archive_hash {
         return Err("Dodex 运行程序已改变，请检查部署环境。".into());
     }
     Ok(manifest)

@@ -344,7 +344,7 @@ fn codex_tui_editor_renders_and_applies_only_explicit_actions(
         draw(&window, &format!("windows-dual-editor-{scale}"));
         editor
             .window
-            .set_dual_message("环境已就绪。打开 Dodex 后，请使用第二个账号登录。".into());
+            .set_dual_message("环境已就绪。打开 Dodex 后，请使用第二个账号登录。dodex 命令目录：C:\\Users\\Example User\\AppData\\Local\\AgentCompanion\\bin。已加入用户 PATH；请完全退出并重开终端后运行 dodex，旧终端不会自动更新 PATH。".into());
         editor.window.set_dual_deployed(true);
         editor.window.set_settings_page(3);
         draw(&window, &format!("windows-dual-settings-{scale}"));

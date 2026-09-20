@@ -541,6 +541,7 @@ impl Editor {
                 "copying" => "正在复制官方运行程序…",
                 "configuring" => "正在创建独立环境…",
                 "verifying" => "正在验证隔离与签名…",
+                "shell" => "正在设置 dodex 命令…",
                 "finishing" => "正在完成部署…",
                 _ => "正在检查双开环境…",
             }

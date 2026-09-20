@@ -61,14 +61,7 @@ struct Cli {
 enum Command {
     /// Open the explicitly deployed, isolated Dodex desktop instance.
     #[cfg(windows)]
-    Dodex {
-        /// Deploy or validate the isolated runtime without opening it.
-        #[arg(long, conflicts_with = "check")]
-        deploy: bool,
-        /// Check the locally installed official runtime without deploying it.
-        #[arg(long)]
-        check: bool,
-    },
+    Dodex(DodexArgs),
     /// Open the standalone Codex CLI status bar editor. Apply, close, then restart Codex.
     CodexTui,
     /// Show the compact Codex task and weekly usage notch.
@@ -89,6 +82,38 @@ enum Command {
     /// Launch Codex with Agent Companion question cards (experimental app-server transport).
     #[cfg(windows)]
     Codex(codex::Args),
+}
+
+#[cfg(windows)]
+#[derive(Debug, clap::Args)]
+struct DodexArgs {
+    /// Create or validate the isolated runtime and repair shell support, without opening it.
+    #[arg(long, conflicts_with = "check")]
+    deploy: bool,
+    /// Check the locally installed official runtime without deploying it.
+    #[arg(long)]
+    check: bool,
+}
+
+/// The installed native command is a stable copy of this executable. Parsing it
+/// directly avoids cmd/PowerShell quoting and preserves every original argument.
+#[cfg(windows)]
+#[derive(Debug, Parser)]
+#[command(
+    name = "dodex",
+    version,
+    about = "Open the isolated second Codex desktop instance."
+)]
+struct DodexCli {
+    #[command(flatten)]
+    options: DodexArgs,
+}
+
+#[cfg(windows)]
+fn is_dodex_executable(executable: &std::path::Path) -> bool {
+    executable
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("dodex.exe"))
 }
 
 /// A GUI-subsystem process launched from a shell starts with no console and no
@@ -112,19 +137,31 @@ fn attach_parent_console() {
 }
 
 fn main() -> ExitCode {
+    #[cfg(windows)]
+    let standalone_dodex =
+        std::env::current_exe().is_ok_and(|executable| is_dodex_executable(&executable));
     // Only the subcommands belong on a terminal. The bare app must never
     // attach: launched from a shell-adjacent parent (a scripted start, a
     // hotkey runner), attaching would spill its startup banner into whatever
     // TUI happens to own that console.
     #[cfg(windows)]
-    if std::env::args_os().nth(1).is_some() {
+    if standalone_dodex || std::env::args_os().nth(1).is_some() {
         attach_parent_console();
     }
+    #[cfg(windows)]
+    let cli = if standalone_dodex {
+        Cli {
+            command: Some(Command::Dodex(DodexCli::parse().options)),
+        }
+    } else {
+        Cli::parse()
+    };
+    #[cfg(not(windows))]
     let cli = Cli::parse();
 
     let result = match cli.command {
         #[cfg(windows)]
-        Some(Command::Dodex { deploy, check }) => {
+        Some(Command::Dodex(DodexArgs { deploy, check })) => {
             let result = if check {
                 windows_deployment::check_runtime()
             } else if deploy {
@@ -159,5 +196,49 @@ fn main() -> ExitCode {
             errln!("agent-companion: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn installed_dodex_has_its_own_cli_and_keeps_deployment_flags() {
+        assert!(is_dodex_executable(std::path::Path::new(
+            r"C:\用户\a & b's %tools%!\DoDeX.EXE"
+        )));
+        assert!(!is_dodex_executable(std::path::Path::new(
+            "agent-companion.exe"
+        )));
+        let defaults = DodexCli::try_parse_from(["dodex"]).unwrap();
+        assert!(!defaults.options.deploy && !defaults.options.check);
+        assert!(
+            DodexCli::try_parse_from(["dodex", "--deploy"])
+                .unwrap()
+                .options
+                .deploy
+        );
+        assert!(
+            DodexCli::try_parse_from(["dodex", "--check"])
+                .unwrap()
+                .options
+                .check
+        );
+        assert!(DodexCli::try_parse_from(["dodex", "--deploy", "--check"]).is_err());
+        assert!(DodexCli::try_parse_from(["dodex", "--unknown"]).is_err());
+        assert!(DodexCli::try_parse_from(["dodex", "a b&c'd%!"]).is_err());
+        let help = DodexCli::try_parse_from(["dodex", "--help"]).unwrap_err();
+        assert_eq!(help.kind(), clap::error::ErrorKind::DisplayHelp);
+        assert!(help.to_string().contains("Usage: dodex"));
+        assert!(matches!(
+            Cli::try_parse_from(["agent-companion", "dodex", "--deploy"])
+                .unwrap()
+                .command,
+            Some(Command::Dodex(DodexArgs {
+                deploy: true,
+                check: false
+            }))
+        ));
     }
 }
