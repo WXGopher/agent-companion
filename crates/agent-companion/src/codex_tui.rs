@@ -569,6 +569,13 @@ impl Editor {
         }
     }
 
+    #[cfg(windows)]
+    pub(crate) fn show_deployment_error(&self, error: String) {
+        *self.deployment_error.borrow_mut() = Some(error);
+        self.window.set_settings_page(3);
+        self.refresh_deployment();
+    }
+
     #[cfg(any(target_os = "macos", windows))]
     fn select_instance(&self, label: &str) {
         let secondary = match label {

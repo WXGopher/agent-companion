@@ -204,6 +204,7 @@ struct App {
     subscription: RefCell<subscription::Monitor>,
     secondary: RefCell<Option<instances::Secondary>>,
     selected_subscription: Cell<bool>,
+    launching_dodex: Cell<bool>,
     display: RefCell<display::DisplayState>,
     /// Claude's usage arrives over the network, so it comes back on a channel
     /// rather than being read inline: an eight-second timeout on the UI thread
@@ -264,6 +265,7 @@ impl App {
             subscription: RefCell::new(subscription::Monitor::default()),
             secondary: RefCell::new(None),
             selected_subscription: Cell::new(false),
+            launching_dodex: Cell::new(false),
             display: RefCell::new(display),
             limits_tx,
             limits_rx,
@@ -532,7 +534,7 @@ impl App {
         );
     }
 
-    /// The readout's right-click menu: the same two commands the tray offers,
+    /// The readout's right-click menu: the same commands the tray offers,
     /// in the same words. A native menu, so it dismisses like every other
     /// taskbar menu and never fights the panel for space.
     fn readout_menu(self: &Rc<Self>) {
@@ -540,9 +542,18 @@ impl App {
         let Some(handle) = self.bar.window_handle() else {
             return;
         };
-        match win::popup_menu(handle, &["Settings…", "-", "Quit Agent Companion"]) {
+        match win::popup_menu(
+            handle,
+            &[
+                ("Settings…", true),
+                (tray::DODEX_LABEL, self.can_open_dodex()),
+                ("-", true),
+                ("Quit Agent Companion", true),
+            ],
+        ) {
             Some(0) => self.open_settings(),
-            Some(2) => {
+            Some(1) => self.open_dodex(),
+            Some(3) => {
                 self.close_flyout();
                 slint::quit_event_loop().ok();
             }
@@ -1314,6 +1325,7 @@ impl App {
     fn refresh_tray_icon(&self) {
         let tray = self.tray.borrow();
         let Some(tray) = tray.as_ref() else { return };
+        tray.set_dodex_enabled(self.can_open_dodex());
 
         let mut tasks: Vec<_> = AGENTS
             .into_iter()
@@ -1361,6 +1373,7 @@ impl App {
         for command in commands {
             match command {
                 TrayCommand::OpenSettings => self.open_settings(),
+                TrayCommand::OpenDodex => self.open_dodex(),
                 TrayCommand::Quit => {
                     self.close_flyout();
                     slint::quit_event_loop().ok();
@@ -1368,6 +1381,34 @@ impl App {
                 TrayCommand::ToggleFlyout(rect) => self.toggle_flyout(rect, Anchor::Tray),
             }
         }
+    }
+
+    fn can_open_dodex(&self) -> bool {
+        self.secondary.borrow().is_some() && !self.launching_dodex.get()
+    }
+
+    fn open_dodex(self: &Rc<Self>) {
+        if !self.can_open_dodex() {
+            return;
+        }
+        self.close_flyout();
+        self.launching_dodex.set(true);
+        self.refresh_tray_icon();
+        std::thread::spawn(|| {
+            let result = crate::windows_deployment::launch(None);
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(app) = APP.with(|slot| slot.borrow().clone()) {
+                    app.launching_dodex.set(false);
+                    app.refresh_tray_icon();
+                    if let Err(error) = result {
+                        app.open_settings();
+                        if let Some(editor) = app.codex_tui_editor.borrow().as_ref() {
+                            editor.show_deployment_error(error);
+                        }
+                    }
+                }
+            });
+        });
     }
 
     fn set_taskbar_enabled(self: &Rc<Self>, enabled: bool) {
@@ -2157,12 +2198,7 @@ enum Anchor {
     Readout,
 }
 
-/// The detail panel's usage block: an agent per section, its tightest number
-/// large in the heading, and one bar per window under it.
-///
-/// The bar is the point. The panel used to be a column of sentences in one
-/// shade and one weight, and finding the window that was about to run out meant
-/// reading every line; a short bar is short from across the room.
+/// Extra Claude usage below the tasks. Codex instances have quota cards above.
 fn usage_sections(
     usage: &UsageSnapshot,
     visible: &[HookSource],
@@ -2172,7 +2208,9 @@ fn usage_sections(
     warn_at: i64,
 ) -> Vec<ui::UsageRow> {
     let mut rows = Vec::new();
-    for agent in AGENTS {
+    // Codex and Dodex already have instance quota cards above the task list.
+    // Keep these extra legacy rows only for Claude, which has no such card.
+    for agent in [HookSource::Claude] {
         if !visible.contains(&agent) {
             continue;
         }
@@ -2428,8 +2466,8 @@ mod tests {
     #[test]
     fn expired_usage_windows_drop_their_reset_labels() {
         let rows = usage_sections(&both_agents(), &AGENTS, NOW, 0, 50, 20);
-        assert_eq!(rows.len(), 7);
-        assert_eq!(rows.iter().filter(|row| row.heading).count(), 2);
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows.iter().filter(|row| row.heading).count(), 1);
         assert_eq!(rows.iter().filter(|row| !row.resets.is_empty()).count(), 3);
         let expired = usage_sections(&both_agents(), &AGENTS, NOW + 6 * 86_400, 0, 50, 20);
         assert!(expired.iter().all(|row| row.resets.is_empty()));
@@ -2450,14 +2488,7 @@ mod tests {
         assert!((rows[1].fill - 0.92).abs() < 0.001);
         assert!(rows[1].resets.starts_with("Resets "));
 
-        assert_eq!(rows[4].label, "codex");
-        assert_eq!(
-            (rows[4].value.as_str(), rows[4].tier.as_str()),
-            ("15%", "low")
-        );
-        // Codex reported no reset times, so those rows carry none rather than
-        // an empty "resets".
-        assert_eq!(rows[6].resets, "");
+        assert_eq!(rows.len(), 4, "Codex must not appear below its quota card");
         // And nothing says what plan anybody is on any more.
         assert!(
             !rows.iter().any(|row| row.label.contains("plan")),
@@ -2467,9 +2498,16 @@ mod tests {
 
     #[test]
     fn a_section_appears_for_a_running_agent_with_nothing_to_report() {
-        let rows = usage_sections(&UsageSnapshot::default(), &[CODEX], NOW, 0, 50, 20);
+        let rows = usage_sections(
+            &UsageSnapshot::default(),
+            &[HookSource::Claude],
+            NOW,
+            0,
+            50,
+            20,
+        );
         assert_eq!(rows.len(), 2);
-        assert!(rows[0].heading && rows[0].label == "codex");
+        assert!(rows[0].heading && rows[0].label == "claude");
         assert_eq!(rows[0].value, "");
         assert_eq!(rows[1].label, "no data");
 
@@ -2481,9 +2519,7 @@ mod tests {
     #[test]
     fn cached_limits_cannot_restore_a_hidden_agent_in_the_details() {
         let rows = usage_sections(&both_agents(), &[CODEX], NOW, 0, 50, 20);
-        assert_eq!(rows.len(), 3);
-        assert!(rows[0].heading && rows[0].label == "codex");
-        assert!(!rows.iter().any(|row| row.agent == "claude"));
+        assert!(rows.is_empty(), "Codex quota cards replace legacy bars");
         assert!(usage_sections(&both_agents(), &[], NOW, 0, 50, 20).is_empty());
     }
 

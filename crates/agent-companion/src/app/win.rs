@@ -84,22 +84,27 @@ pub fn within_window(window: Option<isize>, container: Option<isize>) -> bool {
 }
 
 /// A native context menu at the cursor, blocking until the user picks or
-/// dismisses. Returns the index into `labels` of the pick; a `"-"` label is a
-/// separator, which occupies an index but can never be returned.
+/// dismisses. Returns the index into `items` of the pick; a `"-"` label is a
+/// separator. Separators and disabled items can never be returned.
 ///
 /// Native rather than a Slint window because that is what a context menu on a
 /// taskbar control is: it dismisses when the user clicks anywhere else, it
 /// clips nowhere, and it matches the tray icon's own menu exactly.
-pub fn popup_menu(owner: isize, labels: &[&str]) -> Option<usize> {
+pub fn popup_menu(owner: isize, items: &[(&str, bool)]) -> Option<usize> {
     let window = hwnd(owner);
     unsafe {
         let menu = CreatePopupMenu().ok()?;
-        for (index, label) in labels.iter().enumerate() {
+        for (index, (label, enabled)) in items.iter().enumerate() {
             let appended = if *label == "-" {
                 AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null())
             } else {
                 let wide: Vec<u16> = label.encode_utf16().chain(std::iter::once(0)).collect();
-                AppendMenuW(menu, MF_STRING, index + 1, PCWSTR(wide.as_ptr()))
+                let flags = if *enabled {
+                    MF_STRING
+                } else {
+                    MF_STRING | MF_GRAYED
+                };
+                AppendMenuW(menu, flags, index + 1, PCWSTR(wide.as_ptr()))
             };
             if appended.is_err() {
                 let _ = DestroyMenu(menu);

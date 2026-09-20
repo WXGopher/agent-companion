@@ -544,7 +544,7 @@ fn render_readme_flyout(
     windows: &Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>,
 ) {
     let panel = super::ui::FlyoutWindow::new().unwrap();
-    panel.set_active_count(4);
+    panel.set_active_count(2);
     panel.set_finished_count(2);
     panel.set_sessions(ModelRc::new(VecModel::from(
         [
@@ -570,18 +570,57 @@ fn render_readme_flyout(
             ),
         ]
         .into_iter()
+        .take(2)
         .enumerate()
         .map(|(n, (title, detail, phase))| super::ui::SessionRow {
             id: format!("example-{n}").into(),
             title: title.into(),
-            detail: detail.into(),
+            detail: format!("{} · {detail}", if n % 2 == 0 { "Codex" } else { "Dodex" }).into(),
             phase: phase.into(),
-            source: "codex".into(),
+            source: if n % 2 == 0 {
+                "codex".into()
+            } else {
+                "dodex".into()
+            },
             jumpable: true,
         })
         .collect::<Vec<_>>(),
     )));
-    panel.set_usage_rows(source.get_subscription_limits());
+    panel.set_dual_enabled(true);
+    panel.set_instance_quotas(ModelRc::new(VecModel::from(vec![
+        super::ui::UsageRow {
+            agent: "codex".into(),
+            label: "Codex".into(),
+            value: "82%".into(),
+            tier: "good".into(),
+            resets: "Week · resets Tue 09:00".into(),
+            ..Default::default()
+        },
+        super::ui::UsageRow {
+            agent: "dodex".into(),
+            label: "Dodex".into(),
+            value: "27%".into(),
+            tier: "warn".into(),
+            resets: "Week · resets Fri 18:00".into(),
+            ..Default::default()
+        },
+    ])));
+    let usage = super::UsageSnapshot {
+        codex: Some(agent_companion_core::usage::parse_codex_rate_limits(
+            &serde_json::json!({
+                "secondary": { "used_percent": 18, "window_minutes": 10080 }
+            }),
+        )),
+        ..Default::default()
+    };
+    panel.set_usage_rows(ModelRc::new(VecModel::from(super::usage_sections(
+        &usage,
+        &[super::HookSource::Codex],
+        0,
+        0,
+        50,
+        20,
+    ))));
     panel.set_subscription(source.get_subscription());
     panel.set_subscription_limits(source.get_subscription_limits());
     panel.set_usage_days(source.get_usage_days());
