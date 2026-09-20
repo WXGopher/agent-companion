@@ -1,4 +1,4 @@
-import { Button } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox } from "std-widgets.slint";
 import { MacSettings } from "macos-settings.slint";
 import { AppSettings } from "settings.slint";
 import { SettingsColors } from "settings-common.slint";
@@ -10,6 +10,7 @@ export { Palette } from "std-widgets.slint";
 export component CodexTuiWindow inherits Window {
     in property <string> window-title: "Agent Companion · Codex TUI";
     title: root.window-title;
+    default-font-family: root.windows-preferences ? "Microsoft YaHei UI" : "";
     preferred-width: root.macos-preferences ? 920px : 820px;
     preferred-height: root.macos-preferences ? 760px : 720px;
     min-width: root.macos-preferences ? 820px : 720px;
@@ -94,6 +95,7 @@ export component CodexTuiWindow inherits Window {
     callback toggle-menu-bar(bool);
     callback toggle-notch(bool);
     callback deploy-dual();
+    callback open-dual();
     callback toggle-dual(bool);
     callback select-instance(string);
     callback toggle(string, bool);
@@ -156,10 +158,20 @@ export component CodexTuiWindow inherits Window {
             if root.windows-preferences: HorizontalLayout {
                 height: 36px;
                 spacing: 8px;
-                for label[index] in ["Codex CLI", "Taskbar & app", "Integrations"]: Button {
+                for label[index] in ["Codex CLI", "Taskbar & app", "Integrations", "Codex 双开"]: Button {
                     text: label;
                     primary: root.settings-page == index;
                     clicked => { root.settings-page = index; }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+            if root.settings-page == 0 && root.instance-options.length > 1: HorizontalLayout {
+                height: 32px;
+                Text { text: "Instance"; color: SettingsColors.secondary; vertical-alignment: center; }
+                ComboBox {
+                    model: root.instance-options;
+                    current-index <=> root.selected-instance;
+                    selected(label) => { root.select-instance(label); }
                 }
                 Rectangle { horizontal-stretch: 1; }
             }
@@ -184,7 +196,7 @@ export component CodexTuiWindow inherits Window {
                     restore-defaults => { root.restore-defaults(); }
                 }
                 AppSettings {
-                    visible: root.windows-preferences && root.settings-page != 0;
+                    visible: root.windows-preferences && (root.settings-page == 1 || root.settings-page == 2);
                     integrations: root.settings-page == 2;
                     dirty: root.dirty;
                     review => { root.settings-page = 0; }
@@ -212,6 +224,26 @@ export component CodexTuiWindow inherits Window {
                     set-run-at-login(enabled) => { root.set-run-at-login(enabled); }
                     set-agent-shown(agent, shown) => { root.set-agent-shown(agent, shown); }
                     set-thresholds(good, warn) => { root.set-thresholds(good, warn); }
+                }
+                if root.windows-preferences && root.settings-page == 3: VerticalLayout {
+                    alignment: start;
+                    spacing: 20px;
+                    Text { text: "独立的第二个 Codex"; color: SettingsColors.text; font-size: 22px; font-weight: 600; }
+                    Text { text: "Dodex 使用独立账号、历史和配置。部署后打开并登录。"; color: SettingsColors.secondary; wrap: word-wrap; }
+                    CheckBox {
+                        text: "启用 Dodex 支持";
+                        checked: root.dual-enabled;
+                        enabled: root.dual-deployed && !root.dual-busy;
+                        toggled => { root.toggle-dual(self.checked); }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Button { text: root.dual-deployed ? "检查并接入" : "部署双开环境"; enabled: !root.dual-busy; clicked => { root.deploy-dual(); } }
+                        Button { text: "打开 Dodex"; enabled: root.dual-enabled && !root.dual-busy; clicked => { root.open-dual(); } }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                    Text { text: root.dual-busy ? root.dual-phase : root.dual-message; color: root.dual-error ? #d9534f : SettingsColors.secondary; wrap: word-wrap; }
+                    Text { text: "停用后保留环境。运行程序更新或卸载需手动处理。"; color: SettingsColors.secondary; wrap: word-wrap; }
                 }
             }
         }

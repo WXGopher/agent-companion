@@ -132,6 +132,10 @@ export component FlyoutWindow inherits Window {
     in property <[UsageRow]> subscription-limits;
     in property <[UsageDay]> usage-days;
     in property <SubscriptionView> subscription;
+    in property <[UsageRow]> instance-quotas;
+    in property <bool> dual-enabled;
+    in property <bool> secondary-selected;
+    callback select-instance(bool);
     callback expand();
     callback jump(string);
     callback select-page(bool);
@@ -191,6 +195,20 @@ export component FlyoutWindow inherits Window {
                             alignment: start;
                             spacing: 14px;
                             padding-right: 4px;
+                            for quota in root.instance-quotas: Rectangle {
+                                height: 58px;
+                                border-radius: 8px;
+                                background: quota-touch.has-hover ? Theme.soft-hot : Theme.soft;
+                                HorizontalLayout {
+                                    padding: 10px;
+                                    VerticalLayout {
+                                        Text { text: quota.label; color: Theme.text; font-size: 12px; font-weight: 600; }
+                                        Text { text: quota.resets; color: Theme.faint; font-size: 10px; overflow: elide; }
+                                    }
+                                    Text { text: quota.value; color: quota.tier == "good" ? Theme.plenty : quota.tier == "warn" ? Theme.thin : quota.tier == "low" ? Theme.spent : Theme.dim; font-size: 20px; horizontal-alignment: right; vertical-alignment: center; }
+                                }
+                                quota-touch := TouchArea { mouse-cursor: pointer; clicked => { root.select-instance(quota.agent == "dodex"); } }
+                            }
                             if root.sessions.length == 0: Text { text: root.finished ? "No finished tasks" : "No active tasks"; color: Theme.dim; font-size: 12px; }
                             SessionList { sessions: root.sessions; pulse: root.pulse; jump(id) => { root.jump(id); } }
                             if root.usage-rows.length > 0: Rectangle { height: 1px; background: Theme.hairline; }
@@ -201,6 +219,12 @@ export component FlyoutWindow inherits Window {
                 VerticalLayout {
                     visible: root.usage-page;
                     spacing: 10px;
+                    if root.dual-enabled: HorizontalLayout {
+                        height: 28px;
+                        PanelButton { label: "Codex"; selected: !root.secondary-selected; clicked => { root.select-instance(false); } }
+                        PanelButton { label: "Dodex"; selected: root.secondary-selected; clicked => { root.select-instance(true); } }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
                     HorizontalLayout {
                         height: 28px;
                         Text { text: root.subscription.loading ? "Refreshing…" : root.subscription.updated; color: Theme.dim; font-size: 10px; vertical-alignment: center; }
@@ -220,7 +244,7 @@ export component FlyoutWindow inherits Window {
             Rectangle { height: 1px; background: Theme.hairline; }
             HorizontalLayout {
                 height: 28px;
-                Text { text: root.usage-page ? "Codex subscription" : "Click a task to return to it"; color: Theme.faint; font-size: 10px; vertical-alignment: center; }
+                Text { text: root.usage-page ? (root.secondary-selected ? "Dodex subscription" : "Codex subscription") : "Click a task to return to it"; color: Theme.faint; font-size: 10px; vertical-alignment: center; }
                 PanelButton { label: "Settings"; horizontal-stretch: 0; clicked => { root.settings(); } }
             }
         }

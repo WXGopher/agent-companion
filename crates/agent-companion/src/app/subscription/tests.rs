@@ -1,5 +1,45 @@
 use super::*;
 
+#[test]
+fn slow_reads_start_cache_lifetime_at_completion_and_instances_stay_separate() {
+    let mut primary = Monitor::default();
+    let mut secondary = Monitor::default();
+    primary.completed_at = Some(Instant::now() - CACHE_TTL - Duration::from_secs(20));
+    let (tx, rx) = mpsc::channel();
+    primary.receiver = Some(rx);
+    let limits = serde_json::from_value(json!({"rateLimits":{"limitId":"codex","secondary":{"usedPercent":12,"windowDurationMins":10080,"resetsAt":2000}}})).unwrap();
+    tx.send(Snapshot {
+        limits: Some(limits),
+        ..Default::default()
+    })
+    .unwrap();
+    assert!(primary.poll());
+    assert_eq!(primary.weekly(1000), Some((88, Some(2000))));
+    assert!(primary.completed_at.unwrap().elapsed() < Duration::from_secs(2));
+    assert!(secondary.weekly(1000).is_none());
+    secondary.stop();
+    assert_eq!(primary.weekly(1000), Some((88, Some(2000))));
+    assert!(primary.weekly(2000).is_none());
+    let fresh_local = agent_companion_core::usage::parse_codex_rate_limits(&json!({
+        "secondary":{"used_percent":5,"window_minutes":10080,"resets_at":4000}
+    }));
+    assert_eq!(
+        super::super::instances::weekly(Some(&fresh_local), &primary, 2001),
+        Some((95, Some(4000)))
+    );
+    primary.completed_at = Some(Instant::now() - CACHE_TTL);
+    assert!(primary.weekly(1000).is_none());
+}
+
+#[test]
+fn weekly_quota_does_not_borrow_other_buckets_or_short_windows() {
+    let limits: Limits = serde_json::from_value(json!({
+        "rateLimits":{"limitId":"other","secondary":{"usedPercent":10,"windowDurationMins":10080}},
+        "rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":1,"windowDurationMins":300}},"other":{"secondary":{"usedPercent":10,"windowDurationMins":10080}}}
+    })).unwrap();
+    assert!(limits.weekly(1000).is_none());
+}
+
 #[tokio::test]
 #[ignore = "reads the installed Codex subscription over the network"]
 async fn installed_codex_reports_subscription_usage() {
@@ -172,7 +212,7 @@ fn completed_reads_are_cached_and_cancelled_results_cannot_replace_them() {
     let home = PathBuf::from("usage-test-home");
     let mut monitor = Monitor::default();
     monitor.source_home = Some(home.clone());
-    monitor.last_attempt = Some(Instant::now());
+    monitor.completed_at = Some(Instant::now());
     monitor.refresh(home.clone(), false);
     assert!(
         !monitor.loading(),
@@ -187,8 +227,8 @@ fn completed_reads_are_cached_and_cancelled_results_cannot_replace_them() {
     monitor.cancel = Some(cancel);
     monitor.stop();
     assert!(
-        monitor.last_attempt.is_none(),
-        "an interrupted request can retry immediately"
+        monitor.completed_at.is_some(),
+        "cancelling a refresh preserves the completed cache lifetime"
     );
     assert!(cancelled.try_recv().is_ok());
     assert!(

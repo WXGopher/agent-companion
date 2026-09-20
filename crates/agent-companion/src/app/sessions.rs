@@ -44,12 +44,13 @@ pub struct CodexWatcher {
 
 impl CodexWatcher {
     pub fn new() -> Self {
+        Self::with_home(crate::windows_deployment::primary_home().ok())
+    }
+
+    pub fn with_home(home: Option<PathBuf>) -> Self {
         let (tx, rx) = mpsc::channel();
         Self {
-            home: std::env::var_os("CODEX_HOME")
-                .filter(|path| !path.is_empty())
-                .map(PathBuf::from)
-                .or_else(|| crate::util::home_dir().map(|home| home.join(".codex"))),
+            home,
             cache: Arc::new(Mutex::new(SessionCache::default())),
             tx,
             rx,
@@ -105,10 +106,15 @@ impl CodexWatcher {
         let spawned = std::thread::Builder::new()
             .name("agent-companion-codex-sessions".into())
             .spawn(move || {
+                let database = agent_companion_core::dashboard::database_home(&home);
                 let sessions = cache
                     .lock()
                     .unwrap_or_else(|held| held.into_inner())
-                    .scan(&home, agent_companion_core::now_unix_secs());
+                    .scan_with_database_home(
+                        &home,
+                        &database,
+                        agent_companion_core::now_unix_secs(),
+                    );
                 let usage = read_usage
                     .then(|| usage::scan_codex_usage_at(&home).ok().flatten())
                     .flatten();

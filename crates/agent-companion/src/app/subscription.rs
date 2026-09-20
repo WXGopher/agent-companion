@@ -93,6 +93,31 @@ pub struct Limits {
 }
 
 impl Limits {
+    pub fn weekly(&self, now: u64) -> Option<(i64, Option<u64>)> {
+        let bucket = self
+            .rate_limits_by_limit_id
+            .as_ref()
+            .and_then(|b| b.get("codex"))
+            .or_else(|| {
+                self.rate_limits
+                    .limit_id
+                    .as_deref()
+                    .is_none_or(|id| id == "codex")
+                    .then_some(&self.rate_limits)
+            })?;
+        let window = [&bucket.secondary, &bucket.primary]
+            .into_iter()
+            .flatten()
+            .find(|w| w.window_duration_mins == Some(10_080))
+            .or_else(|| {
+                bucket
+                    .secondary
+                    .as_ref()
+                    .filter(|w| w.window_duration_mins.is_none())
+            })?;
+        Some((window.remaining(now)?, window.resets_at))
+    }
+
     pub fn rows(&self, now: u64, offset: i64, good: i64, warn: i64) -> Vec<ui::UsageRow> {
         let mut buckets: Vec<_> = self
             .rate_limits_by_limit_id
@@ -230,13 +255,27 @@ pub fn day_count(value: Option<i64>) -> String {
 #[derive(Default)]
 pub struct Monitor {
     pub snapshot: Snapshot,
-    last_attempt: Option<Instant>,
+    completed_at: Option<Instant>,
     source_home: Option<PathBuf>,
+    executable: Option<PathBuf>,
     receiver: Option<mpsc::Receiver<Snapshot>>,
     cancel: Option<oneshot::Sender<()>>,
 }
 
 impl Monitor {
+    pub fn weekly(&self, now: u64) -> Option<(i64, Option<u64>)> {
+        self.completed_at.filter(|at| at.elapsed() < CACHE_TTL)?;
+        self.snapshot.limits.as_ref()?.weekly(now)
+    }
+
+    pub fn set_executable(&mut self, executable: Option<PathBuf>) {
+        if self.executable != executable {
+            self.stop();
+            self.snapshot = Snapshot::default();
+            self.completed_at = None;
+            self.executable = executable;
+        }
+    }
     pub fn loading(&self) -> bool {
         self.receiver.is_some()
     }
@@ -245,15 +284,15 @@ impl Monitor {
         if self.source_home.as_ref() != Some(&home) {
             self.stop();
             self.snapshot = Snapshot::default();
-            self.last_attempt = None;
+            self.completed_at = None;
             self.source_home = Some(home.clone());
         }
         if self.loading()
-            || (!force && self.last_attempt.is_some_and(|at| at.elapsed() < CACHE_TTL))
+            || (!force && self.completed_at.is_some_and(|at| at.elapsed() < CACHE_TTL))
         {
             return;
         }
-        self.last_attempt = Some(Instant::now());
+        let executable = self.executable.clone();
         let (tx, rx) = mpsc::channel();
         let (cancel, cancelled) = oneshot::channel();
         let spawned = std::thread::Builder::new()
@@ -267,7 +306,7 @@ impl Monitor {
                         tokio::select! {
                             biased;
                             _ = cancelled => None,
-                            result = read(home) => Some(result),
+                            result = read_with_executable(home, executable) => Some(result),
                         }
                     }),
                     Err(_) => Some(Snapshot::failure(
@@ -283,6 +322,7 @@ impl Monitor {
             self.cancel = Some(cancel);
         } else {
             self.snapshot = Snapshot::failure("Could not start the usage reader. Please refresh.");
+            self.completed_at = Some(Instant::now());
         }
     }
 
@@ -299,15 +339,13 @@ impl Monitor {
         };
         // Replace on failure, too: an old login must not survive a failed read.
         self.snapshot = result;
+        self.completed_at = Some(Instant::now());
         self.receiver = None;
         self.cancel = None;
         true
     }
 
     pub fn stop(&mut self) {
-        if self.loading() {
-            self.last_attempt = None;
-        }
         if let Some(cancel) = self.cancel.take() {
             let _ = cancel.send(());
         }
@@ -446,15 +484,22 @@ async fn exchange<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     Ok(snapshot)
 }
 
+#[cfg(test)]
 async fn read(home: PathBuf) -> Snapshot {
-    let Ok(executable) = crate::codex::executable(None) else {
+    read_with_executable(home, None).await
+}
+
+async fn read_with_executable(home: PathBuf, executable: Option<PathBuf>) -> Snapshot {
+    let Ok(executable) = crate::codex::executable(executable.as_ref()) else {
         return Snapshot::failure(
             "Install Codex CLI, then sign in with your ChatGPT subscription and refresh.",
         );
     };
     let result: io::Result<Snapshot> = async {
         let job = crate::codex::job::Job::new()?;
-        let mut child = tokio::process::Command::new(executable)
+        let database = agent_companion_core::dashboard::database_home(&home);
+        let command = crate::windows_deployment::isolated_command(&executable, &home, &database);
+        let mut child = tokio::process::Command::from(command)
             .args([
                 "app-server",
                 "--listen",
@@ -462,7 +507,6 @@ async fn read(home: PathBuf) -> Snapshot {
                 "-c",
                 "analytics.enabled=false",
             ])
-            .env("CODEX_HOME", &home)
             .current_dir(
                 crate::util::home_dir()
                     .ok_or_else(|| io::Error::other("home directory unavailable"))?,

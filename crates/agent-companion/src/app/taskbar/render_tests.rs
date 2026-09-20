@@ -36,7 +36,7 @@ fn idle_readout_rescales_its_pixels_and_repairs_size_without_changing_chips() {
     let bar = TaskbarView::new(super::TaskbarBar::new().unwrap());
     let chips = [Chip {
         agent: Some(HookSource::Codex),
-        value: "72%".into(),
+        value: "C 72%".into(),
         tier: "good",
         tasks: AgentTasks {
             done: 1,
@@ -51,7 +51,7 @@ fn idle_readout_rescales_its_pixels_and_repairs_size_without_changing_chips() {
         assert_eq!(window.scale_factor(), scale);
         assert_eq!(
             bar.physical_size(),
-            ((45.0 * scale).round() as i32, (39.0 * scale).round() as i32)
+            ((61.0 * scale).round() as i32, (39.0 * scale).round() as i32)
         );
         let pixels = draw(&window).expect("DPI changes repaint idle content");
         if let Some(dir) = agent_companion_core::compat::var_os("AGENT_COMPANION_RENDER_DIR") {
@@ -88,7 +88,7 @@ fn idle_readout_rescales_its_pixels_and_repairs_size_without_changing_chips() {
     window.set_size(slint::PhysicalSize::new(45, 39));
     let _ = draw(&window);
     bar.sync_scale(1.5);
-    assert_eq!(bar.physical_size(), (68, 59));
+    assert_eq!(bar.physical_size(), (92, 59));
     assert!(draw(&window).is_some());
 }
 

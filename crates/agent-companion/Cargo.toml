@@ -26,6 +26,8 @@ serde_json.workspace = true
 slint.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+toml_edit = "0.25.13"
+tempfile.workspace = true
 agent-companion-core = { workspace = true, features = ["server"] }
 tokio.workspace = true
 futures-util = { version = "0.3", features = ["sink"] }

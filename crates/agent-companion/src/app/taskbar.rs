@@ -75,7 +75,7 @@ const BLOCK_GAP: f32 = 4.0;
 const DOT: f32 = 7.0;
 const DOT_GAP: f32 = 4.0;
 /// Room for the widest number the readout ever shows.
-const VALUE_WIDTH: f32 = 26.0;
+const VALUE_WIDTH: f32 = 42.0;
 /// The gap between two chips side by side on a horizontal taskbar.
 const CHIP_SPACING: f32 = 10.0;
 

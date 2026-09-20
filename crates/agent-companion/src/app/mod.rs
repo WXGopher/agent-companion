@@ -34,6 +34,7 @@ mod display;
 mod flyout;
 mod form;
 mod icon;
+mod instances;
 mod navigation;
 pub mod net;
 mod notifications;
@@ -201,6 +202,8 @@ struct App {
 
     usage: RefCell<UsageSnapshot>,
     subscription: RefCell<subscription::Monitor>,
+    secondary: RefCell<Option<instances::Secondary>>,
+    selected_subscription: Cell<bool>,
     display: RefCell<display::DisplayState>,
     /// Claude's usage arrives over the network, so it comes back on a channel
     /// rather than being read inline: an eight-second timeout on the UI thread
@@ -259,6 +262,8 @@ impl App {
             scanning: Cell::new(false),
             usage: RefCell::new(display.usage()),
             subscription: RefCell::new(subscription::Monitor::default()),
+            secondary: RefCell::new(None),
+            selected_subscription: Cell::new(false),
             display: RefCell::new(display),
             limits_tx,
             limits_rx,
@@ -715,12 +720,25 @@ impl App {
     /// Connect page navigation, settings, and jumps back to a session.
     fn wire_flyout(self: &Rc<Self>) {
         let app = Rc::downgrade(self);
+        self.flyout.on_select_instance(move |secondary| {
+            if let Some(app) = app.upgrade() {
+                if secondary && app.secondary.borrow().is_none() {
+                    return;
+                }
+                app.selected_subscription.set(secondary);
+                app.flyout.set_secondary_selected(secondary);
+                app.flyout.set_usage_page(true);
+                app.flyout.set_usage_scroll_y(0.0);
+                app.refresh_subscription(false);
+            }
+        });
+        let app = Rc::downgrade(self);
         self.flyout.on_select_page(move |usage| {
             if let Some(app) = app.upgrade() {
                 if usage {
                     app.refresh_subscription(false);
                 } else {
-                    app.subscription.borrow_mut().stop();
+                    app.stop_subscriptions();
                     app.render_subscription();
                 }
             }
@@ -759,6 +777,10 @@ impl App {
 
     /// Resolve the actual client on a worker, then apply only the latest click.
     fn jump(self: &Rc<Self>, session_id: &str) {
+        if let Some(id) = session_id.strip_prefix("dodex:") {
+            self.jump_secondary(id);
+            return;
+        }
         let request = self.jump_request.get().wrapping_add(1);
         self.jump_request.set(request);
         let Some(state) = self.table.borrow().get(session_id).cloned() else {
@@ -1041,7 +1063,8 @@ impl App {
             let (good_at, warn_at) = config.taskbar.thresholds();
             (lines, good_at, warn_at)
         };
-        let chips = taskbar::chips(&self.usage.borrow(), &lines, good_at, warn_at);
+        let mut chips = taskbar::chips(&self.usage.borrow(), &lines[..1], good_at, warn_at);
+        self.append_instance_chips(&mut chips, lines[1], good_at, warn_at);
         self.bar.set_chips(&chips, along);
     }
 
@@ -1118,9 +1141,17 @@ impl App {
 
     fn housekeeping(self: &Rc<Self>) {
         let now = now_unix_secs();
+        self.poll_secondary();
+        self.subscription.borrow_mut().poll();
+        if let Some(secondary) = self.secondary.borrow_mut().as_mut() {
+            secondary.subscription.poll();
+        }
         if self.flyout_open.get() && !self.flyout_peek.get() && self.flyout.get_usage_page() {
-            self.subscription.borrow_mut().poll();
             self.refresh_subscription(false);
+        }
+        self.refresh_bar();
+        if self.flyout_open.get() {
+            self.refresh_flyout();
         }
         // A live app-server question can wait longer than the log-only TTL.
         // Its pipe is the authority; disconnects also clear queued forms.
@@ -1284,10 +1315,13 @@ impl App {
         let tray = self.tray.borrow();
         let Some(tray) = tray.as_ref() else { return };
 
-        let tasks: Vec<_> = AGENTS
+        let mut tasks: Vec<_> = AGENTS
             .into_iter()
             .map(|source| self.agent_tasks(source))
             .collect();
+        if let Some(tasks_secondary) = self.secondary_tasks() {
+            tasks.push(tasks_secondary);
+        }
         let sessions = tasks.iter().map(|tasks| tasks.total()).sum();
         let waiting = tasks.iter().map(|tasks| tasks.pending).sum();
         tray.refresh(IconState {
@@ -1306,10 +1340,7 @@ impl App {
         tray.set_tooltip(&tray_tooltip(
             sessions,
             waiting,
-            &self
-                .usage
-                .borrow()
-                .compact(&self.display.borrow().visible_agents()),
+            &self.instance_quota_tooltip(),
         ));
     }
 
@@ -1419,11 +1450,14 @@ impl App {
             return;
         }
         let waiting = self
-            .table
-            .borrow()
-            .waiting()
-            .iter()
-            .any(|state| self.display.borrow().visible(state.source));
+            .secondary_tasks()
+            .is_some_and(|tasks| tasks.pending > 0)
+            || self
+                .table
+                .borrow()
+                .waiting()
+                .iter()
+                .any(|state| self.display.borrow().visible(state.source));
         let enabled = self.bar.is_shown() && waiting && win::mouse_buttons_down() == 0;
         let action = self.hover.borrow_mut().update(
             self.started.elapsed().as_millis() as u64,
@@ -1492,7 +1526,7 @@ impl App {
     }
 
     fn close_flyout(&self) {
-        self.subscription.borrow_mut().stop();
+        self.stop_subscriptions();
         self.hover.borrow_mut().reset();
         self.flyout_peek.set(false);
         self.flyout_anchor.set(None);
@@ -1561,7 +1595,16 @@ impl App {
     }
 
     fn refresh_subscription(&self, force: bool) {
-        match agent_companion_core::install::codex_home() {
+        if self.selected_subscription.get() {
+            if let Some(secondary) = self.secondary.borrow_mut().as_mut() {
+                secondary
+                    .subscription
+                    .refresh(secondary.instance.codex_home.clone(), force);
+            }
+            self.render_subscription();
+            return;
+        }
+        match crate::windows_deployment::primary_home() {
             Ok(home) => self.subscription.borrow_mut().refresh(home, force),
             Err(_) => {
                 self.subscription.borrow_mut().snapshot.error =
@@ -1572,7 +1615,16 @@ impl App {
     }
 
     fn render_subscription(&self) {
-        let monitor = self.subscription.borrow();
+        let primary = self.subscription.borrow();
+        let secondary = self.secondary.borrow();
+        let monitor = if self.selected_subscription.get() {
+            secondary
+                .as_ref()
+                .map(|s| &s.subscription)
+                .unwrap_or(&primary)
+        } else {
+            &primary
+        };
         let snapshot = &monitor.snapshot;
         let summary = snapshot.tokens.as_ref().map(|tokens| &tokens.summary);
         let total = summary.and_then(|summary| summary.lifetime_tokens);
@@ -1596,9 +1648,17 @@ impl App {
                 snapshot.error.clone()
             } else if snapshot.read_at.is_none() {
                 if monitor.loading() {
-                    "Reading your Codex subscription…"
+                    if self.selected_subscription.get() {
+                        "Reading your Dodex subscription…"
+                    } else {
+                        "Reading your Codex subscription…"
+                    }
                 } else {
-                    "Refresh to read your Codex subscription."
+                    if self.selected_subscription.get() {
+                        "Refresh to read your Dodex subscription."
+                    } else {
+                        "Refresh to read your Codex subscription."
+                    }
                 }
                 .into()
             } else {
@@ -1668,6 +1728,12 @@ impl App {
     fn refresh_flyout(&self) {
         let previous_count = self.flyout.get_sessions().row_count();
         let mut rows = self.session_rows(usize::MAX, true);
+        self.append_secondary_rows(&mut rows);
+        let quotas = self.instance_quotas();
+        if self.flyout.get_instance_quotas().iter().collect::<Vec<_>>() != quotas {
+            self.flyout
+                .set_instance_quotas(ModelRc::new(VecModel::from(quotas)));
+        }
         self.flyout
             .set_active_count(rows.iter().filter(|row| row.phase != "completed").count() as i32);
         self.flyout
@@ -1800,7 +1866,7 @@ impl App {
             self.refresh_settings();
             return;
         }
-        let editor = agent_companion_core::install::codex_home().and_then(|home| {
+        let editor = crate::windows_deployment::primary_home().and_then(|home| {
             codex_tui::Editor::new(home.join("config.toml")).map_err(io::Error::other)
         });
         let editor = match editor {
@@ -1919,7 +1985,7 @@ impl App {
         self.refresh_app_preferences();
         let open = self.settings_window.borrow();
         let Some(window) = open.as_ref() else { return };
-        let codex_home = agent_companion_core::install::codex_home();
+        let codex_home = crate::windows_deployment::primary_home();
         window.set_codex_present(codex_home.as_ref().is_ok_and(|home| home.is_dir()));
         match codex_home.and_then(|home| agent_companion_core::install::status_codex(&home)) {
             Ok(report) => {
@@ -2066,7 +2132,7 @@ impl App {
     }
 
     fn run_codex_install(&self, install: bool) {
-        let outcome = agent_companion_core::install::codex_home().and_then(|home| {
+        let outcome = crate::windows_deployment::primary_home().and_then(|home| {
             if install {
                 let stable = agent_companion_core::install::install_binaries()?;
                 agent_companion_core::install::install_codex(&home, &stable.hook)

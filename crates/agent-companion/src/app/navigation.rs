@@ -70,6 +70,9 @@ pub struct Plan {
 }
 
 impl Plan {
+    pub fn is_desktop(&self) -> bool {
+        self.route == Route::Desktop
+    }
     /// File ownership is queried on a worker, never while rendering the panel.
     pub fn resolve(state: &SessionState) -> Self {
         let target = state.terminal.as_ref().and_then(win::target::from_meta);
