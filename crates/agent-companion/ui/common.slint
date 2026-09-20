@@ -231,7 +231,7 @@ export component SessionBlock inherits Rectangle {
     width: root.size;
     height: root.size;
     border-radius: root.size / 3;
-    background: root.source == "codex" ? Theme.codex : Theme.claude;
+    background: root.source == "codex" || root.source == "dodex" ? Theme.codex : Theme.claude;
     opacity: root.phase == "running"
         ? 1.0
         : (root.phase == "waitingForApproval" || root.phase == "waitingForAnswer")

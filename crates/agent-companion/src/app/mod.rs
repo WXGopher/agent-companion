@@ -34,6 +34,7 @@ mod display;
 mod flyout;
 mod form;
 mod icon;
+mod instances;
 mod navigation;
 pub mod net;
 mod notifications;
@@ -201,6 +202,9 @@ struct App {
 
     usage: RefCell<UsageSnapshot>,
     subscription: RefCell<subscription::Monitor>,
+    secondary: RefCell<Option<instances::Secondary>>,
+    selected_subscription: Cell<bool>,
+    launching_dodex: Cell<bool>,
     display: RefCell<display::DisplayState>,
     /// Claude's usage arrives over the network, so it comes back on a channel
     /// rather than being read inline: an eight-second timeout on the UI thread
@@ -259,6 +263,9 @@ impl App {
             scanning: Cell::new(false),
             usage: RefCell::new(display.usage()),
             subscription: RefCell::new(subscription::Monitor::default()),
+            secondary: RefCell::new(None),
+            selected_subscription: Cell::new(false),
+            launching_dodex: Cell::new(false),
             display: RefCell::new(display),
             limits_tx,
             limits_rx,
@@ -527,7 +534,7 @@ impl App {
         );
     }
 
-    /// The readout's right-click menu: the same two commands the tray offers,
+    /// The readout's right-click menu: the same commands the tray offers,
     /// in the same words. A native menu, so it dismisses like every other
     /// taskbar menu and never fights the panel for space.
     fn readout_menu(self: &Rc<Self>) {
@@ -535,9 +542,18 @@ impl App {
         let Some(handle) = self.bar.window_handle() else {
             return;
         };
-        match win::popup_menu(handle, &["Settings…", "-", "Quit Agent Companion"]) {
+        match win::popup_menu(
+            handle,
+            &[
+                ("Settings…", true),
+                (tray::DODEX_LABEL, self.can_open_dodex()),
+                ("-", true),
+                ("Quit Agent Companion", true),
+            ],
+        ) {
             Some(0) => self.open_settings(),
-            Some(2) => {
+            Some(1) => self.open_dodex(),
+            Some(3) => {
                 self.close_flyout();
                 slint::quit_event_loop().ok();
             }
@@ -715,12 +731,25 @@ impl App {
     /// Connect page navigation, settings, and jumps back to a session.
     fn wire_flyout(self: &Rc<Self>) {
         let app = Rc::downgrade(self);
+        self.flyout.on_select_instance(move |secondary| {
+            if let Some(app) = app.upgrade() {
+                if secondary && app.secondary.borrow().is_none() {
+                    return;
+                }
+                app.selected_subscription.set(secondary);
+                app.flyout.set_secondary_selected(secondary);
+                app.flyout.set_usage_page(true);
+                app.flyout.set_usage_scroll_y(0.0);
+                app.refresh_subscription(false);
+            }
+        });
+        let app = Rc::downgrade(self);
         self.flyout.on_select_page(move |usage| {
             if let Some(app) = app.upgrade() {
                 if usage {
                     app.refresh_subscription(false);
                 } else {
-                    app.subscription.borrow_mut().stop();
+                    app.stop_subscriptions();
                     app.render_subscription();
                 }
             }
@@ -759,6 +788,10 @@ impl App {
 
     /// Resolve the actual client on a worker, then apply only the latest click.
     fn jump(self: &Rc<Self>, session_id: &str) {
+        if let Some(id) = session_id.strip_prefix("dodex:") {
+            self.jump_secondary(id);
+            return;
+        }
         let request = self.jump_request.get().wrapping_add(1);
         self.jump_request.set(request);
         let Some(state) = self.table.borrow().get(session_id).cloned() else {
@@ -1041,7 +1074,8 @@ impl App {
             let (good_at, warn_at) = config.taskbar.thresholds();
             (lines, good_at, warn_at)
         };
-        let chips = taskbar::chips(&self.usage.borrow(), &lines, good_at, warn_at);
+        let mut chips = taskbar::chips(&self.usage.borrow(), &lines[..1], good_at, warn_at);
+        self.append_instance_chips(&mut chips, lines[1], good_at, warn_at);
         self.bar.set_chips(&chips, along);
     }
 
@@ -1118,9 +1152,17 @@ impl App {
 
     fn housekeeping(self: &Rc<Self>) {
         let now = now_unix_secs();
+        self.poll_secondary();
+        self.subscription.borrow_mut().poll();
+        if let Some(secondary) = self.secondary.borrow_mut().as_mut() {
+            secondary.subscription.poll();
+        }
         if self.flyout_open.get() && !self.flyout_peek.get() && self.flyout.get_usage_page() {
-            self.subscription.borrow_mut().poll();
             self.refresh_subscription(false);
+        }
+        self.refresh_bar();
+        if self.flyout_open.get() {
+            self.refresh_flyout();
         }
         // A live app-server question can wait longer than the log-only TTL.
         // Its pipe is the authority; disconnects also clear queued forms.
@@ -1283,11 +1325,15 @@ impl App {
     fn refresh_tray_icon(&self) {
         let tray = self.tray.borrow();
         let Some(tray) = tray.as_ref() else { return };
+        tray.set_dodex_enabled(self.can_open_dodex());
 
-        let tasks: Vec<_> = AGENTS
+        let mut tasks: Vec<_> = AGENTS
             .into_iter()
             .map(|source| self.agent_tasks(source))
             .collect();
+        if let Some(tasks_secondary) = self.secondary_tasks() {
+            tasks.push(tasks_secondary);
+        }
         let sessions = tasks.iter().map(|tasks| tasks.total()).sum();
         let waiting = tasks.iter().map(|tasks| tasks.pending).sum();
         tray.refresh(IconState {
@@ -1306,10 +1352,7 @@ impl App {
         tray.set_tooltip(&tray_tooltip(
             sessions,
             waiting,
-            &self
-                .usage
-                .borrow()
-                .compact(&self.display.borrow().visible_agents()),
+            &self.instance_quota_tooltip(),
         ));
     }
 
@@ -1330,6 +1373,7 @@ impl App {
         for command in commands {
             match command {
                 TrayCommand::OpenSettings => self.open_settings(),
+                TrayCommand::OpenDodex => self.open_dodex(),
                 TrayCommand::Quit => {
                     self.close_flyout();
                     slint::quit_event_loop().ok();
@@ -1337,6 +1381,34 @@ impl App {
                 TrayCommand::ToggleFlyout(rect) => self.toggle_flyout(rect, Anchor::Tray),
             }
         }
+    }
+
+    fn can_open_dodex(&self) -> bool {
+        self.secondary.borrow().is_some() && !self.launching_dodex.get()
+    }
+
+    fn open_dodex(self: &Rc<Self>) {
+        if !self.can_open_dodex() {
+            return;
+        }
+        self.close_flyout();
+        self.launching_dodex.set(true);
+        self.refresh_tray_icon();
+        std::thread::spawn(|| {
+            let result = crate::windows_deployment::launch(None);
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(app) = APP.with(|slot| slot.borrow().clone()) {
+                    app.launching_dodex.set(false);
+                    app.refresh_tray_icon();
+                    if let Err(error) = result {
+                        app.open_settings();
+                        if let Some(editor) = app.codex_tui_editor.borrow().as_ref() {
+                            editor.show_deployment_error(error);
+                        }
+                    }
+                }
+            });
+        });
     }
 
     fn set_taskbar_enabled(self: &Rc<Self>, enabled: bool) {
@@ -1419,11 +1491,14 @@ impl App {
             return;
         }
         let waiting = self
-            .table
-            .borrow()
-            .waiting()
-            .iter()
-            .any(|state| self.display.borrow().visible(state.source));
+            .secondary_tasks()
+            .is_some_and(|tasks| tasks.pending > 0)
+            || self
+                .table
+                .borrow()
+                .waiting()
+                .iter()
+                .any(|state| self.display.borrow().visible(state.source));
         let enabled = self.bar.is_shown() && waiting && win::mouse_buttons_down() == 0;
         let action = self.hover.borrow_mut().update(
             self.started.elapsed().as_millis() as u64,
@@ -1492,7 +1567,7 @@ impl App {
     }
 
     fn close_flyout(&self) {
-        self.subscription.borrow_mut().stop();
+        self.stop_subscriptions();
         self.hover.borrow_mut().reset();
         self.flyout_peek.set(false);
         self.flyout_anchor.set(None);
@@ -1561,7 +1636,16 @@ impl App {
     }
 
     fn refresh_subscription(&self, force: bool) {
-        match agent_companion_core::install::codex_home() {
+        if self.selected_subscription.get() {
+            if let Some(secondary) = self.secondary.borrow_mut().as_mut() {
+                secondary
+                    .subscription
+                    .refresh(secondary.instance.codex_home.clone(), force);
+            }
+            self.render_subscription();
+            return;
+        }
+        match crate::windows_deployment::primary_home() {
             Ok(home) => self.subscription.borrow_mut().refresh(home, force),
             Err(_) => {
                 self.subscription.borrow_mut().snapshot.error =
@@ -1572,7 +1656,16 @@ impl App {
     }
 
     fn render_subscription(&self) {
-        let monitor = self.subscription.borrow();
+        let primary = self.subscription.borrow();
+        let secondary = self.secondary.borrow();
+        let monitor = if self.selected_subscription.get() {
+            secondary
+                .as_ref()
+                .map(|s| &s.subscription)
+                .unwrap_or(&primary)
+        } else {
+            &primary
+        };
         let snapshot = &monitor.snapshot;
         let summary = snapshot.tokens.as_ref().map(|tokens| &tokens.summary);
         let total = summary.and_then(|summary| summary.lifetime_tokens);
@@ -1596,9 +1689,17 @@ impl App {
                 snapshot.error.clone()
             } else if snapshot.read_at.is_none() {
                 if monitor.loading() {
-                    "Reading your Codex subscription…"
+                    if self.selected_subscription.get() {
+                        "Reading your Dodex subscription…"
+                    } else {
+                        "Reading your Codex subscription…"
+                    }
                 } else {
-                    "Refresh to read your Codex subscription."
+                    if self.selected_subscription.get() {
+                        "Refresh to read your Dodex subscription."
+                    } else {
+                        "Refresh to read your Codex subscription."
+                    }
                 }
                 .into()
             } else {
@@ -1668,6 +1769,12 @@ impl App {
     fn refresh_flyout(&self) {
         let previous_count = self.flyout.get_sessions().row_count();
         let mut rows = self.session_rows(usize::MAX, true);
+        self.append_secondary_rows(&mut rows);
+        let quotas = self.instance_quotas();
+        if self.flyout.get_instance_quotas().iter().collect::<Vec<_>>() != quotas {
+            self.flyout
+                .set_instance_quotas(ModelRc::new(VecModel::from(quotas)));
+        }
         self.flyout
             .set_active_count(rows.iter().filter(|row| row.phase != "completed").count() as i32);
         self.flyout
@@ -1800,7 +1907,7 @@ impl App {
             self.refresh_settings();
             return;
         }
-        let editor = agent_companion_core::install::codex_home().and_then(|home| {
+        let editor = crate::windows_deployment::primary_home().and_then(|home| {
             codex_tui::Editor::new(home.join("config.toml")).map_err(io::Error::other)
         });
         let editor = match editor {
@@ -1919,7 +2026,7 @@ impl App {
         self.refresh_app_preferences();
         let open = self.settings_window.borrow();
         let Some(window) = open.as_ref() else { return };
-        let codex_home = agent_companion_core::install::codex_home();
+        let codex_home = crate::windows_deployment::primary_home();
         window.set_codex_present(codex_home.as_ref().is_ok_and(|home| home.is_dir()));
         match codex_home.and_then(|home| agent_companion_core::install::status_codex(&home)) {
             Ok(report) => {
@@ -2066,7 +2173,7 @@ impl App {
     }
 
     fn run_codex_install(&self, install: bool) {
-        let outcome = agent_companion_core::install::codex_home().and_then(|home| {
+        let outcome = crate::windows_deployment::primary_home().and_then(|home| {
             if install {
                 let stable = agent_companion_core::install::install_binaries()?;
                 agent_companion_core::install::install_codex(&home, &stable.hook)
@@ -2091,12 +2198,7 @@ enum Anchor {
     Readout,
 }
 
-/// The detail panel's usage block: an agent per section, its tightest number
-/// large in the heading, and one bar per window under it.
-///
-/// The bar is the point. The panel used to be a column of sentences in one
-/// shade and one weight, and finding the window that was about to run out meant
-/// reading every line; a short bar is short from across the room.
+/// Extra Claude usage below the tasks. Codex instances have quota cards above.
 fn usage_sections(
     usage: &UsageSnapshot,
     visible: &[HookSource],
@@ -2106,7 +2208,9 @@ fn usage_sections(
     warn_at: i64,
 ) -> Vec<ui::UsageRow> {
     let mut rows = Vec::new();
-    for agent in AGENTS {
+    // Codex and Dodex already have instance quota cards above the task list.
+    // Keep these extra legacy rows only for Claude, which has no such card.
+    for agent in [HookSource::Claude] {
         if !visible.contains(&agent) {
             continue;
         }
@@ -2362,8 +2466,8 @@ mod tests {
     #[test]
     fn expired_usage_windows_drop_their_reset_labels() {
         let rows = usage_sections(&both_agents(), &AGENTS, NOW, 0, 50, 20);
-        assert_eq!(rows.len(), 7);
-        assert_eq!(rows.iter().filter(|row| row.heading).count(), 2);
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows.iter().filter(|row| row.heading).count(), 1);
         assert_eq!(rows.iter().filter(|row| !row.resets.is_empty()).count(), 3);
         let expired = usage_sections(&both_agents(), &AGENTS, NOW + 6 * 86_400, 0, 50, 20);
         assert!(expired.iter().all(|row| row.resets.is_empty()));
@@ -2384,14 +2488,7 @@ mod tests {
         assert!((rows[1].fill - 0.92).abs() < 0.001);
         assert!(rows[1].resets.starts_with("Resets "));
 
-        assert_eq!(rows[4].label, "codex");
-        assert_eq!(
-            (rows[4].value.as_str(), rows[4].tier.as_str()),
-            ("15%", "low")
-        );
-        // Codex reported no reset times, so those rows carry none rather than
-        // an empty "resets".
-        assert_eq!(rows[6].resets, "");
+        assert_eq!(rows.len(), 4, "Codex must not appear below its quota card");
         // And nothing says what plan anybody is on any more.
         assert!(
             !rows.iter().any(|row| row.label.contains("plan")),
@@ -2401,9 +2498,16 @@ mod tests {
 
     #[test]
     fn a_section_appears_for_a_running_agent_with_nothing_to_report() {
-        let rows = usage_sections(&UsageSnapshot::default(), &[CODEX], NOW, 0, 50, 20);
+        let rows = usage_sections(
+            &UsageSnapshot::default(),
+            &[HookSource::Claude],
+            NOW,
+            0,
+            50,
+            20,
+        );
         assert_eq!(rows.len(), 2);
-        assert!(rows[0].heading && rows[0].label == "codex");
+        assert!(rows[0].heading && rows[0].label == "claude");
         assert_eq!(rows[0].value, "");
         assert_eq!(rows[1].label, "no data");
 
@@ -2415,9 +2519,7 @@ mod tests {
     #[test]
     fn cached_limits_cannot_restore_a_hidden_agent_in_the_details() {
         let rows = usage_sections(&both_agents(), &[CODEX], NOW, 0, 50, 20);
-        assert_eq!(rows.len(), 3);
-        assert!(rows[0].heading && rows[0].label == "codex");
-        assert!(!rows.iter().any(|row| row.agent == "claude"));
+        assert!(rows.is_empty(), "Codex quota cards replace legacy bars");
         assert!(usage_sections(&both_agents(), &[], NOW, 0, 50, 20).is_empty());
     }
 

@@ -19,12 +19,15 @@ use super::icon::{self, IconState};
 use super::win::Rect;
 
 const ID_SETUP: &str = "agent-companion.setup";
+const ID_DODEX: &str = "agent-companion.dodex";
 const ID_QUIT: &str = "agent-companion.quit";
+pub const DODEX_LABEL: &str = "打开 Dodex";
 
 /// What the user asked the tray for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayCommand {
     OpenSettings,
+    OpenDodex,
     Quit,
     /// Left click: open or close the session panel. Carries the icon's own
     /// screen rectangle, which is where the panel has to appear.
@@ -38,6 +41,8 @@ pub struct Tray {
     /// The last state drawn, so an unchanged icon is not redrawn 10 times a
     /// second — every redraw is a Shell_NotifyIcon round trip.
     drawn: Cell<Option<IconState>>,
+    dodex_item: MenuItem,
+    dodex_enabled: Cell<bool>,
     size: u32,
 }
 
@@ -47,9 +52,15 @@ impl Tray {
     pub fn new(icon_size: u32) -> Result<Self, String> {
         let menu = Menu::new();
         let setup_item = MenuItem::with_id(ID_SETUP, "Settings…", true, None);
+        let dodex_item = MenuItem::with_id(ID_DODEX, DODEX_LABEL, false, None);
         let quit_item = MenuItem::with_id(ID_QUIT, "Quit Agent Companion", true, None);
-        menu.append_items(&[&setup_item, &PredefinedMenuItem::separator(), &quit_item])
-            .map_err(|error| error.to_string())?;
+        menu.append_items(&[
+            &setup_item,
+            &dodex_item,
+            &PredefinedMenuItem::separator(),
+            &quit_item,
+        ])
+        .map_err(|error| error.to_string())?;
 
         let state = IconState {
             sessions: 0,
@@ -69,6 +80,8 @@ impl Tray {
         Ok(Self {
             handle,
             drawn: Cell::new(Some(state)),
+            dodex_item,
+            dodex_enabled: Cell::new(false),
             size: icon_size,
         })
     }
@@ -86,6 +99,12 @@ impl Tray {
 
     pub fn set_tooltip(&self, text: &str) {
         let _ = self.handle.set_tooltip(Some(text));
+    }
+
+    pub fn set_dodex_enabled(&self, enabled: bool) {
+        if self.dodex_enabled.replace(enabled) != enabled {
+            self.dodex_item.set_enabled(enabled);
+        }
     }
 
     pub fn contains_point(&self, x: i32, y: i32) -> bool {
@@ -135,6 +154,7 @@ impl Tray {
 fn menu_command(id: &MenuId) -> Option<TrayCommand> {
     match id.as_ref() {
         ID_SETUP => Some(TrayCommand::OpenSettings),
+        ID_DODEX => Some(TrayCommand::OpenDodex),
         ID_QUIT => Some(TrayCommand::Quit),
         _ => None,
     }
@@ -155,6 +175,10 @@ mod tests {
             Some(TrayCommand::OpenSettings)
         );
         assert_eq!(menu_command(&MenuId::new(ID_QUIT)), Some(TrayCommand::Quit));
+        assert_eq!(
+            menu_command(&MenuId::new(ID_DODEX)),
+            Some(TrayCommand::OpenDodex)
+        );
         assert_eq!(menu_command(&MenuId::new("something else")), None);
     }
 }

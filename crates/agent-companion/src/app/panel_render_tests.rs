@@ -180,7 +180,7 @@ fn codex_tui_editor_renders_and_applies_only_explicit_actions(
     let path = dir.path().join("config.toml");
     let original = "# keep my config\n[features]\nhooks = true\n[tui]\ntheme = \"nord\"\n";
     std::fs::write(&path, original).unwrap();
-    let editor = super::codex_tui::Editor::new(path.clone()).unwrap();
+    let editor = super::codex_tui::Editor::new_isolated(path.clone()).unwrap();
     editor.window.set_windows_preferences(true);
     editor
         .window
@@ -316,6 +316,39 @@ fn codex_tui_editor_renders_and_applies_only_explicit_actions(
     assert!(!editor.window.get_error());
     assert_eq!(editor.window.get_selected_count(), 2);
     assert!(editor.window.get_preview().contains("[future-component]"));
+    let secondary = dir.path().join("dodex.toml");
+    std::fs::write(&secondary, "[tui]\nstatus_line = ['model']\n").unwrap();
+    editor.add_isolated_secondary(secondary.clone());
+    editor.window.invoke_select_instance("Dodex".into());
+    editor.window.invoke_toggle("git-branch".into(), true);
+    let secondary_draft = editor.window.get_preview();
+    editor.window.invoke_select_instance("Codex".into());
+    assert!(editor.window.get_preview().contains("[future-component]"));
+    editor.window.invoke_select_instance("Dodex".into());
+    assert_eq!(editor.window.get_preview(), secondary_draft);
+    editor.window.invoke_apply();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), external);
+    assert_eq!(
+        config::read(&secondary).unwrap().visible_items(),
+        vec!["model", "git-branch"]
+    );
+    for scale in [1.0, 1.5, 2.0] {
+        window.dispatch_event(WindowEvent::ScaleFactorChanged {
+            scale_factor: scale,
+        });
+        window.set_size(slint::PhysicalSize::new(
+            (820.0 * scale) as u32,
+            (720.0 * scale) as u32,
+        ));
+        editor.window.set_settings_page(0);
+        draw(&window, &format!("windows-dual-editor-{scale}"));
+        editor
+            .window
+            .set_dual_message("环境已就绪。打开 Dodex 后，请使用第二个账号登录。".into());
+        editor.window.set_dual_deployed(true);
+        editor.window.set_settings_page(3);
+        draw(&window, &format!("windows-dual-settings-{scale}"));
+    }
     editor.window.hide().unwrap();
 }
 
@@ -456,6 +489,53 @@ fn flyout_pages_render_and_preserve_scroll(
         ..Default::default()
     });
     draw(&window, "usage-signed-out");
+    panel.set_dual_enabled(true);
+    panel.set_secondary_selected(true);
+    panel.set_instance_quotas(ModelRc::new(VecModel::from(vec![
+        super::ui::UsageRow {
+            agent: "codex".into(),
+            label: "Codex".into(),
+            value: "82%".into(),
+            tier: "good".into(),
+            resets: "Week · resets Tue 09:00".into(),
+            ..Default::default()
+        },
+        super::ui::UsageRow {
+            agent: "dodex".into(),
+            label: "Dodex".into(),
+            value: "27%".into(),
+            tier: "warn".into(),
+            resets: "Week · resets Fri 18:00".into(),
+            ..Default::default()
+        },
+    ])));
+    let instance = Rc::new(std::cell::Cell::new(false));
+    panel.on_select_instance({
+        let instance = instance.clone();
+        move |secondary| instance.set(secondary)
+    });
+    for scale in [1.0, 1.5, 2.0] {
+        window.dispatch_event(WindowEvent::ScaleFactorChanged {
+            scale_factor: scale,
+        });
+        panel.window().set_size(slint::LogicalSize::new(
+            super::DETAIL_WIDTH,
+            super::DETAIL_HEIGHT,
+        ));
+        panel.set_usage_page(false);
+        panel.set_task_scroll_y(0.0);
+        draw(&window, &format!("windows-dual-tasks-{scale}"));
+        click(&window, 120.0, 195.0);
+        assert!(instance.get(), "Dodex quota card opens its own account");
+        panel.set_usage_page(true);
+        panel.set_usage_scroll_y(0.0);
+        draw(&window, &format!("windows-dual-usage-{scale}"));
+        click(&window, 42.0, 80.0);
+        assert!(
+            !instance.get(),
+            "Codex account remains independently selectable"
+        );
+    }
     panel.hide().unwrap();
 }
 
@@ -464,7 +544,7 @@ fn render_readme_flyout(
     windows: &Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>,
 ) {
     let panel = super::ui::FlyoutWindow::new().unwrap();
-    panel.set_active_count(4);
+    panel.set_active_count(2);
     panel.set_finished_count(2);
     panel.set_sessions(ModelRc::new(VecModel::from(
         [
@@ -490,18 +570,57 @@ fn render_readme_flyout(
             ),
         ]
         .into_iter()
+        .take(2)
         .enumerate()
         .map(|(n, (title, detail, phase))| super::ui::SessionRow {
             id: format!("example-{n}").into(),
             title: title.into(),
-            detail: detail.into(),
+            detail: format!("{} · {detail}", if n % 2 == 0 { "Codex" } else { "Dodex" }).into(),
             phase: phase.into(),
-            source: "codex".into(),
+            source: if n % 2 == 0 {
+                "codex".into()
+            } else {
+                "dodex".into()
+            },
             jumpable: true,
         })
         .collect::<Vec<_>>(),
     )));
-    panel.set_usage_rows(source.get_subscription_limits());
+    panel.set_dual_enabled(true);
+    panel.set_instance_quotas(ModelRc::new(VecModel::from(vec![
+        super::ui::UsageRow {
+            agent: "codex".into(),
+            label: "Codex".into(),
+            value: "82%".into(),
+            tier: "good".into(),
+            resets: "Week · resets Tue 09:00".into(),
+            ..Default::default()
+        },
+        super::ui::UsageRow {
+            agent: "dodex".into(),
+            label: "Dodex".into(),
+            value: "27%".into(),
+            tier: "warn".into(),
+            resets: "Week · resets Fri 18:00".into(),
+            ..Default::default()
+        },
+    ])));
+    let usage = super::UsageSnapshot {
+        codex: Some(agent_companion_core::usage::parse_codex_rate_limits(
+            &serde_json::json!({
+                "secondary": { "used_percent": 18, "window_minutes": 10080 }
+            }),
+        )),
+        ..Default::default()
+    };
+    panel.set_usage_rows(ModelRc::new(VecModel::from(super::usage_sections(
+        &usage,
+        &[super::HookSource::Codex],
+        0,
+        0,
+        50,
+        20,
+    ))));
     panel.set_subscription(source.get_subscription());
     panel.set_subscription_limits(source.get_subscription_limits());
     panel.set_usage_days(source.get_usage_days());

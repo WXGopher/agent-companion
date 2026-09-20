@@ -1,6 +1,11 @@
 //! Status-bar draft state and the native editor. Opening/toggling never writes;
 //! only Apply and Restore Codex defaults touch Codex's user configuration.
 
+#[cfg(target_os = "macos")]
+use crate::macos_deployment as deployment;
+#[cfg(windows)]
+use crate::windows_deployment as deployment;
+
 use std::{cell::RefCell, collections::HashSet, path::PathBuf, rc::Rc};
 
 use agent_companion_core::install::codex_tui::{self as config, StatusLine};
@@ -132,7 +137,7 @@ impl InstanceDraft {
 struct InstanceDrafts {
     primary: InstanceDraft,
     secondary: Option<InstanceDraft>,
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", windows, test))]
     secondary_available: bool,
     secondary_selected: bool,
 }
@@ -142,7 +147,7 @@ impl InstanceDrafts {
         Self {
             primary: InstanceDraft::new(primary),
             secondary: None,
-            #[cfg(any(target_os = "macos", test))]
+            #[cfg(any(target_os = "macos", windows, test))]
             secondary_available: false,
             secondary_selected: false,
         }
@@ -164,7 +169,7 @@ impl InstanceDrafts {
         }
     }
 
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", windows, test))]
     fn set_secondary(&mut self, path: Option<PathBuf>) {
         let path = path.filter(|path| *path != self.primary.path);
         self.secondary_available = path.is_some();
@@ -181,7 +186,7 @@ impl InstanceDrafts {
         }
     }
 
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", windows, test))]
     fn select(&mut self, secondary: bool) -> bool {
         if secondary && !self.secondary_available {
             return false;
@@ -198,17 +203,14 @@ pub(crate) struct Editor {
     right_rows: Rc<VecModel<ui::StatusComponent>>,
     #[cfg(target_os = "macos")]
     display_settings: RefCell<Option<crate::macos::DisplaySettings>>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     pub(crate) preference_timer: slint::Timer,
-    #[cfg(target_os = "macos")]
-    deployment_operation: RefCell<
-        Option<
-            std::sync::mpsc::Receiver<Result<crate::macos_deployment::DeploymentStatus, String>>,
-        >,
-    >,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
+    deployment_operation:
+        RefCell<Option<std::sync::mpsc::Receiver<Result<deployment::DeploymentStatus, String>>>>,
+    #[cfg(any(target_os = "macos", windows))]
     deployment_error: RefCell<Option<String>>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     live_deployment: bool,
 }
 
@@ -219,13 +221,13 @@ impl Editor {
 
     /// Native UI verification supplies synthetic configuration and deployment
     /// state. It must never discover or modify the user's real Dodex profile.
-    #[cfg(all(target_os = "macos", test))]
+    #[cfg(all(any(target_os = "macos", windows), test))]
     #[allow(dead_code)]
     pub(crate) fn new_isolated(path: PathBuf) -> Result<Rc<Self>, slint::PlatformError> {
         Self::new_inner(path, false)
     }
 
-    #[cfg(all(target_os = "macos", test))]
+    #[cfg(all(any(target_os = "macos", windows), test))]
     #[allow(dead_code)]
     pub(crate) fn add_isolated_secondary(&self, path: PathBuf) {
         assert!(!self.live_deployment);
@@ -246,13 +248,13 @@ impl Editor {
             right_rows: Rc::new(VecModel::default()),
             #[cfg(target_os = "macos")]
             display_settings: RefCell::new(None),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             preference_timer: slint::Timer::default(),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             deployment_operation: RefCell::new(None),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             deployment_error: RefCell::new(None),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             live_deployment: _live_deployment,
         });
         editor
@@ -377,6 +379,53 @@ impl Editor {
                 },
             );
         }
+        #[cfg(windows)]
+        {
+            editor.refresh_deployment();
+            let weak = Rc::downgrade(&editor);
+            editor.window.on_deploy_dual(move || {
+                if let Some(editor) = weak.upgrade() {
+                    editor.start_deployment(None);
+                }
+            });
+            let weak = Rc::downgrade(&editor);
+            editor.window.on_toggle_dual(move |enabled| {
+                if let Some(editor) = weak.upgrade() {
+                    editor.start_deployment(Some(enabled));
+                }
+            });
+            let weak = Rc::downgrade(&editor);
+            editor.window.on_select_instance(move |label| {
+                if let Some(editor) = weak.upgrade() {
+                    editor.select_instance(label.as_str());
+                }
+            });
+            let weak = Rc::downgrade(&editor);
+            editor.window.on_open_dual(move || {
+                if let Some(editor) = weak.upgrade() {
+                    if editor.deployment_operation.borrow().is_some() {
+                        return;
+                    }
+                    let (sender, receiver) = std::sync::mpsc::channel();
+                    *editor.deployment_operation.borrow_mut() = Some(receiver);
+                    std::thread::spawn(move || {
+                        let result = deployment::launch(None).map(|_| deployment::status());
+                        let _ = sender.send(result);
+                    });
+                    editor.refresh_deployment();
+                }
+            });
+            let weak = Rc::downgrade(&editor);
+            editor.preference_timer.start(
+                slint::TimerMode::Repeated,
+                std::time::Duration::from_millis(500),
+                move || {
+                    if let Some(editor) = weak.upgrade() {
+                        editor.refresh_deployment();
+                    }
+                },
+            );
+        }
         let weak = Rc::downgrade(&editor);
         editor.window.on_toggle(move |id, enabled| {
             if let Some(editor) = weak.upgrade() {
@@ -408,14 +457,14 @@ impl Editor {
         Ok(editor)
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     fn start_deployment(&self, enabled: Option<bool>) {
         if !self.live_deployment {
             return;
         }
         // Mark the operation pending before spawning so even two clicks in the
         // same event-loop turn cannot start two workers.
-        if self.deployment_operation.borrow().is_some() || crate::macos_deployment::status().busy {
+        if self.deployment_operation.borrow().is_some() || deployment::status().busy {
             return;
         }
         *self.deployment_error.borrow_mut() = None;
@@ -425,8 +474,8 @@ impl Editor {
             .name("codex-deployment".into())
             .spawn(move || {
                 let result = match enabled {
-                    Some(enabled) => crate::macos_deployment::set_enabled(enabled),
-                    None => crate::macos_deployment::deploy(),
+                    Some(enabled) => deployment::set_enabled(enabled),
+                    None => deployment::deploy(),
                 };
                 let _ = sender.send(result);
             });
@@ -437,7 +486,7 @@ impl Editor {
         self.refresh_deployment();
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     fn refresh_deployment(&self) {
         if !self.live_deployment {
             return;
@@ -457,9 +506,9 @@ impl Editor {
             self.deployment_operation.borrow_mut().take();
             *self.deployment_error.borrow_mut() = result.err();
         }
-        let status = crate::macos_deployment::status();
+        let status = deployment::status();
         let busy = status.busy || self.deployment_operation.borrow().is_some();
-        let active = crate::macos_deployment::active_instance();
+        let active = deployment::active_instance();
         let (available, selection_changed) = {
             let mut drafts = self.drafts.borrow_mut();
             let previous_path = drafts.active().path.clone();
@@ -520,7 +569,14 @@ impl Editor {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(windows)]
+    pub(crate) fn show_deployment_error(&self, error: String) {
+        *self.deployment_error.borrow_mut() = Some(error);
+        self.window.set_settings_page(3);
+        self.refresh_deployment();
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
     fn select_instance(&self, label: &str) {
         let secondary = match label {
             "Codex" => false,
@@ -646,9 +702,9 @@ impl Editor {
         if self.drafts.borrow().active().draft.is_none() {
             return;
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         if self.live_deployment && self.drafts.borrow().secondary_selected {
-            let active = crate::macos_deployment::active_instance();
+            let active = deployment::active_instance();
             if active.is_none_or(|instance| {
                 instance.codex_home.join("config.toml") != self.drafts.borrow().active().path
             }) {
@@ -703,7 +759,9 @@ fn update_rows(model: &VecModel<ui::StatusComponent>, rows: Vec<ui::StatusCompon
 
 /// Standalone mode owns only this window. No tray, pipe, hook, or monitor starts.
 pub fn run() -> std::io::Result<()> {
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    let path = crate::windows_deployment::primary_home()?.join("config.toml");
+    #[cfg(all(not(target_os = "macos"), not(windows)))]
     let path = agent_companion_core::install::codex_home()?.join("config.toml");
     #[cfg(target_os = "macos")]
     let path = crate::macos::primary_home()?.join("config.toml");

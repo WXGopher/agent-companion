@@ -26,6 +26,8 @@ mod macos;
 #[cfg(target_os = "macos")]
 mod macos_deployment;
 mod out;
+#[cfg(windows)]
+mod windows_deployment;
 
 pub mod ui {
     slint::include_modules!();
@@ -57,6 +59,16 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Open the explicitly deployed, isolated Dodex desktop instance.
+    #[cfg(windows)]
+    Dodex {
+        /// Deploy or validate the isolated runtime without opening it.
+        #[arg(long, conflicts_with = "check")]
+        deploy: bool,
+        /// Check the locally installed official runtime without deploying it.
+        #[arg(long)]
+        check: bool,
+    },
     /// Open the standalone Codex CLI status bar editor. Apply, close, then restart Codex.
     CodexTui,
     /// Show the compact Codex task and weekly usage notch.
@@ -111,6 +123,19 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     let result = match cli.command {
+        #[cfg(windows)]
+        Some(Command::Dodex { deploy, check }) => {
+            let result = if check {
+                windows_deployment::check_runtime()
+            } else if deploy {
+                windows_deployment::deploy().map(|status| status.message)
+            } else {
+                windows_deployment::launch(None).map(|_| "Dodex 已打开。".into())
+            };
+            result
+                .map(|message| out::outln!("{message}"))
+                .map_err(std::io::Error::other)
+        }
         #[cfg(windows)]
         None => app::run(),
         #[cfg(target_os = "macos")]

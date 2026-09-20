@@ -72,10 +72,8 @@ impl UsageSnapshot {
     pub fn read(now: u64) -> Self {
         Self {
             claude: ClaudeLimits::default(),
-            codex: std::env::var_os("CODEX_HOME")
-                .filter(|path| !path.is_empty())
-                .map(|path| usage::scan_codex_usage_at(std::path::Path::new(&path)))
-                .or_else(|| home_dir().map(|home| usage::scan_codex_usage(&home)))
+            codex: home_dir()
+                .map(|home| usage::scan_codex_usage(&home))
                 .and_then(Result::ok)
                 .flatten(),
             refreshed_at: Some(now),
