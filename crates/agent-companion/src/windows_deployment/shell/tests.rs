@@ -1,5 +1,18 @@
 use super::*;
 
+fn executable(payload: &[u8], subsystem: u16) -> Vec<u8> {
+    let mut bytes = vec![0; 64 + 24 + 112];
+    bytes[..2].copy_from_slice(b"MZ");
+    bytes[60..64].copy_from_slice(&64u32.to_le_bytes());
+    bytes[64..68].copy_from_slice(b"PE\0\0");
+    bytes[84..86].copy_from_slice(&112u16.to_le_bytes());
+    bytes[86..88].copy_from_slice(&2u16.to_le_bytes());
+    bytes[88..90].copy_from_slice(&0x20bu16.to_le_bytes());
+    bytes[156..158].copy_from_slice(&subsystem.to_le_bytes());
+    bytes.extend_from_slice(payload);
+    bytes
+}
+
 fn environment(root: &Path) -> Environment {
     let home = root.join("用户 a & b's %tools%!");
     let local = home.join("AppData/Local");
@@ -33,7 +46,7 @@ fn registration_prefers_a_known_existing_path_and_is_idempotent() {
     }
     env.path = std::env::join_paths([&unrelated, &known]).unwrap();
     let source = temp.path().join("agent-companion.exe");
-    fs::write(&source, b"companion executable").unwrap();
+    fs::write(&source, executable(b"companion executable", 2)).unwrap();
     let registered = register(&source, &env).unwrap();
     assert!(registered.in_current_path);
     assert_eq!(registered.directory, known);
@@ -41,7 +54,19 @@ fn registration_prefers_a_known_existing_path_and_is_idempotent() {
     assert!(!env.stable_bin().exists());
     assert_eq!(
         fs::read(known.join("dodex.exe")).unwrap(),
-        b"companion executable"
+        executable(b"companion executable", 3)
+    );
+    assert_eq!(
+        fs::read(&source).unwrap(),
+        executable(b"companion executable", 2)
+    );
+    assert_eq!(
+        ownership(&known).unwrap().unwrap().hashes,
+        [file_hash(&known.join("dodex.exe")).unwrap()]
+    );
+    assert_ne!(
+        file_hash(&source).unwrap(),
+        file_hash(&known.join("dodex.exe")).unwrap()
     );
     let before = fs::metadata(known.join(MARKER))
         .unwrap()
@@ -71,7 +96,7 @@ fn missing_path_falls_back_to_stable_bin_and_repairs_a_missing_command() {
     let temp = tempfile::tempdir().unwrap();
     let env = environment(temp.path());
     let source = temp.path().join("download.exe");
-    fs::write(&source, b"version one").unwrap();
+    fs::write(&source, executable(b"version one", 2)).unwrap();
     let registered = register(&source, &env).unwrap();
     assert!(!registered.in_current_path);
     assert_eq!(registered.directory, env.stable_bin());
@@ -79,11 +104,11 @@ fn missing_path_falls_back_to_stable_bin_and_repairs_a_missing_command() {
     let target = registered.directory.join("dodex.exe");
     fs::remove_file(&target).unwrap();
     register(&source, &env).unwrap();
-    assert_eq!(fs::read(&target).unwrap(), b"version one");
-    fs::write(&source, b"version two").unwrap();
+    assert_eq!(fs::read(&target).unwrap(), executable(b"version one", 3));
+    fs::write(&source, executable(b"version two", 2)).unwrap();
     register(&source, &env).unwrap();
     fs::remove_file(&source).unwrap();
-    assert_eq!(fs::read(&target).unwrap(), b"version two");
+    assert_eq!(fs::read(&target).unwrap(), executable(b"version two", 3));
     assert_eq!(
         ownership(&registered.directory).unwrap().unwrap().hashes,
         [file_hash(&target).unwrap()]
@@ -99,13 +124,23 @@ fn managed_command_first_on_path_is_upgraded_before_another_candidate() {
     fs::create_dir_all(&cargo).unwrap();
     fs::create_dir_all(&local).unwrap();
     let source = temp.path().join("download.exe");
-    fs::write(&source, b"old").unwrap();
+    fs::write(&source, executable(b"old", 2)).unwrap();
     env.path = cargo.as_os_str().to_owned();
-    register(&source, &env).unwrap();
-    fs::write(&source, b"new").unwrap();
+    // An older release installed its unmodified GUI executable. Its original
+    // ownership hash authorizes migration to a console copy of the new build.
+    fs::copy(&source, cargo.join("dodex.exe")).unwrap();
+    save_ownership(&cargo, vec![file_hash(&source).unwrap()], false).unwrap();
+    fs::write(&source, executable(b"new", 2)).unwrap();
     env.path = std::env::join_paths([&cargo, &local]).unwrap();
     assert_eq!(register(&source, &env).unwrap().directory, cargo);
-    assert_eq!(fs::read(cargo.join("dodex.exe")).unwrap(), b"new");
+    assert_eq!(
+        fs::read(cargo.join("dodex.exe")).unwrap(),
+        executable(b"new", 3)
+    );
+    assert_eq!(
+        ownership(&cargo).unwrap().unwrap().hashes,
+        [file_hash(&cargo.join("dodex.exe")).unwrap()]
+    );
     assert!(!local.join("dodex.exe").exists());
 }
 
@@ -114,13 +149,16 @@ fn hardlinked_build_source_is_copied_to_an_independent_launcher() {
     let temp = tempfile::tempdir().unwrap();
     let env = environment(temp.path());
     let source = temp.path().join("build.exe");
-    fs::write(&source, b"companion build").unwrap();
+    fs::write(&source, executable(b"companion build", 2)).unwrap();
     fs::hard_link(&source, temp.path().join("deps.exe")).unwrap();
     let registered = register(&source, &env).unwrap();
     let target = registered.directory.join("dodex.exe");
     no_redirects(&target).unwrap();
     fs::write(&target, b"changed independently").unwrap();
-    assert_eq!(fs::read(&source).unwrap(), b"companion build");
+    assert_eq!(
+        fs::read(&source).unwrap(),
+        executable(b"companion build", 2)
+    );
 }
 
 #[test]
@@ -128,7 +166,7 @@ fn unrelated_and_modified_commands_are_never_replaced_or_shadowed() {
     let temp = tempfile::tempdir().unwrap();
     let mut env = environment(temp.path());
     let source = temp.path().join("download.exe");
-    fs::write(&source, b"companion").unwrap();
+    fs::write(&source, executable(b"companion", 2)).unwrap();
     let known = env.home.join(".cargo/bin");
     let other = temp.path().join("other");
     fs::create_dir_all(&known).unwrap();
@@ -162,14 +200,64 @@ fn unrelated_marker_and_hardlinked_launcher_are_rejected() {
     let directory = env.stable_bin();
     fs::create_dir_all(&directory).unwrap();
     let source = temp.path().join("download.exe");
-    fs::write(&source, b"companion").unwrap();
+    fs::write(&source, executable(b"companion", 2)).unwrap();
     fs::write(directory.join(MARKER), b"unrelated data").unwrap();
     assert!(register(&source, &env).is_err());
     assert_eq!(fs::read(directory.join(MARKER)).unwrap(), b"unrelated data");
     fs::remove_file(directory.join(MARKER)).unwrap();
     fs::hard_link(&source, directory.join("dodex.exe")).unwrap();
     assert!(register(&source, &env).is_err());
-    assert_eq!(fs::read(&source).unwrap(), b"companion");
+    assert_eq!(fs::read(&source).unwrap(), executable(b"companion", 2));
+}
+
+#[test]
+fn console_conversion_rejects_invalid_headers_before_changing_registration() {
+    let temp = tempfile::tempdir().unwrap();
+    let env = environment(temp.path());
+    let source = temp.path().join("download.exe");
+    fs::write(&source, executable(b"original", 2)).unwrap();
+    let registered = register(&source, &env).unwrap();
+    let target = registered.directory.join("dodex.exe");
+    let marker = fs::read(registered.directory.join(MARKER)).unwrap();
+    let valid = executable(b"invalid", 2);
+    let mut invalid = vec![Vec::new(), b"not a PE executable".to_vec()];
+    for (start, bytes) in [
+        (0, b"XX".as_slice()),
+        (60, u32::MAX.to_le_bytes().as_slice()),
+        (64, b"bad!".as_slice()),
+        (84, 69u16.to_le_bytes().as_slice()),
+        (86, 0x2002u16.to_le_bytes().as_slice()),
+        (88, 0x107u16.to_le_bytes().as_slice()),
+        (156, 1u16.to_le_bytes().as_slice()),
+    ] {
+        let mut bytes_to_test = valid.clone();
+        bytes_to_test[start..start + bytes.len()].copy_from_slice(bytes);
+        invalid.push(bytes_to_test);
+    }
+    for bytes in invalid {
+        fs::write(&source, &bytes).unwrap();
+        assert!(register(&source, &env).is_err());
+        assert_eq!(fs::read(&source).unwrap(), bytes);
+        assert_eq!(fs::read(&target).unwrap(), executable(b"original", 3));
+        assert_eq!(fs::read(registered.directory.join(MARKER)).unwrap(), marker);
+    }
+}
+
+#[test]
+fn console_conversion_supports_pe32_and_clears_the_checksum() {
+    let temp = tempfile::tempdir().unwrap();
+    let env = environment(temp.path());
+    let source = temp.path().join("download.exe");
+    let mut bytes = executable(b"32-bit", 2);
+    bytes[88..90].copy_from_slice(&0x10bu16.to_le_bytes());
+    bytes[152..156].copy_from_slice(&1234u32.to_le_bytes());
+    fs::write(&source, &bytes).unwrap();
+    let registered = register(&source, &env).unwrap();
+    bytes[152..158].copy_from_slice(&[0, 0, 0, 0, 3, 0]);
+    assert_eq!(
+        fs::read(registered.directory.join("dodex.exe")).unwrap(),
+        bytes
+    );
 }
 
 #[test]

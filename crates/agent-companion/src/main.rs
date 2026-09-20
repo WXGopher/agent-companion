@@ -95,18 +95,25 @@ struct DodexArgs {
     check: bool,
 }
 
-/// The installed native command is a stable copy of this executable. Parsing it
-/// directly avoids cmd/PowerShell quoting and preserves every original argument.
+/// Only leading deployment flags belong to the wrapper. Help, version, prompts,
+/// subcommands and all other arguments belong to the official Codex CLI.
 #[cfg(windows)]
 #[derive(Debug, Parser)]
 #[command(
     name = "dodex",
-    version,
-    about = "Open the isolated second Codex desktop instance."
+    disable_version_flag = true,
+    about = "Manage the isolated second Codex environment. Run dodex to open its CLI."
 )]
-struct DodexCli {
+struct DodexManagementCli {
     #[command(flatten)]
     options: DodexArgs,
+}
+
+#[cfg(windows)]
+fn is_dodex_management(arguments: &[std::ffi::OsString]) -> bool {
+    arguments
+        .first()
+        .is_some_and(|argument| argument == "--deploy" || argument == "--check")
 }
 
 #[cfg(windows)]
@@ -150,8 +157,20 @@ fn main() -> ExitCode {
     }
     #[cfg(windows)]
     let cli = if standalone_dodex {
+        let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+        if !is_dodex_management(&arguments) {
+            match windows_deployment::launch_cli(&arguments) {
+                // ExitCode only accepts u8; Windows child exit codes use all
+                // 32 bits, including Ctrl+C and application-specific errors.
+                Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+                Err(error) => {
+                    errln!("dodex: {error}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
         Cli {
-            command: Some(Command::Dodex(DodexCli::parse().options)),
+            command: Some(Command::Dodex(DodexManagementCli::parse().options)),
         }
     } else {
         Cli::parse()
@@ -211,24 +230,28 @@ mod cli_tests {
         assert!(!is_dodex_executable(std::path::Path::new(
             "agent-companion.exe"
         )));
-        let defaults = DodexCli::try_parse_from(["dodex"]).unwrap();
-        assert!(!defaults.options.deploy && !defaults.options.check);
+        assert!(!is_dodex_management(&[]));
+        for first in ["--help", "--version", "resume", "exec", "-p", "-C", "-c"] {
+            assert!(!is_dodex_management(&[first.into(), "--deploy".into()]));
+        }
+        assert!(is_dodex_management(&["--deploy".into()]));
+        assert!(is_dodex_management(&["--check".into()]));
         assert!(
-            DodexCli::try_parse_from(["dodex", "--deploy"])
+            DodexManagementCli::try_parse_from(["dodex", "--deploy"])
                 .unwrap()
                 .options
                 .deploy
         );
         assert!(
-            DodexCli::try_parse_from(["dodex", "--check"])
+            DodexManagementCli::try_parse_from(["dodex", "--check"])
                 .unwrap()
                 .options
                 .check
         );
-        assert!(DodexCli::try_parse_from(["dodex", "--deploy", "--check"]).is_err());
-        assert!(DodexCli::try_parse_from(["dodex", "--unknown"]).is_err());
-        assert!(DodexCli::try_parse_from(["dodex", "a b&c'd%!"]).is_err());
-        let help = DodexCli::try_parse_from(["dodex", "--help"]).unwrap_err();
+        assert!(DodexManagementCli::try_parse_from(["dodex", "--deploy", "--check"]).is_err());
+        assert!(DodexManagementCli::try_parse_from(["dodex", "--deploy", "exec"]).is_err());
+        assert!(DodexManagementCli::try_parse_from(["dodex", "--check", "-c", "x=1"]).is_err());
+        let help = DodexManagementCli::try_parse_from(["dodex", "--deploy", "--help"]).unwrap_err();
         assert_eq!(help.kind(), clap::error::ErrorKind::DisplayHelp);
         assert!(help.to_string().contains("Usage: dodex"));
         assert!(matches!(

@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::{
     ffi::{OsStr, OsString},
     fs::{self, File},
-    io::{Read, Write},
+    io::{Read, Seek, SeekFrom, Write},
     os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
 };
@@ -350,34 +350,37 @@ fn install_command(source: &Path, directory: &Path) -> Result<(), String> {
     let owner = ownership(directory)?;
     // Cargo and some package managers hard-link immutable source executables.
     // Copy their bytes, then require the installed command to be independent.
-    let new_hash = file_hash_with(source, true)?;
+    let source_hash = file_hash_with(source, true)?;
     let previous_hash = if target.exists() {
         Some(file_hash(&target)?)
     } else {
         None
     };
-    if let Some(hash) = &previous_hash {
-        if !owner
+    if let Some(hash) = &previous_hash
+        && !owner
             .as_ref()
             .is_some_and(|owner| owner.hashes.contains(hash))
-        {
-            return Err(conflict(&target));
-        }
-        if *hash == new_hash {
-            // In particular, dodex --deploy must not replace its running self.
-            return Ok(());
-        }
+    {
+        return Err(conflict(&target));
+    }
+    let mut stage =
+        tempfile::NamedTempFile::new_in(directory).map_err(|_| "无法写入 dodex 命令。")?;
+    fs::copy(source, stage.path()).map_err(|_| "无法复制 dodex 命令。")?;
+    if file_hash(stage.path())? != source_hash {
+        return Err("Companion 程序在复制时改变，请重试。".into());
+    }
+    make_console_launcher(stage.as_file_mut()).map_err(|_| "无法生成 dodex 控制台命令。")?;
+    let new_hash = file_hash(stage.path())?;
+    if previous_hash.as_ref() == Some(&new_hash) {
+        // The console conversion is idempotent. In particular, dodex --deploy
+        // must not replace its running self or rewrite its ownership marker.
+        return Ok(());
     }
     let mut hashes = vec![new_hash.clone()];
     if let Some(hash) = &previous_hash {
         hashes.push(hash.clone());
     }
     save_ownership(directory, hashes, owner.is_some())?;
-    let stage = tempfile::NamedTempFile::new_in(directory).map_err(|_| "无法写入 dodex 命令。")?;
-    fs::copy(source, stage.path()).map_err(|_| "无法复制 dodex 命令。")?;
-    if file_hash(stage.path())? != new_hash {
-        return Err("Companion 程序在复制时改变，请重试。".into());
-    }
     let result = if previous_hash.is_some() {
         stage.persist(&target)
     } else {
@@ -385,6 +388,54 @@ fn install_command(source: &Path, directory: &Path) -> Result<(), String> {
     };
     result.map_err(|_| "无法更新 dodex 命令；请等待正在执行的 dodex 退出后重试。")?;
     save_ownership(directory, vec![new_hash], true)
+}
+
+/// The main app is a GUI executable, but shells must wait for its installed
+/// Dodex copy and provide a console. PE32 and PE32+ share these header offsets;
+/// changing only the staged copy keeps deployment self-contained, with no
+/// sibling executable or build-directory dependency. Windows accepts a zero
+/// checksum for ordinary user-mode executables.
+fn make_console_launcher(file: &mut File) -> std::io::Result<()> {
+    let invalid = || std::io::Error::other("invalid Companion PE executable");
+    let mut dos = [0; 64];
+    file.rewind()?;
+    file.read_exact(&mut dos)?;
+    if &dos[..2] != b"MZ" {
+        return Err(invalid());
+    }
+    let pe_offset = u32::from_le_bytes(dos[60..64].try_into().unwrap()) as u64;
+    if pe_offset < dos.len() as u64 {
+        return Err(invalid());
+    }
+    file.seek(SeekFrom::Start(pe_offset))?;
+    let mut pe = [0; 24];
+    file.read_exact(&mut pe)?;
+    let optional_size = u16::from_le_bytes(pe[20..22].try_into().unwrap()) as u64;
+    let characteristics = u16::from_le_bytes(pe[22..24].try_into().unwrap());
+    let optional_offset = pe_offset + pe.len() as u64;
+    if &pe[..4] != b"PE\0\0"
+        || characteristics & 0x0002 == 0 // IMAGE_FILE_EXECUTABLE_IMAGE
+        || characteristics & 0x2000 != 0 // IMAGE_FILE_DLL
+        || optional_size < 70
+        || optional_offset + optional_size > file.metadata()?.len()
+    {
+        return Err(invalid());
+    }
+    let mut optional = [0; 70];
+    file.read_exact(&mut optional)?;
+    let minimum_size = match u16::from_le_bytes(optional[..2].try_into().unwrap()) {
+        0x10b => 96,  // PE32
+        0x20b => 112, // PE32+
+        _ => return Err(invalid()),
+    };
+    let subsystem = u16::from_le_bytes(optional[68..70].try_into().unwrap());
+    if optional_size < minimum_size || !matches!(subsystem, 2 | 3) {
+        return Err(invalid());
+    }
+    file.seek(SeekFrom::Start(optional_offset + 64))?;
+    // CheckSum (u32), then Subsystem = IMAGE_SUBSYSTEM_WINDOWS_CUI (u16).
+    file.write_all(&[0, 0, 0, 0, 3, 0])?;
+    file.flush()
 }
 
 struct UserPath {
