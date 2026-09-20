@@ -54,7 +54,7 @@ for name in ("README.md", "LICENSE", "THIRD_PARTY_NOTICES.md"):
     shutil.copy2(root / name, contents / "Resources" / name)
 screenshots = contents / "Resources" / "docs"
 screenshots.mkdir()
-for name in ("panel.png", "windows-usage.png", "codex-tui.png", "macos-notch.png", "macos-settings.png"):
+for name in ("panel.png", "windows-usage.png", "codex-tui.png", "windows-dual.png", "macos-notch.png", "macos-settings.png"):
     shutil.copy2(root / "docs" / name, screenshots / name)
 # Rust's linker signs the Mach-O executable ad hoc. Once it is placed in an
 # app bundle, seal Info.plist and Resources as well; otherwise codesign reports
@@ -64,6 +64,17 @@ subprocess.run(["codesign", "--force", "--sign", "-", "--timestamp=none", str(ap
 subprocess.run(["codesign", "--verify", "--strict", str(app)], check=True)
 archive = args.output / f"agent-companion-v{version}-macos-arm64.zip"
 subprocess.run(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(app), str(archive)], check=True)
+# Verify the distributable after extraction, including the bundle's sealed
+# resources. This also runs on the macOS CI host when publishing from Windows.
+with tempfile.TemporaryDirectory(prefix="agent-companion-package-check-") as temporary:
+    subprocess.run(["ditto", "-x", "-k", str(archive), temporary], check=True)
+    restored = Path(temporary) / app.name
+    subprocess.run(["codesign", "--verify", "--strict", str(restored)], check=True)
+    reported = subprocess.check_output(
+        [str(restored / "Contents/MacOS/agent-companion"), "--version"], text=True
+    ).strip()
+    if reported != f"agent-companion {version}":
+        parser.error(f"packaged executable version mismatch: {reported}")
 digest = hashlib.sha256(archive.read_bytes()).hexdigest()
 (args.output / "SHA256SUMS-macos-arm64.txt").write_text(f"{digest}  {archive.name}\n")
 print(archive)
