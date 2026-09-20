@@ -259,6 +259,7 @@ pub fn deploy() -> Result<DeploymentStatus, String> {
         validate_primary_separation(&root)?;
         if root.exists() {
             let manifest = validate(&root, true)?;
+            prepare_sandbox_bin(&manifest.instance.codex_home)?;
             save_preference(&root, true)?;
             return Ok((Some(manifest.instance), true));
         }
@@ -284,6 +285,7 @@ pub fn deploy() -> Result<DeploymentStatus, String> {
         ] {
             fs::create_dir_all(stage.path().join(directory)).map_err(|_| "无法创建隔离目录。")?;
         }
+        prepare_sandbox_bin(&stage.path().join("codex-home"))?;
         fs::write(
             stage.path().join("codex-home/config.toml"),
             configuration(&instance),
@@ -313,6 +315,22 @@ fn configuration(instance: &InstanceConfig) -> String {
         serde_json::to_string(&instance.database_dir).unwrap(),
         serde_json::to_string(&instance.desktop_user_data.join("logs")).unwrap()
     )
+}
+
+fn prepare_sandbox_bin(home: &Path) -> Result<(), String> {
+    let directory = home.join(".sandbox-bin");
+    no_redirects(&directory)?;
+    // Create this as the desktop user before Codex's elevated setup. Otherwise
+    // the helper owns it as Administrators and its later unelevated refresh
+    // cannot set the protected DACL (helper_sandbox_lock_failed, Windows 5).
+    // Leave existing contents and permissions entirely to Codex.
+    match fs::create_dir(&directory) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && directory.is_dir() => {
+            Ok(())
+        }
+        Err(_) => Err("无法准备 Dodex 的 Windows 初始化目录。".into()),
+    }
 }
 
 fn validate(root: &Path, runtime: bool) -> Result<Manifest, String> {
@@ -583,6 +601,7 @@ pub fn launch(thread: Option<&str>) -> Result<(), String> {
     let root = current_root()?;
     let manifest = validate(&root, true)?;
     let instance = manifest.instance;
+    prepare_sandbox_bin(&instance.codex_home)?;
     let mut command = isolated_command(
         &instance.runtime_app,
         &instance.codex_home,

@@ -1,6 +1,24 @@
 use super::*;
 
 #[test]
+fn sandbox_preparation_preserves_existing_helpers_and_rejects_files() {
+    let home = tempfile::tempdir().unwrap();
+    prepare_sandbox_bin(home.path()).unwrap();
+    let helper = home.path().join(".sandbox-bin/helper.exe");
+    fs::write(&helper, b"existing sandbox helper").unwrap();
+    prepare_sandbox_bin(home.path()).unwrap();
+    assert_eq!(fs::read(helper).unwrap(), b"existing sandbox helper");
+
+    let invalid = tempfile::tempdir().unwrap();
+    fs::write(invalid.path().join(".sandbox-bin"), b"unrelated file").unwrap();
+    assert!(prepare_sandbox_bin(invalid.path()).is_err());
+    assert_eq!(
+        fs::read(invalid.path().join(".sandbox-bin")).unwrap(),
+        b"unrelated file"
+    );
+}
+
+#[test]
 fn runtime_checks_preserve_powershell_quotes_and_path_arguments() {
     let result = powershell("if ('CN=\"OpenAI OpCo, LLC\", O=\"OpenAI OpCo, LLC\", C=US' -notmatch 'O=\"?OpenAI OpCo, LLC\"?,') { exit 1 }; Write-Output $env:COMPANION_RUNTIME_CHECK", Some(Path::new("C:\\example space\\a&b's"))).unwrap();
     assert_eq!(result, "C:\\example space\\a&b's");
