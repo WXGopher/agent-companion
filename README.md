@@ -12,10 +12,12 @@
 - **Tasks / Usage**：切换任务与用量，查看剩余额度、重置时间、累计 Token 和最近七个有记录日期的用量柱状图。
 - **状态栏定制**：选择 Codex CLI 状态栏组件，实时预览并保存。
 - **Windows 集成**：任务栏分别显示 Codex（`C`）和 Dodex（`D`）的每周剩余额度；支持任务完成通知、开机启动，以及可选的工具审批和提问卡片。
-- **macOS 入口**：菜单栏显示有效的每周剩余额度：两份额度有效时上行 Codex、下行 Dodex，仅一份有效时只显示该实例，均无有效额度时显示默认图标；点击弹出任务／用量面板。Dock 图标可选，点击打开设置。菜单栏、Dock 和刘海可在设置中独立开关，默认仅显示菜单栏，已有选择保持不变。
+- **macOS 入口**：菜单栏显示每周剩余额度，Codex 在上、Dodex 在下；有历史读数的实例在闲置时继续显示，待更新的数值带 `*`，悬停可查看说明。尚无读数时显示默认图标；点击弹出任务／用量面板。Dock 图标可选，点击打开设置。菜单栏、Dock 和刘海可在设置中独立开关，默认仅显示菜单栏，已有选择保持不变。
 - **可选 Codex 双开（Windows / macOS）**：在设置中手动部署或接入 Dodex，任务标注来源，用量、缓存和 CLI 状态栏设置按实例管理。默认关闭，不自动接入或启动 Dodex。
 
 订阅用量复用对应实例的 Codex CLI ChatGPT 登录，无需 API Key。两个平台的 Usage 查询结果均按实例缓存 5 分钟，从查询完成时计时；切换页面直接复用有效缓存，手动刷新可立即重新查询。已过重置时间的额度不会继续显示为有效值。
+
+macOS 菜单栏可见时，即使面板关闭，也会按实例每 5 分钟刷新账号用量。缓存到期、读取失败或额度重置后，最后已知数值以 `*` 标记为待更新，收到有效新读数后恢复正常显示；不会把重置后的额度推算为 100%。后台和用量页共享查询与缓存，不启动模型任务。
 
 ### 安装
 
@@ -72,10 +74,12 @@ See Codex tasks and subscription usage in the Windows taskbar or macOS menu bar.
 - **Tasks / Usage**: switch to remaining quota, reset times, lifetime tokens and a bar chart of the last seven reported days.
 - **Status bar editor**: choose Codex CLI components with a live preview.
 - **Windows integration**: separate taskbar readings for Codex (`C`) and Dodex (`D`) weekly quota remaining, completion notifications, startup settings, and optional tool approvals and question cards.
-- **macOS entry points**: the menu bar shows valid weekly quota readings, with Codex above Dodex when both are available, a single row when only one is available, and the default icon otherwise; click it for tasks and usage. The optional Dock icon opens Settings. Configure menu bar, Dock and notch visibility independently in Settings. Only the menu bar is on by default; saved choices are preserved.
+- **macOS entry points**: the menu bar shows weekly quota remaining, with Codex above Dodex. Instances with a previous reading stay visible while idle; readings awaiting an update carry `*`, with an explanation on hover. The default icon appears before any readings are available; click it for tasks and usage. The optional Dock icon opens Settings. Configure menu bar, Dock and notch visibility independently in Settings. Only the menu bar is on by default; saved choices are preserved.
 - **Optional second Codex instance (Windows / macOS)**: explicitly deploy or connect Dodex in Settings. Tasks show their source; usage, caches and CLI status bar settings stay separate. Disabled by default, with no automatic adoption or launch.
 
 Subscription usage uses each instance's Codex CLI ChatGPT login. No API key is needed. Both platforms cache Usage results separately for five minutes from completion; switching pages reuses a fresh result, while manual refresh reads again. Quota readings past their reset time are no longer treated as valid.
+
+While the macOS menu bar is visible, account usage refreshes every five minutes per instance even with the panel closed. After cache expiry, a failed read or a quota reset, the last known reading carries `*` until a valid update arrives. The app never infers 100% remaining after a reset. Background refresh and the Usage page share requests and caches without starting model tasks.
 
 ### Install
 

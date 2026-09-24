@@ -34,7 +34,8 @@ enum EntryPreferenceTests {
         var settingsOpened = 0
         let reader = UsageFixture()
         let menuModel = CompanionModel(usageReader: reader)
-        let controller = NotchController(entries: preferences, menuModel: menuModel, settingsOverride: { settingsOpened += 1 })
+        let controller = NotchController(entries: preferences, menuModel: menuModel, settingsOverride: { settingsOpened += 1 },
+                                         usageReader: { _ in reader })
         controller.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
         precondition(controller.menuBarIsVisible && !controller.notchIsVisible && !controller.hasMouseMonitoring)
         NSApp.activate(ignoringOtherApps: true)

@@ -89,7 +89,7 @@ final class CompanionModel: ObservableObject {
     @Published var expanded = false {
         didSet {
             if expanded != oldValue { presentationRevision &+= 1 }
-            if !expanded { subscriptionMonitor.stop(); usageLoading = false }
+            if !expanded { stopUsage() }
         }
     }
     @Published var showingCompleted = false
@@ -113,12 +113,15 @@ final class CompanionModel: ObservableObject {
     private var presentationRevision: UInt64 = 0
     private let openTask: (CodexTask, CodexInstance, @escaping (String?) -> Void) -> Void
     private let subscriptionMonitor: SubscriptionMonitor
+    private let clock: () -> Date
     private var usageSource: SubscriptionSource?
+    weak var usageCoordinator: SubscriptionUsageCoordinator?
 
     init(openTask: @escaping (CodexTask, CodexInstance, @escaping (String?) -> Void) -> Void = TerminalJump.open,
-         usageReader: SubscriptionReading = CodexSubscriptionReader()) {
+         usageReader: SubscriptionReading = CodexSubscriptionReader(), clock: @escaping () -> Date = Date.init) {
         self.openTask = openTask
-        subscriptionMonitor = SubscriptionMonitor(reader: usageReader)
+        self.clock = clock
+        subscriptionMonitor = SubscriptionMonitor(reader: usageReader, clock: clock)
         subscriptionMonitor.onChange = { [weak self] value, loading in
             if let value { self?.subscriptionUsage = value }
             self?.usageLoading = loading
@@ -176,18 +179,25 @@ final class CompanionModel: ObservableObject {
         cachedWeeklyUsage(for: instance)?.usage ?? instance.weekly
     }
     func cachedWeeklyUsage(for instance: CodexInstance) -> (usage: WeeklyUsage, readAt: Date)? {
-        // Each card uses only its own account cache or local snapshot. Showing
-        // all instances on Tasks must not start additional account requests.
+        if let usageCoordinator {
+            guard let cached = usageCoordinator.cachedWeeklyUsage(for: instance.usageSource),
+                  clock().timeIntervalSince(cached.readAt) >= 0,
+                  clock().timeIntervalSince(cached.readAt) < SubscriptionMonitor.refreshInterval,
+                  MenuBarUsage.remaining(cached.usage, at: clock()) != nil else { return nil }
+            return cached
+        }
+        // Each card uses only its own account cache or local snapshot.
         let hasCurrentReading = usageSource == instance.usageSource || (usageSource == nil && subscriptionUsage.readAt != nil)
         let usage = instance.id == selectedInstance.id && hasCurrentReading
             ? subscriptionUsage : subscriptionMonitor.cachedUsage(for: instance.usageSource)
-        if let readAt = usage?.readAt, Date().timeIntervalSince(readAt) < 300,
+        if let readAt = usage?.readAt, clock().timeIntervalSince(readAt) >= 0,
+           clock().timeIntervalSince(readAt) < SubscriptionMonitor.refreshInterval,
            let limits = usage?.limits,
            let bucket = limits.buckets.first(where: { $0.id == "codex" }),
            let window = [bucket.value.primary, bucket.value.secondary].compactMap({ $0 })
                .first(where: { $0.windowDurationMins == 10080 }) {
             return (WeeklyUsage(usedPercent: window.usedPercent, resetsAt: window.resetsAt,
-                                expired: window.remaining() == nil), readAt)
+                                expired: window.remaining(at: clock()) == nil), readAt)
         }
         return nil
     }
@@ -216,8 +226,7 @@ final class CompanionModel: ObservableObject {
     }
     func stop() {
         timer?.invalidate(); timer = nil
-        subscriptionMonitor.stop()
-        usageLoading = false
+        stopUsage()
     }
 
     func showUsage() {
@@ -234,8 +243,19 @@ final class CompanionModel: ObservableObject {
 
     func showTasks() {
         showingUsage = false
-        subscriptionMonitor.stop()
+        stopUsage()
+    }
+
+    private func stopUsage() {
+        if let usageCoordinator { usageCoordinator.release(owner: self) }
+        else { subscriptionMonitor.stop() }
         usageLoading = false
+    }
+
+    func receiveUsage(source: SubscriptionSource, value: SubscriptionUsage?, loading: Bool) {
+        guard source == usageSource else { return }
+        if let value { subscriptionUsage = value }
+        usageLoading = expanded && showingUsage && loading
     }
 
     func refreshUsage(force: Bool = false) {
@@ -245,7 +265,8 @@ final class CompanionModel: ObservableObject {
             subscriptionUsage = SubscriptionUsage()
             usageLoading = false
         }
-        subscriptionMonitor.refresh(source: source, force: force)
+        if let usageCoordinator { usageCoordinator.refresh(source: source, owner: self, force: force) }
+        else { subscriptionMonitor.refresh(source: source, force: force) }
     }
 
     func refresh() {
