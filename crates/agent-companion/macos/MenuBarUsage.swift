@@ -1,23 +1,37 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import AppKit
 
-/// Only usable weekly readings occupy space in the menu bar. Rendering this
-/// value never starts an account request or substitutes another instance.
+/// Keep known readings visible while they refresh, with an explicit stale mark.
+/// Rendering never starts an account request or substitutes another instance.
 struct MenuBarUsage: Equatable {
+    struct Reading {
+        let usage: WeeklyUsage
+        var stale = false
+    }
     struct Row: Equatable {
         let id: String
         let label: String
         let remaining: Int
-        var text: String { "\(remaining)%" }
+        var stale = false
+        var text: String { "\(remaining)%\(stale ? "*" : "")" }
     }
     let rows: [Row]
 
     init(instances: [CodexInstance], now: Date = Date(),
          usage: (CodexInstance) -> WeeklyUsage?) {
+        self.init(instances: instances, now: now, reading: { instance in
+            usage(instance).map { Reading(usage: $0) }
+        })
+    }
+
+    init(instances: [CodexInstance], now: Date = Date(),
+         reading: (CodexInstance) -> Reading?) {
         rows = instances.sorted { ($0.id == "codex" ? 0 : 1) < ($1.id == "codex" ? 0 : 1) }
             .compactMap { instance in
-                guard let remaining = Self.remaining(usage(instance), at: now) else { return nil }
-                return Row(id: instance.id, label: instance.label, remaining: remaining)
+                guard let value = reading(instance) else { return nil }
+                return Row(id: instance.id, label: instance.label,
+                           remaining: 100 - min(100, max(0, value.usage.usedPercent)),
+                           stale: value.stale || Self.remaining(value.usage, at: now) == nil)
             }
     }
 
@@ -29,7 +43,10 @@ struct MenuBarUsage: Equatable {
 
     var accessibilityDescription: String {
         guard !rows.isEmpty else { return "Agent Companion tasks and usage" }
-        return rows.map { "\($0.label): \($0.text) weekly quota remaining" }.joined(separator: "; ")
+        return rows.map {
+            $0.stale ? "\($0.label): Last known weekly quota remaining: \($0.remaining)%; awaiting update"
+                : "\($0.label): \($0.text) weekly quota remaining"
+        }.joined(separator: "; ")
     }
 
     var image: NSImage? {

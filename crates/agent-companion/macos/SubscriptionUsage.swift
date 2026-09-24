@@ -144,9 +144,10 @@ enum InstanceEnvironment {
     }
 }
 
-/// Main-thread coordinator; the CLI is launched only after opening Usage.
+/// Main-thread coordinator for one reader, with a five-minute refresh interval.
 /// No persisted account data, no API keys, and no extra model turns.
 final class SubscriptionMonitor {
+    static let refreshInterval: TimeInterval = 300
     private let reader: SubscriptionReading
     private let clock: () -> Date
     private var generation = 0
@@ -174,7 +175,7 @@ final class SubscriptionMonitor {
         guard !inFlight else { return }
         if !force, let cached = cache[source] {
             let age = clock().timeIntervalSince(cached.completedAt)
-            if age >= 0 && age < 300 {
+            if age >= 0 && age < Self.refreshInterval {
                 // Restore the result immediately even when reopening the same
                 // source. No CLI or loading state is needed for a cache hit.
                 onChange?(cached.usage, false)
@@ -189,8 +190,8 @@ final class SubscriptionMonitor {
         reader.read(source: source) { [weak self] result in
             guard let self, request == self.generation else { return }
             self.inFlight = false
-            // A slow request must not consume any of the result's five-minute
-            // lifetime. Cache only completed reads, independently per source.
+            // Throttle from completion, including failures. Display freshness
+            // is separate and uses the last successful reading's own readAt.
             self.cache[source] = Cache(completedAt: self.clock(), usage: result)
             // Replace the entire snapshot, including on failure. This avoids
             // displaying another account's cached data after a login change.
@@ -208,6 +209,13 @@ final class SubscriptionMonitor {
 
     func cachedUsage(for source: SubscriptionSource) -> SubscriptionUsage? {
         cache[source]?.usage
+    }
+
+    func needsRefresh(for source: SubscriptionSource) -> Bool {
+        guard !inFlight else { return false }
+        guard let cached = cache[source] else { return true }
+        let age = clock().timeIntervalSince(cached.completedAt)
+        return age < 0 || age >= Self.refreshInterval
     }
 
     func retainSources(_ sources: Set<SubscriptionSource>) {

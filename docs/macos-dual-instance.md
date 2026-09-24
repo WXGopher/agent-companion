@@ -2,9 +2,10 @@
 
 Agent Companion starts with only the menu bar visible, the Dock and notch hidden,
 and second-instance support disabled. Settings controls each entry independently
-and preserves saved choices across upgrades. The menu bar shows valid weekly
-quota readings: Codex above Dodex when both are available, only the available
-instance when one is valid, and the default terminal icon when neither is valid.
+and preserves saved choices across upgrades. The menu bar shows weekly quota
+readings with Codex above Dodex. A previously available reading stays visible
+while idle; `*` and a tooltip identify last-known readings awaiting an update.
+The default terminal icon appears before any readings are available.
 Before explicit opt-in, opening Settings
 does not discover, deploy, adopt, or launch Dodex. Reopening Companion always reaches Settings,
 including when every entry point is hidden.
@@ -57,7 +58,7 @@ status-bar draft. Task keys combine the instance ID and conversation ID.
 Tasks shows a separate weekly-quota card for every enabled instance, including
 Dodex when it has no quota reading yet. Each card opens that instance's Usage
 page. Cards use their own local snapshot or recent account cache; displaying
-Tasks does not start account requests. The menu panel scrolls overflowing page
+Tasks does not add account requests to the menu bar's background refresh. The menu panel scrolls overflowing page
 content while keeping Settings and the other footer actions visible.
 
 Desktop navigation sends the conversation event to the matching running app
@@ -70,6 +71,16 @@ from completion. Reopening Usage or switching instances restores a fresh cache
 immediately; a missing or expired result is read again. The refresh button
 bypasses the cache, while repeated clicks during a read share that request.
 Closing the panel preserves completed results; cancelled reads create no cache.
+
+While the menu bar is visible, account usage refreshes every five minutes per
+instance, including with the popup closed. Background refresh and both Usage
+surfaces share requests for the same source. The five-minute refresh interval
+does not erase the last-known menu reading: stale values carry `*` until a valid
+update arrives, including after failures and quota resets. A valid local reading
+can replace a stale account reading. A reset never implies a new 100% allowance.
+Hiding the menu bar withdraws background demand without interrupting an open
+Usage page. Disabling an instance or replacing its home, database or runtime
+clears its cached data.
 
 ## Verification
 

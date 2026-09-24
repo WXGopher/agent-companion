@@ -25,12 +25,26 @@ final class NotchController: NSObject, NSApplicationDelegate, NSPopoverDelegate 
     private var notchEnabled = false
     private let entries: EntryPreferences
     private let settingsOverride: (() -> Void)?
-    init(entries: EntryPreferences = .shared, model: CompanionModel = CompanionModel(), menuModel: CompanionModel = CompanionModel(), settingsOverride: (() -> Void)? = nil) {
+    private let clock: () -> Date
+    private let usageCoordinator: SubscriptionUsageCoordinator
+    init(entries: EntryPreferences = .shared, model: CompanionModel = CompanionModel(), menuModel: CompanionModel = CompanionModel(), settingsOverride: (() -> Void)? = nil,
+         clock: @escaping () -> Date = Date.init,
+         usageReader: @escaping (SubscriptionSource) -> SubscriptionReading = { _ in CodexSubscriptionReader() }) {
         self.entries = entries
         self.model = model
         self.menuModel = menuModel
         self.settingsOverride = settingsOverride
+        self.clock = clock
+        usageCoordinator = SubscriptionUsageCoordinator(makeReader: usageReader, clock: clock)
         super.init()
+        model.usageCoordinator = usageCoordinator
+        menuModel.usageCoordinator = usageCoordinator
+        usageCoordinator.onChange = { [weak self] source, value, loading in
+            guard let self else { return }
+            self.model.receiveUsage(source: source, value: value, loading: loading)
+            self.menuModel.receiveUsage(source: source, value: value, loading: loading)
+            RunLoop.main.perform(inModes: [.common]) { [weak self] in self?.updateMenuBarUsage() }
+        }
     }
     var notchIsVisible: Bool { panel?.isVisible == true }
     var notchIsAnimating: Bool { presentation?.isAnimating == true }
@@ -163,6 +177,7 @@ final class NotchController: NSObject, NSApplicationDelegate, NSPopoverDelegate 
             NSStatusBar.system.removeStatusItem(item)
             statusItem = nil
             menuBarUsage = nil
+            updateMenuBarUsage()
         }
         let enabled = entries.notchVisible
         guard enabled != notchEnabled else { return }
@@ -181,17 +196,14 @@ final class NotchController: NSObject, NSApplicationDelegate, NSPopoverDelegate 
     }
 
     private func updateMenuBarUsage() {
+        guard !quitting else { return }
+        // The always-running primary snapshot alone owns source membership;
+        // a closed popup may still have an older snapshot.
+        usageCoordinator.synchronize(instances: model.instances,
+                                     backgroundEnabled: statusItem != nil && !model.snapshot.loading)
         guard let statusItem else { return }
-        let now = Date()
-        let value = MenuBarUsage(instances: model.instances, now: now) { instance in
-            // Both surfaces retain account caches after closing. Use the most
-            // recent completed reading for this exact source, or its current
-            // local snapshot. The background snapshot also removes disabled
-            // instances immediately, even while the popup is closed.
-            [model.cachedWeeklyUsage(for: instance), menuModel.cachedWeeklyUsage(for: instance)]
-                .compactMap { $0 }.filter { MenuBarUsage.remaining($0.usage, at: now) != nil }
-                .max { $0.readAt < $1.readAt }?.usage ?? instance.weekly
-        }
+        usageCoordinator.refreshBackground()
+        let value = MenuBarUsage(instances: model.instances, now: clock(), reading: { usageCoordinator.reading(for: $0) })
         guard value != menuBarUsage else { return }
         menuBarUsage = value
         value.apply(to: statusItem)
@@ -281,6 +293,7 @@ final class NotchController: NSObject, NSApplicationDelegate, NSPopoverDelegate 
         hover.stop()
         model.stop()
         menuModel.stop()
+        usageCoordinator.stop()
         popover.performClose(nil)
         if let statusItem { NSStatusBar.system.removeStatusItem(statusItem) }
         entries.stop()
