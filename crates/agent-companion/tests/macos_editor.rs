@@ -32,13 +32,36 @@ fn check_editor_startup() {
             winit::raw_window_handle::{HasWindowHandle, RawWindowHandle},
         },
     };
-    use std::{sync::mpsc, time::Duration};
+    use std::{
+        sync::mpsc,
+        time::{Duration, Instant},
+    };
 
-    let (finished, deadline) = mpsc::channel();
+    let started = Instant::now();
+    eprintln!("[editor-fixture] startup at {:?}", started.elapsed());
+
+    // The fixture has 29 validated phases. The watchdog measures a stalled
+    // startup or phase, not their cumulative render and filesystem work.
+    let (finished, deadline) = mpsc::channel::<Option<usize>>();
     let watchdog = std::thread::spawn(move || {
-        if deadline.recv_timeout(Duration::from_secs(15)).is_err() {
-            eprintln!("The macOS editor did not create a usable window within 15 seconds");
-            std::process::exit(1);
+        let mut last_phase = None;
+        loop {
+            match deadline.recv_timeout(Duration::from_secs(15)) {
+                Ok(Some(phase)) => last_phase = Some(phase),
+                Ok(None) => return,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    eprintln!(
+                        "[editor-fixture] no validated progress for 15 seconds; last completed phase: {last_phase:?}"
+                    );
+                    std::process::exit(1);
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    eprintln!(
+                        "[editor-fixture] progress channel closed before completion; last completed phase: {last_phase:?}"
+                    );
+                    std::process::exit(1);
+                }
+            }
         }
     });
     let home = tempfile::tempdir().unwrap();
@@ -49,7 +72,15 @@ fn check_editor_startup() {
     std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
     std::fs::create_dir_all(second_config_path.parent().unwrap()).unwrap();
     macos::prepare_editor().unwrap();
+    eprintln!(
+        "[editor-fixture] backend prepared at {:?}",
+        started.elapsed()
+    );
     let editor = codex_tui::Editor::new_isolated(config_path.clone()).unwrap();
+    eprintln!(
+        "[editor-fixture] editor constructed at {:?}",
+        started.elapsed()
+    );
     // Freeze deployment polling while rendering synthetic UI states; all
     // configuration and sync actions remain inside the temporary profiles.
     editor.deployment_timer.stop();
@@ -61,6 +92,7 @@ fn check_editor_startup() {
         .global::<ui::Palette>()
         .set_color_scheme(ColorScheme::Light);
     editor.show().unwrap();
+    eprintln!("[editor-fixture] window shown at {:?}", started.elapsed());
     editor
         .window
         .set_config_path("/Users/example/.codex/config.toml".into());
@@ -69,8 +101,16 @@ fn check_editor_startup() {
     let timer = slint::Timer::default();
     let completed = std::rc::Rc::new(std::cell::Cell::new(false));
     let completed_check = completed.clone();
+    let phase_progress = finished.clone();
     let mut phase = 0;
+    let mut previous_phase = None;
     timer.start(slint::TimerMode::Repeated, Duration::from_millis(250), move || {
+        let fresh_phase = previous_phase != Some(phase);
+        if fresh_phase {
+            eprintln!("[editor-fixture] phase {phase} begin at {:?}", started.elapsed());
+            previous_phase = Some(phase);
+        }
+        let phase_started = Instant::now();
         let window = weak.upgrade().unwrap();
         assert!(window.get_macos_preferences());
         assert!(window.get_ready());
@@ -95,6 +135,9 @@ fn check_editor_startup() {
         });
         assert!(created, "The settings window was not created and shown");
         let pixels = window.window().take_snapshot().unwrap();
+        if fresh_phase {
+            eprintln!("[editor-fixture] phase {phase} snapshot took {:?}", phase_started.elapsed());
+        }
         assert!(pixels.width() >= 620 && pixels.height() >= 620);
         if let Some(path) = std::env::var_os("AGENT_COMPANION_EDITOR_SNAPSHOT") {
             use std::io::Write;
@@ -419,6 +462,10 @@ fn check_editor_startup() {
                 slint::quit_event_loop().unwrap();
             }
         }
+        eprintln!("[editor-fixture] phase {phase} completed at {:?}", started.elapsed());
+        // Busy sync retries return above. Only a completed phase earns a new
+        // deadline, so a responsive UI cannot conceal a stuck file operation.
+        phase_progress.send(Some(phase)).unwrap();
         phase += 1;
     });
     slint::run_event_loop().unwrap();
@@ -426,7 +473,7 @@ fn check_editor_startup() {
         completed.get(),
         "The editor event loop exited before all scenarios completed"
     );
-    finished.send(()).unwrap();
+    finished.send(None).unwrap();
     watchdog.join().unwrap();
     println!(
         "PASS: opaque AppKit editor; two menu-only settings sections, light/dark/minimum-size layouts, separate status-bar drafts; manual bidirectional config/AGENTS sync with backups, no-op/error feedback, disabled-monitoring and missing-target support, override warnings, dirty/busy guards and retained selection; all file writes stayed in isolated fixtures"
