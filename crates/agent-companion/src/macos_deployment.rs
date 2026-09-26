@@ -1,5 +1,8 @@
 //! Opt-in, local-only Dodex deployment. This module never starts either application,
 //! reads credential files, or discovers a second profile before an explicit opt-in.
+use agent_companion_core::install::profile_sync::{
+    self, Direction, FileKind, IsolationPaths, ProfilePair, SyncOutcome,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
@@ -79,6 +82,7 @@ struct State {
     preference_stamp: PreferenceStamp,
 }
 static STATE: OnceLock<Mutex<State>> = OnceLock::new();
+static SYNC_INSTANCE: OnceLock<Mutex<Option<(PreferenceStamp, InstanceConfig)>>> = OnceLock::new();
 
 #[derive(Clone)]
 struct Layout {
@@ -241,6 +245,118 @@ pub fn active_instance() -> Option<InstanceConfig> {
         .enabled
         .then(|| state.instance.clone())
         .flatten()
+}
+
+/// Read-only discovery also permits a saved, disabled deployment. Cache the
+/// manifest/path checks; runtime signatures are checked by the sync worker.
+pub fn profile_sync_paths() -> Result<ProfilePair, String> {
+    let layout = Layout::current()?;
+    let stamp = preference_stamp(&layout);
+    if stamp.is_none() {
+        return Err("请先部署 Dodex，再同步文件。".into());
+    }
+    let mut cached = SYNC_INSTANCE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let instance = {
+        let state = shared().lock().unwrap_or_else(|e| e.into_inner());
+        if state.status.busy {
+            return Err("双开操作正在进行，请稍后重试。".into());
+        }
+        if state.status.enabled && state.preference_stamp == stamp {
+            state.instance.clone()
+        } else {
+            cached
+                .as_ref()
+                .filter(|(saved, _)| *saved == stamp)
+                .map(|(_, instance)| instance.clone())
+        }
+    };
+    let instance = match instance {
+        Some(instance) => instance,
+        None => sync_operation(&layout, || saved_sync_instance(&layout, &SystemOps, false))?,
+    };
+    *cached = Some((stamp, instance.clone()));
+    sync_pair(&layout.user_home.join(".codex"), &instance)
+}
+
+/// Blocking explicit action. The same operation state and cross-process lock
+/// serialize sync with deploy and enable/disable; the preference is not changed.
+pub fn sync_profile_file(kind: FileKind, direction: Direction) -> Result<SyncOutcome, String> {
+    let layout = Layout::current()?;
+    sync_operation(&layout, || {
+        sync_profile_file_under_lock(
+            &layout,
+            &SystemOps,
+            &layout.user_home.join(".codex"),
+            kind,
+            direction,
+        )
+    })
+}
+
+fn sync_operation<T>(
+    layout: &Layout,
+    action: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    {
+        let mut state = shared().lock().unwrap_or_else(|e| e.into_inner());
+        if state.status.busy {
+            return Err("双开操作正在进行，请稍后重试。".into());
+        }
+        state.status.busy = true;
+    }
+    let result = (|| {
+        no_symlinks(&layout.support)?;
+        let _lock = DeploymentLock::acquire(&layout.support.join("deployment.lock"))?;
+        action()
+    })();
+    shared()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .status
+        .busy = false;
+    result
+}
+
+fn saved_sync_instance(
+    layout: &Layout,
+    ops: &dyn Operations,
+    runtime: bool,
+) -> Result<InstanceConfig, String> {
+    let record: Record =
+        read_json(&layout.settings()).map_err(|_| "请先部署 Dodex，再同步文件。")?;
+    if record.schema != SCHEMA {
+        return Err("Dodex 部署记录版本不兼容。".into());
+    }
+    validate_existing_for_sync(layout, ops, &record.instance, runtime)?;
+    Ok(record.instance)
+}
+
+fn sync_pair(primary: &Path, instance: &InstanceConfig) -> Result<ProfilePair, String> {
+    Ok(ProfilePair {
+        primary: profile_sync::profile_paths(primary)
+            .map_err(|_| "Codex 文件路径不可用或包含重定向。")?,
+        secondary: profile_sync::profile_paths(&instance.codex_home)
+            .map_err(|_| "Dodex 文件路径不可用或包含重定向。")?,
+        secondary_isolation: IsolationPaths {
+            sqlite_home: instance.database_dir.clone(),
+            log_dir: instance.desktop_user_data.join("logs"),
+        },
+    })
+}
+
+fn sync_profile_file_under_lock(
+    layout: &Layout,
+    ops: &dyn Operations,
+    primary: &Path,
+    kind: FileKind,
+    direction: Direction,
+) -> Result<SyncOutcome, String> {
+    let instance = saved_sync_instance(layout, ops, true)?;
+    let pair = sync_pair(primary, &instance)?;
+    profile_sync::sync_file(&pair, kind, direction).map_err(|error| error.to_string())
 }
 fn begin() -> Result<(), String> {
     refresh_from_disk();
@@ -651,10 +767,33 @@ fn validate_existing(
         Err("已有双开环境的路径发生变化；未启用第二实例。".into())
     }
 }
+fn validate_existing_for_sync(
+    layout: &Layout,
+    ops: &dyn Operations,
+    instance: &InstanceConfig,
+    runtime: bool,
+) -> Result<(), String> {
+    if instance == &layout.instance() {
+        validate_managed_with_config(layout, ops, instance, false, runtime)
+    } else if &validate_legacy_with_config(layout, ops, false, runtime)? == instance {
+        Ok(())
+    } else {
+        Err("已有双开环境的路径发生变化；未同步文件。".into())
+    }
+}
 fn validate_managed(
     layout: &Layout,
     ops: &dyn Operations,
     instance: &InstanceConfig,
+) -> Result<(), String> {
+    validate_managed_with_config(layout, ops, instance, true, true)
+}
+fn validate_managed_with_config(
+    layout: &Layout,
+    ops: &dyn Operations,
+    instance: &InstanceConfig,
+    require_config: bool,
+    runtime: bool,
 ) -> Result<(), String> {
     no_symlinks(&layout.root())?;
     for name in [MANIFEST, MARKER] {
@@ -665,11 +804,25 @@ fn validate_managed(
         }
     }
     validate_instance_paths(layout, instance)?;
-    validate_config(&instance.codex_home.join("config.toml"), instance)?;
+    let config = instance.codex_home.join("config.toml");
+    if require_config || exists(&config) {
+        validate_config(&config, instance)?;
+    }
     validate_launcher(layout, instance, &instance.launcher_app)?;
-    ops.verify_runtime(&instance.runtime_app)
+    if runtime {
+        ops.verify_runtime(&instance.runtime_app)?;
+    }
+    Ok(())
 }
 fn validate_legacy(layout: &Layout, ops: &dyn Operations) -> Result<InstanceConfig, String> {
+    validate_legacy_with_config(layout, ops, true, true)
+}
+fn validate_legacy_with_config(
+    layout: &Layout,
+    ops: &dyn Operations,
+    require_config: bool,
+    check_runtime: bool,
+) -> Result<InstanceConfig, String> {
     let runtime = layout.system_applications.join("Codex B Runtime.app");
     let home = layout.user_home.join(".codex-second");
     let data = layout.user_home.join("Library/Application Support/Codex-B");
@@ -712,8 +865,13 @@ fn validate_legacy(layout: &Layout, ops: &dyn Operations) -> Result<InstanceConf
         launcher_app: launcher,
     };
     validate_instance_paths(layout, &instance)?;
-    validate_config(&instance.codex_home.join("config.toml"), &instance)?;
-    ops.verify_runtime(&instance.runtime_app)?;
+    let config = instance.codex_home.join("config.toml");
+    if require_config || exists(&config) {
+        validate_config(&config, &instance)?;
+    }
+    if check_runtime {
+        ops.verify_runtime(&instance.runtime_app)?;
+    }
     Ok(instance)
 }
 

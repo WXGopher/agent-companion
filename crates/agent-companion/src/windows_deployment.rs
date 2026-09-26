@@ -1,10 +1,14 @@
 //! Explicitly deployed Windows Dodex runtime and isolated profile. No credentials
-//! or personal configuration are copied, and deployment never launches the app.
+//! or personal configuration are copied during deployment, which never launches
+//! the app. File synchronization is a separate explicit operation.
+use agent_companion_core::install::profile_sync::{
+    self, Direction, FileKind, IsolationPaths, ProfilePair, SyncOutcome,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::OsString,
     fs::{self, File},
-    io::Write,
+    io::{Read, Write},
     os::windows::{fs::MetadataExt, process::CommandExt},
     path::{Component, Path, PathBuf},
     process::{Command, ExitStatus, Stdio},
@@ -70,6 +74,8 @@ struct State {
 
 static STATE: OnceLock<Mutex<State>> = OnceLock::new();
 static OPERATION: Mutex<()> = Mutex::new(());
+type SyncInstanceCache = Option<(PathBuf, Option<SystemTime>, InstanceConfig)>;
+static SYNC_INSTANCE: OnceLock<Mutex<SyncInstanceCache>> = OnceLock::new();
 
 fn shared() -> &'static Mutex<State> {
     STATE.get_or_init(|| Mutex::new(State::default()))
@@ -189,6 +195,139 @@ pub fn active_instance() -> Option<InstanceConfig> {
         .clone()
 }
 
+/// A saved deployment can sync files while monitoring is disabled. The UI's
+/// frequent refreshes reuse validated paths; writes always validate again.
+pub fn profile_sync_paths() -> Result<ProfilePair, String> {
+    let root = current_root()?;
+    let stamp = preference_stamp(&root);
+    if stamp.is_none() {
+        return Err("请先部署 Dodex，再同步文件。".into());
+    }
+    let mut cached = SYNC_INSTANCE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let instance = {
+        let state = shared().lock().unwrap_or_else(|e| e.into_inner());
+        if state.status.busy {
+            return Err("双开操作正在进行，请稍后重试。".into());
+        }
+        if state.status.enabled && state.stamp == stamp {
+            state.instance.clone()
+        } else {
+            cached
+                .as_ref()
+                .filter(|(saved_root, saved, _)| *saved_root == root && *saved == stamp)
+                .map(|(_, _, instance)| instance.clone())
+        }
+    };
+    let instance = match instance {
+        Some(instance) => instance,
+        None => sync_operation(&root, || {
+            saved_sync_instance(&root, false, &|path| verify_runtime(path, false))
+        })?,
+    };
+    *cached = Some((root, stamp, instance.clone()));
+    sync_pair(
+        &primary_home().map_err(|_| "无法定位 Codex 目录。")?,
+        &instance,
+    )
+}
+
+pub fn sync_profile_file(kind: FileKind, direction: Direction) -> Result<SyncOutcome, String> {
+    let root = current_root()?;
+    sync_operation(&root, || {
+        sync_profile_file_under_lock(
+            &root,
+            &|path| verify_runtime(path, false),
+            &primary_home().map_err(|_| "无法定位 Codex 目录。")?,
+            kind,
+            direction,
+        )
+    })
+}
+
+fn sync_operation<T>(root: &Path, action: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let _guard = OPERATION.try_lock().map_err(|_| "双开操作正在进行。")?;
+    {
+        let mut state = shared().lock().unwrap_or_else(|e| e.into_inner());
+        if state.status.busy {
+            return Err("双开操作正在进行，请稍后重试。".into());
+        }
+        state.status.busy = true;
+    }
+    let result = with_deployment_lock(root, action);
+    shared()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .status
+        .busy = false;
+    result
+}
+
+fn saved_sync_instance(
+    root: &Path,
+    runtime: bool,
+    verify: &impl Fn(&Path) -> Result<String, String>,
+) -> Result<InstanceConfig, String> {
+    let saved: Preference = read_json(
+        &root
+            .parent()
+            .ok_or("无效的双开目录。")?
+            .join("dual-instance.json"),
+    )?;
+    if saved.schema != 1 {
+        return Err("Dodex 部署记录版本不兼容。".into());
+    }
+    Ok(validate_with_config(root, runtime, false, verify)?.instance)
+}
+
+fn sync_pair(primary: &Path, instance: &InstanceConfig) -> Result<ProfilePair, String> {
+    Ok(ProfilePair {
+        primary: profile_sync::profile_paths(primary)
+            .map_err(|_| "Codex 文件路径不可用或包含重定向。")?,
+        secondary: profile_sync::profile_paths(&instance.codex_home)
+            .map_err(|_| "Dodex 文件路径不可用或包含重定向。")?,
+        secondary_isolation: IsolationPaths {
+            sqlite_home: instance.database_dir.clone(),
+            log_dir: instance.desktop_user_data.join("logs"),
+        },
+    })
+}
+
+fn sync_profile_file_under_lock(
+    root: &Path,
+    verify: &impl Fn(&Path) -> Result<String, String>,
+    primary: &Path,
+    kind: FileKind,
+    direction: Direction,
+) -> Result<SyncOutcome, String> {
+    let instance = saved_sync_instance(root, true, verify)?;
+    let pair = sync_pair(primary, &instance)?;
+    profile_sync::sync_file(&pair, kind, direction).map_err(|error| error.to_string())
+}
+
+fn with_deployment_lock<T>(
+    root: &Path,
+    action: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let parent = root.parent().ok_or("无效的双开目录。")?;
+    no_redirects(parent)?;
+    fs::create_dir_all(parent).map_err(|_| "无法创建双开配置目录。")?;
+    let lock_path = parent.join("dual-instance.lock");
+    no_redirects(&lock_path)?;
+    let lock = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path)
+        .map_err(|_| "无法锁定双开设置。")?;
+    lock.try_lock()
+        .map_err(|_| "另一个 Companion 正在修改双开设置，请稍后重试。")?;
+    action()
+}
+
 fn perform(
     action: impl FnOnce() -> Result<(Option<InstanceConfig>, bool, Option<String>), String>,
 ) -> Result<DeploymentStatus, String> {
@@ -201,20 +340,7 @@ fn perform(
     }
     let result = (|| {
         let root = current_root()?;
-        let parent = root.parent().unwrap();
-        fs::create_dir_all(parent).map_err(|_| "无法创建双开配置目录。")?;
-        let lock_path = parent.join("dual-instance.lock");
-        no_redirects(&lock_path)?;
-        let lock = File::options()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(lock_path)
-            .map_err(|_| "无法锁定双开设置。")?;
-        lock.try_lock()
-            .map_err(|_| "另一个 Companion 正在修改双开设置，请稍后重试。")?;
-        action()
+        with_deployment_lock(&root, action)
     })();
     let mut state = shared().lock().unwrap_or_else(|e| e.into_inner());
     state.status.busy = false;
@@ -367,6 +493,15 @@ fn validate_with(
     runtime: bool,
     verify: &impl Fn(&Path) -> Result<String, String>,
 ) -> Result<Manifest, String> {
+    validate_with_config(root, runtime, true, verify)
+}
+
+fn validate_with_config(
+    root: &Path,
+    runtime: bool,
+    require_config: bool,
+    verify: &impl Fn(&Path) -> Result<String, String>,
+) -> Result<Manifest, String> {
     no_redirects(root)?;
     let manifest: Manifest = read_json(&root.join(MANIFEST))?;
     if manifest.schema != 1 || manifest.instance != InstanceConfig::at(root) {
@@ -390,15 +525,21 @@ fn validate_with(
     }
     validate_primary_separation(root)?;
     let config_path = instance.codex_home.join("config.toml");
-    if fs::metadata(&config_path)
-        .map_err(|_| "独立配置缺失。")?
-        .len()
-        > 2 * 1024 * 1024
-    {
-        return Err("独立配置过大。".into());
+    match File::open(&config_path) {
+        Ok(file) => {
+            let mut bytes = Vec::new();
+            file.take(2 * 1024 * 1024 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|_| "无法读取独立配置。")?;
+            if bytes.len() > 2 * 1024 * 1024 {
+                return Err("独立配置过大。".into());
+            }
+            let config = std::str::from_utf8(&bytes).map_err(|_| "Dodex 配置格式无效。")?;
+            validate_config(config, instance)?;
+        }
+        Err(error) if !require_config && error.kind() == std::io::ErrorKind::NotFound => (),
+        Err(_) => return Err("独立配置缺失。".into()),
     }
-    let config = fs::read_to_string(config_path).map_err(|_| "独立配置缺失。")?;
-    validate_config(&config, instance)?;
     if runtime && verify(&root.join("runtime"))? != manifest.archive_hash {
         return Err("Dodex 运行程序已改变，请检查部署环境。".into());
     }

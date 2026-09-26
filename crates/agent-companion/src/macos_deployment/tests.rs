@@ -750,3 +750,171 @@ fn runtime_feature_scan_supports_large_archives_and_split_markers() {
     }
     assert!(read_runtime_features(FailedRead(Some(error))).is_err());
 }
+
+#[test]
+fn explicit_sync_uses_disabled_saved_deployment_and_preserves_each_destinations_isolation() {
+    let fixture = Fixture::new();
+    fixture.source();
+    let ops = FakeOps::default();
+    let instance = deploy_fixture(&fixture, &ops);
+    save_record(&fixture.layout, false, &instance).unwrap();
+    let preference_before = fs::read(fixture.layout.settings()).unwrap();
+    let primary = fixture.layout.user_home.join(".codex");
+    private_directory(&primary).unwrap();
+    let primary_config = "model = 'primary-model'\ncli_auth_credentials_store = 'keyring'\n[profiles.work]\nlog_dir = '/synthetic-primary-log'\n";
+    fs::write(primary.join("config.toml"), primary_config).unwrap();
+    fs::write(primary.join("AGENTS.md"), b"primary global instructions").unwrap();
+    fs::write(
+        instance.codex_home.join("auth.json"),
+        b"synthetic-auth-unchanged",
+    )
+    .unwrap();
+    fs::write(
+        instance.codex_home.join("AGENTS.override.md"),
+        b"synthetic-override-unchanged",
+    )
+    .unwrap();
+    let original_secondary = fs::read(instance.codex_home.join("config.toml")).unwrap();
+
+    let checks_before = ops.verified.load(Ordering::SeqCst);
+    let resolved = saved_sync_instance(&fixture.layout, &ops, false).unwrap();
+    assert_eq!(ops.verified.load(Ordering::SeqCst), checks_before);
+    let pair = sync_pair(&primary, &resolved).unwrap();
+    assert_eq!(pair.primary.config, primary.join("config.toml"));
+    assert_eq!(
+        pair.secondary.instructions_override,
+        Some(instance.codex_home.join("AGENTS.override.md"))
+    );
+    let copied = sync_operation(&fixture.layout, || {
+        sync_profile_file_under_lock(
+            &fixture.layout,
+            &ops,
+            &primary,
+            FileKind::Config,
+            Direction::ToSecondary,
+        )
+    })
+    .unwrap();
+    assert_eq!(
+        fs::read(copied.backup_path.unwrap()).unwrap(),
+        original_secondary
+    );
+    validate_config(&instance.codex_home.join("config.toml"), &instance).unwrap();
+    let secondary = fs::read_to_string(instance.codex_home.join("config.toml")).unwrap();
+    assert!(secondary.contains("primary-model"));
+    assert!(!secondary.contains("synthetic-primary-log"));
+
+    fs::write(
+        instance.codex_home.join("config.toml"),
+        config_text(&instance) + "model = 'secondary-model'\n",
+    )
+    .unwrap();
+    sync_operation(&fixture.layout, || {
+        sync_profile_file_under_lock(
+            &fixture.layout,
+            &ops,
+            &primary,
+            FileKind::Config,
+            Direction::ToPrimary,
+        )
+    })
+    .unwrap();
+    let primary_after = fs::read_to_string(primary.join("config.toml")).unwrap();
+    assert!(primary_after.contains("secondary-model"));
+    assert!(primary_after.contains("keyring"));
+    assert!(primary_after.contains("/synthetic-primary-log"));
+    assert!(!primary_after.contains(&instance.database_dir.to_string_lossy().to_string()));
+    sync_operation(&fixture.layout, || {
+        sync_profile_file_under_lock(
+            &fixture.layout,
+            &ops,
+            &primary,
+            FileKind::Instructions,
+            Direction::ToSecondary,
+        )
+    })
+    .unwrap();
+    assert_eq!(
+        fs::read(instance.codex_home.join("AGENTS.md")).unwrap(),
+        b"primary global instructions"
+    );
+    assert_eq!(
+        fs::read(instance.codex_home.join("auth.json")).unwrap(),
+        b"synthetic-auth-unchanged"
+    );
+    assert_eq!(
+        fs::read(instance.codex_home.join("AGENTS.override.md")).unwrap(),
+        b"synthetic-override-unchanged"
+    );
+    assert_eq!(
+        fs::read(fixture.layout.settings()).unwrap(),
+        preference_before
+    );
+    assert!(!read_saved_state(&fixture.layout).status.enabled);
+    assert!(!shared().lock().unwrap().status.busy);
+    assert!(!instance.codex_home.join("synthetic-observed-env").exists());
+
+    let _lock = DeploymentLock::acquire(&fixture.layout.support.join("deployment.lock")).unwrap();
+    assert!(
+        sync_operation(&fixture.layout, || -> Result<(), String> {
+            panic!("conflicting sync must not enter its operation")
+        })
+        .is_err()
+    );
+    assert!(!shared().lock().unwrap().status.busy);
+}
+
+#[test]
+fn sync_can_recreate_missing_secondary_config_without_relaxing_monitor_validation() {
+    let fixture = Fixture::new();
+    fixture.source();
+    let ops = FakeOps::default();
+    let instance = deploy_fixture(&fixture, &ops);
+    save_record(&fixture.layout, false, &instance).unwrap();
+    let primary = fixture.layout.user_home.join(".codex");
+    private_directory(&primary).unwrap();
+    fs::write(primary.join("config.toml"), "model = 'fixture-model'\n").unwrap();
+    fs::remove_file(instance.codex_home.join("config.toml")).unwrap();
+    assert!(validate_existing(&fixture.layout, &ops, &instance).is_err());
+    let _lock = DeploymentLock::acquire(&fixture.layout.support.join("deployment.lock")).unwrap();
+    let result = sync_profile_file_under_lock(
+        &fixture.layout,
+        &ops,
+        &primary,
+        FileKind::Config,
+        Direction::ToSecondary,
+    )
+    .unwrap();
+    assert!(result.changed && result.backup_path.is_none());
+    validate_existing(&fixture.layout, &ops, &instance).unwrap();
+    assert!(!read_saved_state(&fixture.layout).status.enabled);
+}
+
+#[test]
+fn sync_revalidates_saved_deployment_before_writing() {
+    let fixture = Fixture::new();
+    fixture.source();
+    let ops = FakeOps::default();
+    let instance = deploy_fixture(&fixture, &ops);
+    save_record(&fixture.layout, false, &instance).unwrap();
+    let primary = fixture.layout.user_home.join(".codex");
+    private_directory(&primary).unwrap();
+    fs::write(primary.join("AGENTS.md"), b"source").unwrap();
+    fs::write(instance.codex_home.join("AGENTS.md"), b"keep").unwrap();
+    fs::remove_file(fixture.layout.root().join(MARKER)).unwrap();
+    let _lock = DeploymentLock::acquire(&fixture.layout.support.join("deployment.lock")).unwrap();
+    assert!(
+        sync_profile_file_under_lock(
+            &fixture.layout,
+            &ops,
+            &primary,
+            FileKind::Instructions,
+            Direction::ToSecondary
+        )
+        .is_err()
+    );
+    assert_eq!(
+        fs::read(instance.codex_home.join("AGENTS.md")).unwrap(),
+        b"keep"
+    );
+}

@@ -43,7 +43,7 @@ with (contents / "Info.plist").open("wb") as stream:
         "CFBundleVersion": version,
         "LSMinimumSystemVersion": "14.0",
         "LSArchitecturePriority": ["arm64"],
-        # Apply the saved Dock preference (hidden by default) on startup.
+        # The app runs exclusively in the menu bar.
         "LSUIElement": True,
         "NSHighResolutionCapable": True,
         "NSPrincipalClass": "NSApplication",
@@ -54,7 +54,7 @@ for name in ("README.md", "LICENSE", "THIRD_PARTY_NOTICES.md"):
     shutil.copy2(root / name, contents / "Resources" / name)
 screenshots = contents / "Resources" / "docs"
 screenshots.mkdir()
-for name in ("panel.png", "windows-usage.png", "codex-tui.png", "windows-dual.png", "macos-notch.png", "macos-settings.png"):
+for name in ("panel.png", "windows-usage.png", "codex-tui.png", "windows-dual.png", "macos-menu-bar.png", "macos-panel.png", "macos-panel-light.png", "macos-settings.png"):
     shutil.copy2(root / "docs" / name, screenshots / name)
 # Rust's linker signs the Mach-O executable ad hoc. Once it is placed in an
 # app bundle, seal Info.plist and Resources as well; otherwise codesign reports

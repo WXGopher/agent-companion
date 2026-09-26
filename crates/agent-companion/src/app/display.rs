@@ -9,7 +9,7 @@ use agent_companion_core::protocol::HookSource;
 use agent_companion_core::state::{AgentTasks, STALE_AFTER_SECS};
 use serde::{Deserialize, Serialize};
 
-use super::{AGENTS, config, ui};
+use super::{AGENTS, config, task_status, ui};
 use crate::usage_cache::UsageSnapshot;
 
 const SAVE_INTERVAL: Duration = Duration::from_secs(5);
@@ -51,7 +51,7 @@ impl SavedSession {
             id: self.id.clone().into(),
             title: self.title.clone().into(),
             detail: self.detail.clone().into(),
-            phase: self.phase.clone().into(),
+            phase: task_status::saved_phase(&self.phase, &self.detail).into(),
             source: self.source.clone().into(),
             jumpable: false,
         }
@@ -154,11 +154,21 @@ impl DisplayState {
             match session.phase.as_str() {
                 "running" => tasks.running += 1,
                 "waitingForApproval" | "waitingForAnswer" => tasks.pending += 1,
-                "completed" => tasks.done += 1,
+                phase if task_status::is_finished(phase) => tasks.done += 1,
                 _ => (),
             }
         }
         tasks
+    }
+
+    pub fn saved_outcomes(&self, source: HookSource) -> task_status::TaskOutcomes {
+        task_status::TaskOutcomes::from_phases(
+            self.snapshot
+                .sessions
+                .iter()
+                .filter(|row| row.source == source.as_str())
+                .map(|row| task_status::saved_phase(&row.phase, &row.detail)),
+        )
     }
 
     /// Existing log records can help validate an agent at the next hook. They
@@ -277,6 +287,48 @@ mod tests {
     const THEN: u64 = 1_787_000_000;
     const CLAUDE: HookSource = HookSource::Claude;
     const CODEX: HookSource = HookSource::Codex;
+
+    #[test]
+    fn saved_task_status_migrates_failures_and_stops_without_changing_finished_counts() {
+        let mut snapshot = previous_display();
+        snapshot.sessions = [
+            ("failed", "Failed · Open in Codex"),
+            ("stopped", "Interrupted"),
+            ("done", "Done"),
+        ]
+        .into_iter()
+        .map(|(id, detail)| SavedSession {
+            id: id.into(),
+            title: "fixture".into(),
+            detail: detail.into(),
+            phase: "completed".into(),
+            source: "codex".into(),
+        })
+        .collect();
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("display.json");
+        write_snapshot(&path, &snapshot).unwrap();
+        let display = DisplayState::restore(read_snapshot(&path).unwrap());
+        assert_eq!(display.saved_tasks(CODEX).done, 3);
+        assert_eq!(
+            display.saved_outcomes(CODEX),
+            task_status::TaskOutcomes {
+                failed: 1,
+                stopped: 1
+            }
+        );
+        let rows = display.saved_sessions(10);
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.phase.as_str())
+                .collect::<Vec<_>>(),
+            ["failed", "stopped", "completed"]
+        );
+        assert!(
+            rows.iter()
+                .all(|row| task_status::is_finished(row.phase.as_str()))
+        );
+    }
 
     fn previous_display() -> Snapshot {
         Snapshot {

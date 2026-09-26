@@ -43,6 +43,7 @@ mod panel_render_tests;
 mod sessions;
 mod settings;
 mod subscription;
+mod task_status;
 mod taskbar;
 mod tray;
 pub(crate) mod win;
@@ -1064,11 +1065,13 @@ impl App {
                     show: config.taskbar.claude
                         && self.display.borrow().visible(HookSource::Claude),
                     tasks: self.agent_tasks(HookSource::Claude),
+                    outcomes: self.agent_outcomes(HookSource::Claude),
                 },
                 taskbar::AgentLine {
                     agent: HookSource::Codex,
                     show: config.taskbar.codex && self.display.borrow().visible(HookSource::Codex),
                     tasks: self.agent_tasks(HookSource::Codex),
+                    outcomes: self.agent_outcomes(HookSource::Codex),
                 },
             ];
             let (good_at, warn_at) = config.taskbar.thresholds();
@@ -1087,6 +1090,17 @@ impl App {
             self.table.borrow().tasks(source, now_unix_secs())
         } else {
             display.saved_tasks(source)
+        }
+    }
+
+    fn agent_outcomes(&self, source: HookSource) -> task_status::TaskOutcomes {
+        let display = self.display.borrow();
+        if !display.visible(source) {
+            task_status::TaskOutcomes::default()
+        } else if display.is_live() {
+            task_status::outcomes(&self.table.borrow(), source, now_unix_secs())
+        } else {
+            display.saved_outcomes(source)
         }
     }
 
@@ -1140,7 +1154,7 @@ impl App {
                     id: state.session_id.clone().into(),
                     title: session_title(project.as_deref(), summary, &state.session_id).into(),
                     detail: describe_session(state).into(),
-                    phase: state.phase.as_str().into(),
+                    phase: task_status::phase(state).into(),
                     source: state.source.as_str().into(),
                     jumpable: navigation::can_jump(state, codex_desktop),
                 }
@@ -1775,10 +1789,16 @@ impl App {
             self.flyout
                 .set_instance_quotas(ModelRc::new(VecModel::from(quotas)));
         }
-        self.flyout
-            .set_active_count(rows.iter().filter(|row| row.phase != "completed").count() as i32);
-        self.flyout
-            .set_finished_count(rows.iter().filter(|row| row.phase == "completed").count() as i32);
+        self.flyout.set_active_count(
+            rows.iter()
+                .filter(|row| !task_status::is_finished(row.phase.as_str()))
+                .count() as i32,
+        );
+        self.flyout.set_finished_count(
+            rows.iter()
+                .filter(|row| task_status::is_finished(row.phase.as_str()))
+                .count() as i32,
+        );
         if self.flyout_peek.get() {
             rows.retain(|row| {
                 matches!(
@@ -1789,7 +1809,9 @@ impl App {
             self.flyout.set_waiting_total(rows.len() as i32);
             rows.truncate(flyout::PEEK_LIMIT);
         } else {
-            rows.retain(|row| (row.phase == "completed") == self.flyout.get_finished());
+            rows.retain(|row| {
+                task_status::is_finished(row.phase.as_str()) == self.flyout.get_finished()
+            });
         }
         let visible = self.display.borrow().visible_agents();
         let (good_at, warn_at) = self.config.borrow().taskbar.thresholds();

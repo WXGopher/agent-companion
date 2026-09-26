@@ -13,7 +13,7 @@ func drawIcon() {
     tile.lineWidth = 10
     tile.stroke()
 
-    // The thin top strip echoes the notch; the prompt identifies the CLI.
+    // The thin top strip echoes the menu bar; the prompt identifies the CLI.
     NSColor(calibratedRed: 0.45, green: 0.90, blue: 0.74, alpha: 1).setFill()
     NSBezierPath(roundedRect: NSRect(x: 224, y: 710, width: 576, height: 64), xRadius: 32, yRadius: 32).fill()
     NSColor(calibratedRed: 0.10, green: 0.14, blue: 0.18, alpha: 1).setFill()

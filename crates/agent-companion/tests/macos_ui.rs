@@ -32,6 +32,7 @@ fn native_dashboard_layouts() {
     let result = std::process::Command::new("sh")
         .arg("scripts/test-macos-ui.sh")
         .env("AGENT_COMPANION_TEST_SNAPSHOT", snapshot)
+        .env("AGENT_COMPANION_TEST_VERSION", env!("CARGO_PKG_VERSION"))
         .current_dir(root)
         .output()
         .expect("could not run native macOS layout checks");

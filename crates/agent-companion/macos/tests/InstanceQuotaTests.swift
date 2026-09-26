@@ -29,17 +29,15 @@ import SwiftUI
 
     static func run(output: URL) throws {
         verifyReadIsolation()
-        for camera in [false, true] {
-            try verifyCards(camera: camera, instances: [primary, secondary], values: ["75%", "20%"],
-                            name: "dual-quota-\(camera)", navigation: true, output: output)
-        }
+        try verifyCards(instances: [primary, secondary], values: ["75%", "20%"],
+                        name: "dual-quota-popup", navigation: true, output: output)
         var missing = primary
         missing.weekly = nil
         var expired = secondary
         expired.weekly = WeeklyUsage(usedPercent: 90, resetsAt: 0, expired: true)
-        try verifyCards(camera: false, instances: [missing, expired], values: ["—", "—"],
+        try verifyCards(instances: [missing, expired], values: ["—", "—"],
                         name: "dual-quota-unavailable", output: output)
-        try verifyCards(camera: false, instances: [primary], values: ["75%"],
+        try verifyCards(instances: [primary], values: ["75%"],
                         name: "single-quota", output: output)
         try verifyMenuPopover(output: output)
         print("Instance quota cards: simultaneous Codex/Dodex, missing/expired readings, exact navigation, isolated caches and removal passed")
@@ -56,9 +54,9 @@ import SwiftUI
         let model = CompanionModel(usageReader: reader)
         defer { model.stop() }
         model.snapshot = CodexSnapshot(loading: false, instances: [primary, secondary])
-        model.expanded = true
+        model.isPresented = true
         var expansions = 0
-        model.expand = { expansions += 1 }
+        model.present = { expansions += 1 }
         precondition(model.weeklyText(for: primary) == "75%" && model.weeklyText(for: secondary) == "20%")
         precondition(reader.sources.isEmpty, "Showing local quota cards launched an account read")
 
@@ -101,32 +99,22 @@ import SwiftUI
                      "A stale Dodex card silently opened another instance's usage")
     }
 
-    private static func verifyCards(camera: Bool, instances: [CodexInstance], values: [String],
+    private static func verifyCards(instances: [CodexInstance], values: [String],
                                     name: String, navigation: Bool = false, output: URL) throws {
-        let screen = CGRect(x: -10000, y: -10000, width: 1470, height: 956)
         let reader = Reader()
         let model = CompanionModel(usageReader: reader)
         model.snapshot = CodexSnapshot(loading: false, instances: instances)
-        model.expanded = true
-        if camera {
-            model.metrics = NotchMetrics(screen: screen, safeTop: 32,
-                topLeft: CGRect(x: screen.minX, y: screen.maxY - 32, width: 645, height: 32),
-                topRight: CGRect(x: screen.minX + 825, y: screen.maxY - 32, width: 645, height: 32))
-        }
-        let panel = NSPanel(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
-        panel.isReleasedWhenClosed = false
-        let presentation = NotchPresentation(panel: panel, model: model, reduceMotion: { true })
-        defer { presentation.stop(); model.stop(); panel.close() }
-        func update() {
-            presentation.update(screen: screen, animated: false)
-            RunLoop.main.run(until: Date().addingTimeInterval(0.08))
-        }
+        model.isPresented = true
+        let fixture = PopupTestWindow(model: model)
+        let panel = fixture.panel
+        defer { model.stop(); panel.close() }
+        func update() { RunLoop.main.run(until: Date().addingTimeInterval(0.08)) }
         update()
-        let surface = presentation.surface
+        let surface = fixture.host
         for (instance, value) in zip(instances, values) {
             precondition(model.weeklyText(for: instance) == value)
         }
-        precondition(screen.contains(panel.frame), "The dual quota panel escaped the available screen")
+        precondition(panel.frame.size == CGSize(width: 356, height: 560), "Quota cards resized the popup")
         precondition(reader.sources.isEmpty, "Rendering Tasks initiated an account request")
         let bitmap = surface.bitmapImageRepForCachingDisplay(in: surface.bounds)!
         surface.cacheDisplay(in: surface.bounds, to: bitmap)
@@ -134,7 +122,7 @@ import SwiftUI
 
         guard navigation else { return }
         var expansions = 0
-        model.expand = { expansions += 1 }
+        model.present = { expansions += 1 }
         model.showUsage(for: "dodex")
         update()
         precondition(model.showingUsage && model.selectedInstanceID == "dodex" && expansions == 1)
@@ -161,22 +149,19 @@ import SwiftUI
         defer { model.stop() }
         var missing = secondary
         missing.weekly = nil
-        model.metrics = NotchMetrics(panelWidth: 356)
         model.snapshot = CodexSnapshot(activeCount: 8, tasks: (0..<8).map { index in
             CodexTask(id: "synthetic-menu-\(index)", title: "Synthetic task \(index)", project: "fixture", cwd: nil,
                       client: "cli", state: "running", updatedAt: 0, transcriptPath: nil,
                       instanceId: index.isMultiple(of: 2) ? "codex" : "dodex",
                       instanceLabel: index.isMultiple(of: 2) ? "Codex" : "Dodex")
         }, loading: false, instances: [primary, missing])
-        model.expanded = true
+        model.isPresented = true
         let panel = NSPanel(contentRect: CGRect(x: -10000, y: -10000, width: 356, height: 560),
                             styleMask: [.borderless], backing: .buffered, defer: false)
         panel.isReleasedWhenClosed = false
         defer { panel.close() }
         let host = NSHostingView(rootView:
-            CompanionView(model: model, showsDetails: true, drawsBackground: false,
-                          detailsHeight: 560 - model.compactHeight)
-                .frame(width: 356, height: 560, alignment: .top).background(Color.black))
+            CompanionPopupView(model: model, themePreferences: ThemeTests.darkPreferences))
         panel.contentView = host
         host.frame = CGRect(x: 0, y: 0, width: 356, height: 560)
         host.layoutSubtreeIfNeeded()

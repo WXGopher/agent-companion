@@ -1,0 +1,155 @@
+import { Button, TextEdit } from "std-widgets.slint";
+import { SettingsColors, SettingsCard } from "settings-common.slint";
+
+export struct ProfileSyncFile {
+    key: string,
+    title: string,
+    primary-path: string,
+    secondary-path: string,
+    primary-exists: bool,
+    secondary-exists: bool,
+    to-secondary: bool,
+    to-primary: bool,
+    note: string,
+    message: string,
+    error: bool,
+    backup-path: string,
+}
+
+component FilePath inherits VerticalLayout {
+    in property <string> label;
+    in property <string> path;
+    in property <bool> exists;
+    in property <bool> busy;
+    callback open(bool);
+    spacing: 5px;
+    HorizontalLayout {
+        Text { text: root.label; font-size: 11px; font-weight: 600; color: SettingsColors.text; }
+        Text {
+            text: root.path == "" ? "部署后显示实际路径" : root.exists ? "文件已存在" : "文件尚未创建";
+            font-size: 10px;
+            color: SettingsColors.secondary;
+            horizontal-alignment: right;
+        }
+    }
+    HorizontalLayout {
+        spacing: 6px;
+        path := TextEdit {
+            text: root.path;
+            read-only: true;
+            wrap: word-wrap;
+            font-size: 11px;
+            height: 44px;
+            accessible-label: root.label + " 完整文件路径，可选择复制";
+        }
+        Button {
+            text: "复制";
+            enabled: root.path != "";
+            accessible-label: "复制 " + root.label + " 路径";
+            clicked => { path.select-all(); path.copy(); }
+        }
+        Button {
+            text: "定位";
+            enabled: root.path != "";
+            accessible-label: "定位 " + root.label + " 文件或所在目录";
+            clicked => { root.open(false); }
+        }
+        Button {
+            text: "编辑";
+            enabled: root.exists && !root.busy;
+            accessible-label: "编辑 " + root.label;
+            clicked => { root.open(true); }
+        }
+    }
+}
+
+export component ProfileSyncSettings inherits VerticalLayout {
+    in property <[ProfileSyncFile]> files;
+    in property <bool> busy;
+    in property <string> status;
+    in property <bool> error;
+    callback sync(string, bool);
+    callback open-file(string, bool, bool);
+    callback refresh();
+    spacing: 12px;
+    HorizontalLayout {
+        Text { text: "配置与全局指令"; font-size: 15px; font-weight: 600; color: SettingsColors.text; vertical-alignment: center; }
+        Button { text: "刷新文件状态"; enabled: !root.busy; clicked => { root.refresh(); } }
+    }
+    Text {
+        text: root.status != "" ? root.status : "每次手动选择覆盖方向；不会自动同步或建立链接。目标文件存在时会先备份。";
+        font-size: 11px;
+        color: root.error ? SettingsColors.error : SettingsColors.secondary;
+        wrap: word-wrap;
+    }
+    for file in root.files: SettingsCard {
+        vertical-stretch: 0;
+        VerticalLayout {
+            padding: 14px;
+            spacing: 10px;
+            Text { text: file.title; font-size: 13px; font-weight: 600; color: SettingsColors.text; }
+            Text {
+                text: file.key == "config"
+                    ? "完整覆盖目标 config.toml，包括文件内的 API Key / Token 等敏感信息。不复制 auth.json；目标实例的登录存储、数据库和日志设置会保留。"
+                    : "仅同步各自 CODEX_HOME 下的 AGENTS.md（全局指令），不涉及项目内的指令文件。";
+                font-size: 11px;
+                color: file.key == "config" ? SettingsColors.error : SettingsColors.secondary;
+                wrap: word-wrap;
+            }
+            FilePath {
+                label: "Codex · " + file.title;
+                path: file.primary-path;
+                exists: file.primary-exists;
+                busy: root.busy;
+                open(edit) => { root.open-file(file.key, false, edit); }
+            }
+            FilePath {
+                label: "Dodex · " + file.title;
+                path: file.secondary-path;
+                exists: file.secondary-exists;
+                busy: root.busy;
+                open(edit) => { root.open-file(file.key, true, edit); }
+            }
+            if file.note != "": Text {
+                text: file.note;
+                font-size: 11px;
+                color: SettingsColors.secondary;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                Button {
+                    text: "Codex → Dodex 覆盖";
+                    enabled: file.to-secondary && !root.busy;
+                    accessible-label: file.title + "：Codex 覆盖到 Dodex";
+                    clicked => { root.sync(file.key, true); }
+                }
+                Button {
+                    text: "Dodex → Codex 覆盖";
+                    enabled: file.to-primary && !root.busy;
+                    accessible-label: file.title + "：Dodex 覆盖到 Codex";
+                    clicked => { root.sync(file.key, false); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+            if file.message != "": Text {
+                text: file.message;
+                font-size: 11px;
+                color: file.error ? SettingsColors.error : SettingsColors.accent;
+                wrap: word-wrap;
+            }
+            if file.backup-path != "": VerticalLayout {
+                spacing: 4px;
+                Text { text: "覆盖前备份（可选择复制路径）"; font-size: 10px; color: SettingsColors.secondary; }
+                TextEdit {
+                    text: file.backup-path;
+                    read-only: true;
+                    wrap: word-wrap;
+                    font-size: 10px;
+                    height: 40px;
+                    accessible-label: file.title + " 覆盖前备份路径";
+                }
+            }
+        }
+    }
+}

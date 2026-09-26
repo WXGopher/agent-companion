@@ -6,7 +6,7 @@ use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferTyp
 use slint::platform::{Platform, WindowAdapter, WindowEvent};
 use slint::{PlatformError, Rgb8Pixel};
 
-use super::{Along, Chip, TaskbarView};
+use super::{Along, Chip, TaskOutcomes, TaskbarView};
 use agent_companion_core::protocol::HookSource;
 use agent_companion_core::state::AgentTasks;
 
@@ -36,6 +36,7 @@ fn idle_readout_rescales_its_pixels_and_repairs_size_without_changing_chips() {
     let bar = TaskbarView::new(super::TaskbarBar::new().unwrap());
     let chips = [Chip {
         agent: Some(HookSource::Codex),
+        outcomes: TaskOutcomes::default(),
         value: "C 72%".into(),
         tier: "good",
         tasks: AgentTasks {
@@ -62,17 +63,28 @@ fn idle_readout_rescales_its_pixels_and_repairs_size_without_changing_chips() {
             bytes.extend(pixels.iter().flat_map(|pixel| [pixel.r, pixel.g, pixel.b]));
             std::fs::write(dir.join(format!("readout-{scale}.ppm")), bytes).unwrap();
         }
-        let blue = pixels
+        let size = window.size();
+        let green = pixels
             .iter()
-            .filter(|pixel| i32::from(pixel.b) - i32::from(pixel.r) > 60)
+            .enumerate()
+            // Measure only the quota-leading dot, excluding its green quota
+            // text and the completed task line below it.
+            .filter(|(index, pixel)| {
+                let x = (*index % size.width as usize) as f32;
+                let y = (*index / size.width as usize) as f32;
+                x < 12.0 * scale
+                    && y < 19.0 * scale
+                    && i32::from(pixel.g) - i32::from(pixel.r) > 50
+                    && i32::from(pixel.g) - i32::from(pixel.b) > 30
+            })
             .count();
         if scale == 1.0 {
-            dot_at_100 = blue;
+            dot_at_100 = green;
             assert!(dot_at_100 > 0);
         } else {
             // Enlarging only the native window leaves the dot at its old
             // pixel size. Verify the rendered content grows with the DPI too.
-            let ratio = blue as f32 / dot_at_100 as f32;
+            let ratio = green as f32 / dot_at_100 as f32;
             assert!(
                 (ratio - scale * scale).abs() < 0.6,
                 "dot area ratio {ratio}"
@@ -93,6 +105,272 @@ fn idle_readout_rescales_its_pixels_and_repairs_size_without_changing_chips() {
 }
 
 #[test]
+fn task_status_colours_prioritize_waiting_and_breathe_only_while_active() {
+    use slint::Model;
+
+    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    slint::platform::set_platform(Box::new(TestPlatform(Rc::clone(&window)))).unwrap();
+    let bar = TaskbarView::new(super::TaskbarBar::new().unwrap());
+    bar.show();
+    let rgb = |r, g, b| Rgb8Pixel { r, g, b };
+    let blue = rgb(0x4a, 0x9d, 0xe8);
+    let green = rgb(0x55, 0xc9, 0x8d);
+    let yellow = rgb(0xe3, 0xbf, 0x52);
+    let gray = rgb(0x6a, 0x6a, 0x80);
+    let cases = [
+        (AgentTasks::default(), gray),
+        (
+            AgentTasks {
+                done: 2,
+                ..Default::default()
+            },
+            green,
+        ),
+        (
+            AgentTasks {
+                running: 1,
+                ..Default::default()
+            },
+            blue,
+        ),
+        (
+            AgentTasks {
+                running: 1,
+                done: 2,
+                ..Default::default()
+            },
+            blue,
+        ),
+        (
+            AgentTasks {
+                pending: 1,
+                running: 1,
+                done: 2,
+            },
+            yellow,
+        ),
+        (
+            AgentTasks {
+                pending: 1,
+                done: 2,
+                ..Default::default()
+            },
+            yellow,
+        ),
+    ];
+    for agent in [HookSource::Claude, HookSource::Codex] {
+        for (tasks, expected) in cases {
+            let chip = Chip {
+                agent: Some(agent),
+                outcomes: TaskOutcomes::default(),
+                value: "C 72%".into(),
+                tier: "good",
+                tasks,
+            };
+            bar.set_chips(&[chip], Along::Vertical);
+            bar.breathe(1.0);
+            let bright = draw(&window).expect("a changed status repaints");
+            let width = window.size().width as usize;
+            let center = 11 * width + 7;
+            assert_eq!(
+                bright[center], expected,
+                "quota dot for {agent:?}, {tasks:?}"
+            );
+            if tasks.done > 0 {
+                assert!(
+                    bright.iter().enumerate().any(|(index, pixel)| {
+                        index / width >= 20
+                            && i32::from(pixel.g) - i32::from(pixel.r) > 50
+                            && i32::from(pixel.g) - i32::from(pixel.b) > 30
+                    }),
+                    "finished task mark and count are green"
+                );
+            }
+            if tasks.running > 0 {
+                assert!(
+                    bright.iter().enumerate().any(|(index, pixel)| {
+                        index / width >= 20 && i32::from(pixel.b) - i32::from(pixel.r) > 60
+                    }),
+                    "running task mark and count are blue, including Claude"
+                );
+            }
+            bar.breathe(0.0);
+            if tasks.active() > 0 {
+                let dim = draw(&window).expect("active status breathes");
+                assert!(dim[center].r < bright[center].r && dim[center].b < bright[center].b);
+            } else {
+                assert!(
+                    draw(&window).is_none(),
+                    "idle and completed status stay still"
+                );
+            }
+        }
+    }
+    let identities = [
+        Chip {
+            agent: Some(HookSource::Codex),
+            value: "C 72%".into(),
+            outcomes: TaskOutcomes::default(),
+            tier: "good",
+            tasks: AgentTasks::default(),
+        },
+        Chip {
+            agent: Some(HookSource::Codex),
+            value: "D 31%".into(),
+            outcomes: TaskOutcomes::default(),
+            tier: "warn",
+            tasks: AgentTasks::default(),
+        },
+    ];
+    bar.set_chips(&identities, Along::Horizontal);
+    assert_eq!(bar.ui.get_chips().row_data(0).unwrap().value, "C 72%");
+    assert_eq!(bar.ui.get_chips().row_data(1).unwrap().value, "D 31%");
+    let _ = draw(&window);
+    bar.breathe(0.5);
+    assert!(draw(&window).is_none(), "quotas without tasks remain idle");
+}
+
+#[test]
+fn task_status_failed_and_stopped_outcomes_never_look_all_completed() {
+    use slint::Model;
+    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    slint::platform::set_platform(Box::new(TestPlatform(Rc::clone(&window)))).unwrap();
+    let bar = TaskbarView::new(super::TaskbarBar::new().unwrap());
+    bar.show();
+    let rgb = |r, g, b| Rgb8Pixel { r, g, b };
+    let blue = rgb(0x4a, 0x9d, 0xe8);
+    let green = rgb(0x55, 0xc9, 0x8d);
+    let yellow = rgb(0xe3, 0xbf, 0x52);
+    let gray = rgb(0x6a, 0x6a, 0x80);
+    let failed = TaskOutcomes {
+        failed: 1,
+        stopped: 0,
+    };
+    let stopped = TaskOutcomes {
+        failed: 0,
+        stopped: 1,
+    };
+    let finished = AgentTasks {
+        done: 2,
+        ..Default::default()
+    };
+    let cases = [
+        (finished, TaskOutcomes::default(), green),
+        (finished, failed, yellow),
+        (finished, stopped, gray),
+        (
+            finished,
+            TaskOutcomes {
+                failed: 1,
+                stopped: 1,
+            },
+            yellow,
+        ),
+        (
+            AgentTasks {
+                running: 1,
+                ..finished
+            },
+            failed,
+            blue,
+        ),
+        (
+            AgentTasks {
+                pending: 1,
+                running: 1,
+                ..finished
+            },
+            failed,
+            yellow,
+        ),
+    ];
+    for label in ["C 72%", "D 31%"] {
+        for (tasks, outcomes, expected) in cases {
+            bar.set_chips(
+                &[Chip {
+                    agent: Some(HookSource::Codex),
+                    value: label.into(),
+                    tier: "good",
+                    tasks,
+                    outcomes,
+                }],
+                Along::Vertical,
+            );
+            bar.breathe(1.0);
+            let bright =
+                draw(&window).expect("changed outcomes repaint even when counts stay equal");
+            let width = window.size().width as usize;
+            assert_eq!(
+                bright[11 * width + 7],
+                expected,
+                "{label}, {outcomes:?}, {tasks:?}"
+            );
+            assert_eq!(
+                bar.ui.get_chips().row_data(0).unwrap().done,
+                2,
+                "lifecycle counter is retained"
+            );
+            if outcomes != TaskOutcomes::default() {
+                assert!(
+                    !bright.iter().enumerate().any(|(index, pixel)| {
+                        index / width >= 20
+                            && i32::from(pixel.g) - i32::from(pixel.r) > 50
+                            && i32::from(pixel.g) - i32::from(pixel.b) > 30
+                    }),
+                    "unsuccessful terminal tasks do not get a green completion mark"
+                );
+            }
+            bar.breathe(0.0);
+            assert_eq!(
+                draw(&window).is_some(),
+                tasks.active() > 0,
+                "only active tasks breathe"
+            );
+        }
+    }
+    if let Some(dir) = agent_companion_core::compat::var_os("AGENT_COMPANION_RENDER_DIR") {
+        let preview = [
+            (
+                "C run",
+                AgentTasks {
+                    running: 1,
+                    ..Default::default()
+                },
+                TaskOutcomes::default(),
+            ),
+            ("D done", finished, TaskOutcomes::default()),
+            (
+                "C wait",
+                AgentTasks {
+                    pending: 1,
+                    ..Default::default()
+                },
+                TaskOutcomes::default(),
+            ),
+            ("D idle", AgentTasks::default(), TaskOutcomes::default()),
+            ("C fail", finished, failed),
+            ("D stop", finished, stopped),
+        ]
+        .map(|(label, tasks, outcomes)| Chip {
+            agent: Some(HookSource::Codex),
+            value: label.into(),
+            tier: "",
+            tasks,
+            outcomes,
+        });
+        bar.set_chips(&preview, Along::Horizontal);
+        bar.breathe(1.0);
+        let pixels = draw(&window).unwrap();
+        let size = window.size();
+        let mut bytes = format!("P6\n{} {}\n255\n", size.width, size.height).into_bytes();
+        bytes.extend(pixels.iter().flat_map(|pixel| [pixel.r, pixel.g, pixel.b]));
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("task-status-mixed.ppm"), bytes).unwrap();
+    }
+}
+
+#[test]
 fn readout_updates_colours_and_layout_without_scheduling_idle_frames() {
     let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
     slint::platform::set_platform(Box::new(TestPlatform(Rc::clone(&window)))).unwrap();
@@ -101,12 +379,14 @@ fn readout_updates_colours_and_layout_without_scheduling_idle_frames() {
         Chip {
             agent: Some(HookSource::Claude),
             value: "23%".into(),
+            outcomes: TaskOutcomes::default(),
             tier: "warn",
             tasks: AgentTasks::default(),
         },
         Chip {
             agent: Some(HookSource::Codex),
             value: "34%".into(),
+            outcomes: TaskOutcomes::default(),
             tier: "warn",
             tasks: AgentTasks::default(),
         },
