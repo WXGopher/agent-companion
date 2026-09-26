@@ -101,6 +101,20 @@ struct MenuBarUsage: Equatable {
     }
 }
 
+private extension TaskActivity {
+    /// Small menu-bar marks need a stronger fill than the popup's larger icons.
+    var menuBarColor: NSColor {
+        let rgb: (CGFloat, CGFloat, CGFloat)
+        switch self {
+        case .running: rgb = (0x16, 0x8b, 0xff)
+        case .completed: rgb = (0x25, 0xd7, 0x7a)
+        case .waiting, .failed: rgb = (0xff, 0xc5, 0x2f)
+        case .idle: rgb = (0xa2, 0xad, 0xbd)
+        }
+        return NSColor(srgbRed: rgb.0 / 255, green: rgb.1 / 255, blue: rgb.2 / 255, alpha: 1)
+    }
+}
+
 /// Color lives outside the template image. This view cannot intercept clicks,
 /// accessibility, or Command-drag placement handled by the native status button.
 final class MenuBarActivityView: NSView {
@@ -179,23 +193,24 @@ final class MenuBarActivityView: NSView {
         // share the template's row centers, including taller notched menu bars.
         let origin = NSPoint(x: (bounds.width - image.size.width) / 2,
                              y: (bounds.height - image.size.height) / 2)
-        let diameter: CGFloat = value.rows.count == 1 ? 6 : 5
-        let pulse = isAnimating ? TaskActivity.runningOpacity(at: clock()) : 1
+        let diameter: CGFloat = value.rows.count == 1 ? 8 : 7
+        // Keep the blue fill visible throughout the two-second breathing cycle.
+        let pulse = isAnimating ? 0.9 + 0.1 * cos(clock() * .pi) : 1
         for (index, row) in value.rows.enumerated() {
             let centerY = origin.y + image.size.height * (1 - (CGFloat(index) + 0.5) / CGFloat(value.rows.count))
             let circle = NSBezierPath(ovalIn: NSRect(x: origin.x + 5 - diameter / 2,
                                                     y: centerY - diameter / 2,
                                                     width: diameter, height: diameter))
-            row.activity.nsColor.withAlphaComponent(row.activity == .running ? pulse : 1).setFill()
+            row.activity.menuBarColor.withAlphaComponent(row.activity == .running ? pulse : 1).setFill()
             circle.fill()
-            // Two subtle outlines keep the small color mark legible against
-            // light/dark wallpapers and the status button's pressed background.
-            NSColor.black.withAlphaComponent(0.32).setStroke()
-            circle.lineWidth = 0.65
+            // Dark inner and light outer edges separate the fill from bright,
+            // dark and colored wallpapers, including the pressed background.
+            NSColor.black.withAlphaComponent(0.55).setStroke()
+            circle.lineWidth = 0.7
             circle.stroke()
             let outline = NSBezierPath(ovalIn: circle.bounds.insetBy(dx: -0.55, dy: -0.55))
-            NSColor.white.withAlphaComponent(0.48).setStroke()
-            outline.lineWidth = 0.45
+            NSColor.white.withAlphaComponent(0.85).setStroke()
+            outline.lineWidth = 0.6
             outline.stroke()
         }
     }

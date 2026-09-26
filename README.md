@@ -6,11 +6,11 @@
 
 在 Windows 任务栏或 macOS 菜单栏查看 Codex 的任务状态与订阅用量。
 
-### v0.3.19 更新
+### v0.3.20 更新
 
-- 修复已审计旧版 Dodex 的桌面启动链路：明确使用独立目录，TUI 运行时也能启动桌面 App。
-- 增加桌面校验／修复命令，兼容标准 Finder 自定义图标，保留官方程序的签名检查。
-- 源码仓库提供可选的入口整理、CLI 环境隔离和 Dock 清理工具；升级 App 不会自动执行迁移。[发布说明](docs/releases/v0.3.19.md)
+- macOS 菜单栏状态圆点更大，蓝、绿、黄更鲜明，灰色更亮；加强描边，适应深浅及彩色背景。
+- 运行呼吸最低保持 80% 不透明度，避免圆点在动画暗相位融进壁纸。
+- 保留状态颜色含义、系统百分比文字和“减少动态效果”支持。[发布说明](docs/releases/v0.3.20.md)
 
 ### 主要功能
 
@@ -77,11 +77,11 @@ macOS 重新打开 Agent Companion 会显示弹窗的 Tasks 页。刘海、悬�
 
 See Codex tasks and subscription usage in the Windows taskbar or macOS menu bar.
 
-### New in v0.3.19
+### New in v0.3.20
 
-- Repair the audited legacy Dodex desktop launch path: bind its independent directories and allow desktop startup while the TUI runs.
-- Add desktop validation / repair commands and standard Finder custom-icon compatibility while retaining official signature checks.
-- Provide optional source-checkout tools for entry consolidation, CLI environment isolation and Dock cleanup. Upgrading the App does not run these migrations automatically. [Release notes](docs/releases/v0.3.19.md)
+- Make macOS menu-bar status dots larger, with stronger blue, green and yellow fills, brighter gray and clearer outlines on light, dark and colored backgrounds.
+- Keep running dots at least 80% opaque throughout their breathing animation so they remain visible against wallpaper.
+- Preserve status meanings, system-rendered percentage text and Reduce Motion support. [Release notes](docs/releases/v0.3.20.md)
 
 ### Features
 
@@ -90,7 +90,7 @@ See Codex tasks and subscription usage in the Windows taskbar or macOS menu bar.
 - **Status bar editor**: choose Codex CLI components with a live preview.
 - **Windows integration**: separate taskbar readings for Codex (`C`) and Dodex (`D`) weekly quota remaining, completion notifications, startup settings, and optional tool approvals and question cards.
 - **macOS menu bar**: the menu bar shows weekly quota remaining, with Codex above Dodex. Instances with a previous reading stay visible while idle; readings awaiting an update carry `*`, with an explanation on hover. Before a reading is available, its row shows `—` and the task status; click it for tasks and usage. The menu bar is the only macOS entry; open Settings from the popup footer.
-- **Task status marks**: Codex / Dodex each show breathing blue for running tasks, yellow for approval/input or failure, green only when every task completed, and gray for no tasks, stopped, paused or unknown states. Waiting takes priority over running in mixed groups; failures never count as successful completion. The macOS menu bar and Windows taskbar use the same colors; Windows keeps its existing icon shapes.
+- **Task status marks**: Codex / Dodex each show breathing blue for running tasks, yellow for approval/input or failure, green only when every task completed, and gray for no tasks, stopped, paused or unknown states. Waiting takes priority over running in mixed groups; failures never count as successful completion. The macOS menu bar and Windows taskbar use the same color meanings; Windows keeps its existing icon shapes.
 - **macOS panel**: the header shows Agent Companion, its current version and the number of running tasks. Use the sun / moon button at the bottom to switch light / dark themes across Tasks and Usage. Your theme choice is saved across restarts; dark is the default.
 - **Optional second Codex instance (Windows / macOS)**: explicitly deploy or connect Dodex in Settings. Tasks show their source; usage, caches and CLI status bar settings stay separate. Disabled by default, with no automatic adoption or launch.
 - **Configuration and personal instructions**: the dual-instance tab shows both file paths and separate Codex → Dodex / Dodex → Codex actions for manually overwriting `config.toml` or the global `AGENTS.md` in each `CODEX_HOME`, with destination backups. Config files may contain embedded secrets, which are copied; **`auth.json` is never copied**, and the destination's account storage, database and log settings remain independent. Sync is never automatic. See [sync behavior](docs/macos-dual-instance.md#manual-configuration-and-instruction-sync).

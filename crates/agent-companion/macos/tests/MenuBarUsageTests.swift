@@ -85,6 +85,10 @@ import AppKit
                 try preview.representation(using: .png, properties: [:])!.write(
                     to: output.appendingPathComponent("menu-bar-\(name)-preview\(dark ? "-dark" : "").png"))
             }
+            let blueBackdrop = NSColor(srgbRed: 0.02, green: 0.46, blue: 0.63, alpha: 1)
+            try preview(button, indicator: indicator, dark: true, background: blueBackdrop)
+                .representation(using: .png, properties: [:])!.write(
+                    to: output.appendingPathComponent("menu-bar-\(name)-preview-blue.png"))
             if !usage.rows.isEmpty {
                 let image = button.image!
                 precondition(image.size.height == 22 && image.size.width <= 58)
@@ -123,7 +127,7 @@ import AppKit
             if name == "failed-paused" { verifyDotColors(indicator, top: .failed, bottom: .idle) }
             precondition(indicator.hitTest(NSPoint(x: 5, y: 5)) == nil, "The color overlay intercepted the menu button")
         }
-        verifyAnimation()
+        try verifyAnimation(output: output)
         verifyUpdates()
         print("Menu bar: per-instance activity colors/priority, missing quota, native highlight/template text, 10 Hz running breath/reduced motion, task-only updates, stale caches, source isolation and closed-popup/shutdown lifecycle passed")
     }
@@ -164,7 +168,8 @@ import AppKit
     }
 
     private static func preview(_ button: NSStatusBarButton, indicator: MenuBarActivityView,
-                                dark: Bool) -> NSBitmapImageRep {
+                                dark: Bool, background: NSColor? = nil) -> NSBitmapImageRep {
+        let background = background ?? (dark ? NSColor(white: 0.12, alpha: 1) : NSColor.white)
         let mask = button.image!
         let ink = NSImage(size: mask.size, flipped: false) { rect in
             mask.draw(in: rect)
@@ -174,7 +179,7 @@ import AppKit
         }
         let nativeSize = button.bounds.size
         let content = NSImage(size: nativeSize, flipped: false) { rect in
-            (dark ? NSColor(white: 0.12, alpha: 1) : NSColor.white).setFill()
+            background.setFill()
             rect.fill()
             ink.draw(in: NSRect(x: (rect.width - mask.size.width) / 2,
                                 y: (rect.height - mask.size.height) / 2,
@@ -184,7 +189,7 @@ import AppKit
         }
         let canvas = NSImage(size: NSSize(width: max(120, nativeSize.width * 2), height: nativeSize.height * 2),
                              flipped: false) { rect in
-            (dark ? NSColor(white: 0.12, alpha: 1) : NSColor.white).setFill()
+            background.setFill()
             rect.fill()
             content.draw(in: NSRect(x: (rect.width - nativeSize.width * 2) / 2, y: 0,
                                     width: nativeSize.width * 2, height: rect.height))
@@ -218,7 +223,7 @@ import AppKit
         }
     }
 
-    private static func verifyAnimation() {
+    private static func verifyAnimation(output: URL) throws {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         var now: TimeInterval = 0
         var reduced = false, visible = true
@@ -235,6 +240,15 @@ import AppKit
         indicator.needsDisplay = true
         let dim = capture(indicator).representation(using: .png, properties: [:])!
         precondition(bright != dim && item.button!.image === image, "Breathing changed the quota image or did not change the dot")
+        for dark in [false, true] {
+            try preview(item.button!, indicator: indicator, dark: dark)
+                .representation(using: .png, properties: [:])!.write(
+                    to: output.appendingPathComponent("menu-bar-running-dim-preview\(dark ? "-dark" : "").png"))
+        }
+        try preview(item.button!, indicator: indicator, dark: true,
+                    background: NSColor(srgbRed: 0.02, green: 0.46, blue: 0.63, alpha: 1))
+            .representation(using: .png, properties: [:])!.write(
+                to: output.appendingPathComponent("menu-bar-running-dim-preview-blue.png"))
         let before = indicator.animationTicks
         settle(0.35)
         precondition((1...4).contains(indicator.animationTicks - before), "The running dot exceeded its 10 Hz repaint budget")
