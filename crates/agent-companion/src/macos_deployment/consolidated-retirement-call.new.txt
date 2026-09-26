@@ -1,0 +1,4 @@
+            self.retire_legacy_runtime()
+            yield
+        finally:
+            os.close(fd)

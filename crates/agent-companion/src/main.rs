@@ -60,6 +60,12 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Check a saved Dodex desktop; --repair fixes only audited legacy launchers.
+    #[cfg(target_os = "macos")]
+    DodexApp {
+        #[arg(long)]
+        repair: bool,
+    },
     /// Open the explicitly deployed, isolated Dodex desktop instance.
     #[cfg(windows)]
     Dodex(DodexArgs),
@@ -180,6 +186,10 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     let result = match cli.command {
+        #[cfg(target_os = "macos")]
+        Some(Command::DodexApp { repair }) => macos_deployment::desktop_entry(repair)
+            .map(|message| println!("{message}"))
+            .map_err(std::io::Error::other),
         #[cfg(windows)]
         Some(Command::Dodex(DodexArgs { deploy, check })) => {
             let result = if check {

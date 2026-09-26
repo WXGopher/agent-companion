@@ -1,0 +1,1 @@
+def verify_application(app):

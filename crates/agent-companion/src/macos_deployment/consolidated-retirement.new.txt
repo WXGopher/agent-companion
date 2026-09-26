@@ -1,0 +1,39 @@
+    def retire_legacy_runtime(self):
+        marker = Path("/Applications/.Dodex/legacy-runtime-retirement.json")
+        if not exists(marker):
+            return
+        source = Path("/Applications/Codex B Runtime.app")
+        destination = Path("/Applications/.Dodex/Retired Runtime.app")
+        expected = {"schema": 1, "source": str(source), "destination": str(destination)}
+        if read_json(marker) != expected:
+            raise ManagerError("Unknown legacy runtime retirement record; no files were moved.")
+        if self.pending_journals():
+            raise ManagerError("Recover pending B transactions before retiring the legacy runtime.")
+        result = command(["/bin/ps", "-axo", "comm="], timeout=10)
+        if result.returncode:
+            raise ManagerError("Cannot check legacy runtime processes; no files were moved.")
+        prefix = str(source) + "/"
+        if any(line.strip().startswith(prefix) for line in result.stdout.decode("utf-8", "replace").splitlines()):
+            return
+        no_symlink_components(source)
+        no_symlink_components(destination)
+        if not exists(source):
+            if not destination.is_dir():
+                raise ManagerError("The legacy runtime and retirement archive are both missing.")
+            verify_application(destination)
+            marker.unlink()
+            return
+        if not source.is_dir() or exists(destination):
+            raise ManagerError("Legacy runtime retirement destination conflicts with existing files; no files were moved.")
+        verify_application(source)
+        if DARWIN is None:
+            raise ManagerError("Exclusive legacy runtime retirement requires macOS.")
+        rename = DARWIN.renamex_np
+        rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        rename.restype = ctypes.c_int
+        # RENAME_EXCL rejects a destination that appeared after validation.
+        if rename(os.fsencode(str(source)), os.fsencode(str(destination)), 4) != 0:
+            raise ManagerError("Could not archive the idle legacy runtime; existing files were retained.")
+        marker.unlink()
+
+    def audit(self, event, **details):

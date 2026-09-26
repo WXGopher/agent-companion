@@ -38,6 +38,7 @@ windows.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 toml_edit = "0.25.13"
+tempfile.workspace = true
 agent-companion-core = { workspace = true, features = ["desktop-history"] }
 slint = { workspace = true, features = ["unstable-winit-030"] }
 

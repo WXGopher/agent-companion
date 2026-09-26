@@ -15,6 +15,10 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+      - name: Check Dodex repair helpers
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_prepare_dodex_manager.py'
+          python3 -m unittest discover -s scripts/tests -p 'test_*.py'
       - name: Check menu-bar status and quota behavior
         run: sh scripts/test-macos-ui.sh --menu-bar
       - name: Preserve failed menu-bar renders
@@ -88,8 +92,20 @@ jobs:
             echo "PRIVACY_NEEDLES is not set; skipping the privacy scan."
             exit 0
           fi
-          if git grep -riE "$PRIVACY_NEEDLES" -- .; then
-            echo "::error::Machine-local identifiers found in tracked files"
-            exit 1
-          fi
-          echo "Privacy scan clean."
+          privacy_scan_status=0
+          # Print filenames only. Invalid regex diagnostics can echo the secret
+          # pattern, so suppress stderr and report scanner failures generically.
+          git grep -IliE "$PRIVACY_NEEDLES" -- . 2>/dev/null || privacy_scan_status=$?
+          case "$privacy_scan_status" in
+            0)
+              echo "::error::Machine-local identifiers found in tracked files"
+              exit 1
+              ;;
+            1)
+              echo "Privacy scan clean."
+              ;;
+            *)
+              echo "::error::Privacy scan could not complete; check the private scan configuration"
+              exit 1
+              ;;
+          esac

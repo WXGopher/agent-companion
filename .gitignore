@@ -3,3 +3,7 @@
 *.backup.*
 .DS_Store
 /dist
+# Local icon experiments and Python bytecode are never release inputs.
+/assets/dodex/
+__pycache__/
+*.py[cod]

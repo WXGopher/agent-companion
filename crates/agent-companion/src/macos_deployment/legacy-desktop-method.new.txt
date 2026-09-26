@@ -1,0 +1,14 @@
+    def desktop_pids(self):
+        result = command(["/bin/ps", "-axo", "pid=,comm="], timeout=10)
+        if result.returncode:
+            raise ManagerError("Cannot establish whether the Dodex desktop is running.")
+        executable = str(self.paths.runtime / "Contents/MacOS/ChatGPT")
+        pids = []
+        for line in result.stdout.decode("utf-8", "replace").splitlines():
+            fields = line.strip().split(None, 1)
+            if len(fields) == 2 and fields[0].isdigit() and int(fields[0]) != os.getpid():
+                if fields[1] == executable:
+                    pids.append(int(fields[0]))
+        return pids
+
+    def stopped(self):
