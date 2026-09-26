@@ -85,7 +85,7 @@ component SessionList inherits VerticalLayout {
                     // here, so the row that wants a click looks
                     // like it.
                     color: session.phase == "waitingForApproval" || session.phase == "waitingForAnswer"
-                        ? Theme.thin
+                        ? Theme.status-waiting
                         : Theme.faint;
                     font-size: 11px;
                     overflow: elide;

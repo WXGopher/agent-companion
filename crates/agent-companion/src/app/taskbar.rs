@@ -3,7 +3,8 @@
 //! A vertical taskbar has a long empty stretch between the last running app and
 //! the notification area, and a horizontal one has the same stretch on its
 //! right. Agent Companion parks a two-chip readout there — `● 92%` for Claude, `● 15%` for
-//! Codex — so that the number a user actually checks is on screen without a
+//! Codex — with each leading mark showing task state, so the number a user
+//! actually checks is on screen without a
 //! floating window in the way of anything.
 //!
 //! # Being inside the taskbar
@@ -56,6 +57,7 @@ use agent_companion_core::protocol::HookSource;
 use agent_companion_core::state::AgentTasks;
 use slint::ComponentHandle;
 
+use super::task_status::TaskOutcomes;
 use super::ui::TaskbarBar;
 use super::win::{self, Rect, Taskbar};
 use crate::usage_cache::UsageSnapshot;
@@ -141,8 +143,10 @@ pub struct Chip {
     pub value: String,
     /// `""` | `"good"` | `"warn"` | `"low"`; see [`crate::usage_cache::left_tier`].
     pub tier: &'static str,
-    /// Live sessions by state. All zero hides the task line.
+    /// Live sessions by state. All zero hides the task line and gives the quota
+    /// mark its idle colour; no task is represented as completed by default.
     pub tasks: AgentTasks,
+    pub outcomes: TaskOutcomes,
 }
 
 /// What the app knows about one agent when the readout is being laid out.
@@ -153,6 +157,7 @@ pub struct AgentLine {
     pub show: bool,
     /// Live sessions, from [`agent_companion_core::state::SessionTable::tasks`].
     pub tasks: AgentTasks,
+    pub outcomes: TaskOutcomes,
 }
 
 /// The readout's contents: one block per agent the user wants shown that has
@@ -182,6 +187,7 @@ pub fn chips(usage: &UsageSnapshot, lines: &[AgentLine], good_at: i64, warn_at: 
                     .map(|window| crate::usage_cache::left_tier(window.left, good_at, warn_at))
                     .unwrap_or(""),
                 tasks: line.tasks,
+                outcomes: line.outcomes,
             })
         })
         .collect();
@@ -191,6 +197,7 @@ pub fn chips(usage: &UsageSnapshot, lines: &[AgentLine], good_at: i64, warn_at: 
             value: "--".to_string(),
             tier: "",
             tasks: AgentTasks::default(),
+            outcomes: TaskOutcomes::default(),
         });
     }
     chips
@@ -449,6 +456,8 @@ impl TaskbarView {
                 pending: chip.tasks.pending as i32,
                 running: chip.tasks.running as i32,
                 done: chip.tasks.done as i32,
+                failed: chip.outcomes.failed as i32,
+                stopped: chip.outcomes.stopped as i32,
             })
             .collect();
         // Nothing changed, so nothing is redrawn: this runs on every tick.
@@ -465,6 +474,8 @@ impl TaskbarView {
                         && old.pending == new.pending
                         && old.running == new.running
                         && old.done == new.done
+                        && old.failed == new.failed
+                        && old.stopped == new.stopped
                 });
         if unchanged && self.ui.get_vertical() == along.is_vertical() {
             return;
@@ -756,11 +767,13 @@ mod tests {
                 agent: HookSource::Claude,
                 show: true,
                 tasks: running(claude_running),
+                outcomes: TaskOutcomes::default(),
             },
             AgentLine {
                 agent: HookSource::Codex,
                 show: true,
                 tasks: running(codex_running),
+                outcomes: TaskOutcomes::default(),
             },
         ]
     }
@@ -831,6 +844,7 @@ mod tests {
         let done_only = [AgentLine {
             agent: HookSource::Claude,
             show: true,
+            outcomes: TaskOutcomes::default(),
             tasks: AgentTasks {
                 done: 2,
                 ..AgentTasks::default()

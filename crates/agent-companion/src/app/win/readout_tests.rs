@@ -217,6 +217,7 @@ fn native_slint_readout_stays_frameless_through_layout_and_visibility_changes() 
                 assert_readout(hwnd(bar.window_handle().unwrap()), true);
                 let mut chips = vec![Chip {
                     agent: Some(HookSource::Codex),
+                    outcomes: Default::default(),
                     value: "28%".into(),
                     tier: "warn",
                     tasks: AgentTasks {
@@ -231,6 +232,7 @@ fn native_slint_readout_stays_frameless_through_layout_and_visibility_changes() 
                         0,
                         Chip {
                             agent: Some(HookSource::Claude),
+                            outcomes: Default::default(),
                             value: "23%".into(),
                             tier: "warn",
                             tasks: AgentTasks::default(),

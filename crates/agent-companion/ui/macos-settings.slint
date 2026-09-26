@@ -1,8 +1,9 @@
-import { Button, ComboBox, Switch, TabWidget } from "std-widgets.slint";
+import { Button, ComboBox, ScrollView, Switch, TabWidget } from "std-widgets.slint";
 import { StatusComponent } from "status-component.slint";
 
 import { SettingsColors, SettingsCard } from "settings-common.slint";
 import { StatusBarSettings } from "statusbar-settings.slint";
+import { ProfileSyncFile, ProfileSyncSettings } from "profile-sync.slint";
 
 export component MacSettings inherits Rectangle {
     in-out property <int> current-page: 0;
@@ -18,31 +19,25 @@ export component MacSettings inherits Rectangle {
     in property <bool> error;
     in property <string> config-path;
     in property <string> catalog-version;
-    in property <bool> show-dock-icon;
-    in property <bool> dock-error;
-    in property <bool> show-menu-bar: true;
-    in property <bool> menu-bar-error;
-    in property <bool> show-notch;
-    in property <bool> notch-error;
     in property <bool> dual-enabled;
     in property <bool> dual-deployed;
     in property <bool> dual-busy;
     in property <bool> dual-error;
     in property <string> dual-phase;
     in property <string> dual-message;
+    in property <[ProfileSyncFile]> sync-files;
+    in property <bool> sync-busy;
+    in property <string> sync-status;
+    in property <bool> sync-error;
+    in-out property <length> dual-scroll-y;
     in property <[string]> instance-options;
     in-out property <int> selected-instance;
-    in property <[string]> display-options;
-    in-out property <int> selected-display;
-    in property <string> display-status;
-    in property <bool> display-error;
-    callback select-display(string);
-    callback toggle-dock-icon(bool);
-    callback toggle-menu-bar(bool);
-    callback toggle-notch(bool);
     callback deploy-dual();
     callback toggle-dual(bool);
     callback select-instance(string);
+    callback sync-profile(string, bool);
+    callback open-sync-file(string, bool, bool);
+    callback refresh-sync();
     callback toggle(string, bool);
     callback apply();
     callback restore-defaults();
@@ -110,7 +105,7 @@ export component MacSettings inherits Rectangle {
                         preview: root.preview;
                         mono-font: root.mono-font;
                         selected-count: root.selected-count;
-                        ready: root.ready;
+                        ready: root.ready && !root.sync-busy;
                         dirty: root.dirty;
                         custom: root.custom;
                         message: root.message;
@@ -124,144 +119,17 @@ export component MacSettings inherits Rectangle {
                 }
             }
             Tab {
-                title: "Notch & app";
-                VerticalLayout {
-                    padding-top: 20px;
-                    spacing: 12px;
-                    VerticalLayout {
-                        spacing: 5px;
-                        Text { text: "Notch & app"; font-size: 16px; font-weight: 600; color: SettingsColors.text; }
-                        Text { text: "Choose where your companion lives. Changes save automatically."; font-size: 11px; color: SettingsColors.secondary; }
-                    }
-                    Text { text: "Display"; font-size: 12px; font-weight: 600; color: SettingsColors.text; }
-                    SettingsCard {
-                        vertical-stretch: 0;
-                        VerticalLayout {
-                            padding: 14px;
-                            spacing: 10px;
-                            HorizontalLayout {
-                                spacing: 24px;
-                                VerticalLayout {
-                                    spacing: 5px;
-                                    Text { text: "Show notch"; font-size: 12px; font-weight: 600; color: SettingsColors.text; }
-                                    Text {
-                                        text: root.notch-error ? "Could not save. Please try again." : "Show tasks and usage at the top of your screen.";
-                                        font-size: 10.5px;
-                                        color: root.notch-error ? SettingsColors.error : SettingsColors.secondary;
-                                    }
-                                }
-                                Switch {
-                                    checked: root.show-notch;
-                                    accessible-label: "Show Agent Companion notch";
-                                    toggled => { root.toggle-notch(self.checked); }
-                                }
-                            }
-                            Rectangle { height: 1px; background: SettingsColors.border; }
-                            HorizontalLayout {
-                                spacing: 24px;
-                                VerticalLayout {
-                                    alignment: center;
-                                    spacing: 5px;
-                                    Text { text: "Notch display"; font-size: 12px; font-weight: 600; color: SettingsColors.text; }
-                                    Text { text: "Follow your main screen or choose a display."; font-size: 10.5px; color: SettingsColors.secondary; wrap: word-wrap; }
-                                }
-                                ComboBox {
-                                    width: 340px;
-                                    height: 32px;
-                                    model: root.display-options;
-                                    current-index <=> root.selected-display;
-                                    enabled: root.show-notch && root.display-options.length > 0;
-                                    accessible-label: "Notch display";
-                                    selected(label) => { root.select-display(label); }
-                                }
-                            }
-                            Rectangle { height: 1px; background: SettingsColors.border; }
-                            Text {
-                                text: root.display-error ? "Could not save the display choice. Please try again." : root.display-status;
-                                color: root.display-error ? SettingsColors.error : SettingsColors.secondary;
-                                font-size: 10.5px;
-                                wrap: word-wrap;
-                            }
-                        }
-                    }
-                    Text { text: "App appearance"; font-size: 12px; font-weight: 600; color: SettingsColors.text; }
-                    SettingsCard {
-                        vertical-stretch: 0;
-                        HorizontalLayout {
-                            padding: 14px;
-                            spacing: 24px;
-                            VerticalLayout {
-                                alignment: center;
-                                spacing: 5px;
-                                Text { text: "Show in menu bar"; font-size: 12px; font-weight: 600; color: SettingsColors.text; }
-                                Text {
-                                    text: root.menu-bar-error ? "Could not save. Please try again." : "Shows valid weekly quotas, Codex above Dodex; an icon when none are available. Click for tasks and usage.";
-                                    font-size: 10.5px;
-                                    color: root.menu-bar-error ? SettingsColors.error : SettingsColors.secondary;
-                                    wrap: word-wrap;
-                                }
-                            }
-                            Switch {
-                                checked: root.show-menu-bar;
-                                accessible-label: "Show Agent Companion in the menu bar";
-                                toggled => { root.toggle-menu-bar(self.checked); }
-                            }
-                        }
-                    }
-                    SettingsCard {
-                        vertical-stretch: 0;
-                        HorizontalLayout {
-                            padding: 14px;
-                            spacing: 24px;
-                            VerticalLayout {
-                                alignment: center;
-                                spacing: 5px;
-                                Text { text: "Show in Dock"; font-size: 12px; font-weight: 600; color: SettingsColors.text; }
-                                Text {
-                                    text: root.dock-error ? "Could not save. Please try again." : "Off by default. Enable the Dock icon to open Settings.";
-                                    font-size: 10.5px;
-                                    color: root.dock-error ? SettingsColors.error : SettingsColors.secondary;
-                                    wrap: word-wrap;
-                                }
-                            }
-                            Switch {
-                                checked: root.show-dock-icon;
-                                accessible-label: "Show Agent Companion in the Dock";
-                                toggled => { root.toggle-dock-icon(self.checked); }
-                            }
-                        }
-                    }
-                    Text {
-                        text: "If all three are hidden, reopen Agent Companion from Applications to reach Settings.";
-                        font-size: 10.5px;
-                        color: SettingsColors.secondary;
-                        wrap: word-wrap;
-                    }
-                    if root.dirty: SettingsCard {
-                        vertical-stretch: 0;
-                        background: SettingsColors.selected;
-                        HorizontalLayout {
-                            padding: 14px;
-                            spacing: 16px;
-                            Text {
-                                text: "You have unapplied Codex CLI changes.";
-                                font-size: 11px;
-                                color: SettingsColors.accent;
-                                vertical-alignment: center;
-                            }
-                            Rectangle { horizontal-stretch: 1; }
-                            Button {
-                                text: "Review changes";
-                                height: 28px;
-                                clicked => { root.current-page = 0; }
-                            }
-                        }
-                    }
-                    Rectangle { vertical-stretch: 1; }
-                }
-            }
-            Tab {
                 title: "Codex 双开";
+                ScrollView {
+                    viewport-width: self.visible-width;
+                    viewport-y <=> root.dual-scroll-y;
+                    horizontal-scrollbar-policy: always-off;
+                    changed viewport-y => {
+                        self.viewport-y = max(min(self.viewport-y, 0px), min(0px, self.visible-height - self.viewport-height));
+                    }
+                    changed viewport-height => {
+                        self.viewport-y = max(min(self.viewport-y, 0px), min(0px, self.visible-height - self.viewport-height));
+                    }
                 VerticalLayout {
                     padding-top: 20px;
                     spacing: 18px;
@@ -330,7 +198,16 @@ export component MacSettings inherits Rectangle {
                         color: SettingsColors.secondary;
                         wrap: word-wrap;
                     }
-                    Rectangle { vertical-stretch: 1; }
+                    ProfileSyncSettings {
+                        files: root.sync-files;
+                        busy: root.dual-busy || root.sync-busy;
+                        status: root.sync-status;
+                        error: root.sync-error;
+                        sync(file, to-secondary) => { root.sync-profile(file, to-secondary); }
+                        open-file(file, secondary, edit) => { root.open-sync-file(file, secondary, edit); }
+                        refresh => { root.refresh-sync(); }
+                    }
+                }
                 }
             }
         }

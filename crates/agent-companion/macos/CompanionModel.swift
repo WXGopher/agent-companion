@@ -25,13 +25,16 @@ struct CodexTask: Decodable, Identifiable {
     var sourceLabel: String { instanceLabel ?? "Codex" }
 
     var isActive: Bool { state == "running" || state == "waiting" }
+    var activity: TaskActivity { TaskActivity(state: state) }
     var symbol: String {
         switch state {
         case "running": return "circle.inset.filled"
         case "waiting": return "pause.circle.fill"
         case "failed": return "exclamationmark.circle"
         case "stopped": return "stop.circle"
-        default: return "checkmark.circle"
+        case "paused": return "pause.circle"
+        case "completed": return "checkmark.circle"
+        default: return "questionmark.circle"
         }
     }
     var status: String {
@@ -40,12 +43,13 @@ struct CodexTask: Decodable, Identifiable {
         case "waiting": return "Needs input"
         case "failed": return "Failed"
         case "stopped": return "Stopped"
-        default: return "Completed"
+        case "paused": return "Paused"
+        case "completed": return "Completed"
+        default: return "Unknown"
         }
     }
-    var tint: Color {
-        if state == "waiting" || state == "failed" { return .orange }
-        return isActive ? CompanionModel.accent : .white.opacity(0.55)
+    func tint(in palette: CompanionPalette) -> Color {
+        activity.color(in: palette.theme)
     }
 }
 
@@ -84,12 +88,11 @@ struct CodexSnapshot: Decodable {
 }
 
 final class CompanionModel: ObservableObject {
-    static let accent = Color(red: 0.45, green: 0.90, blue: 0.74)
     @Published var snapshot = CodexSnapshot()
-    @Published var expanded = false {
+    @Published var isPresented = false {
         didSet {
-            if expanded != oldValue { presentationRevision &+= 1 }
-            if !expanded { stopUsage() }
+            if isPresented != oldValue { presentationRevision &+= 1 }
+            if !isPresented { stopUsage() }
         }
     }
     @Published var showingCompleted = false
@@ -97,13 +100,13 @@ final class CompanionModel: ObservableObject {
     @Published var selectedInstanceID = "codex"
     @Published var subscriptionUsage = SubscriptionUsage()
     @Published var usageLoading = false
-    @Published var metrics = NotchMetrics()
     @Published var message: String?
     @Published var failedTask: CodexTask?
     @Published var jumpingID: String?
     @Published var dashboardError: String?
-    var expand: (() -> Void)?
-    var collapse: (() -> Void)?
+    @Published var animatesTaskActivity = false
+    var present: (() -> Void)?
+    var dismiss: (() -> Void)?
     var quit: (() -> Void)?
     var settingsAction: (() -> Void)?
     private var timer: Timer?
@@ -128,7 +131,6 @@ final class CompanionModel: ObservableObject {
         }
     }
 
-    var hasCamera: Bool { metrics.hasCamera }
     var instances: [CodexInstance] {
         if let instances = snapshot.instances, !instances.isEmpty { return instances }
         return [CodexInstance(instanceId: "codex", label: "Codex", codexHome: snapshot.codexHome,
@@ -144,35 +146,13 @@ final class CompanionModel: ObservableObject {
         usageLoading = false
         refreshUsage()
     }
-    var workingCount: Int { snapshot.tasks.filter { $0.state == "running" }.count }
-    var needsInput: Bool { snapshot.tasks.contains { $0.state == "waiting" } }
-    var quotaTint: Color {
-        guard let remaining = weeklyRemainingPercent else { return .white.opacity(0.55) }
-        return remaining <= 10 ? .orange : Self.accent
+    var enabledTasks: [CodexTask] {
+        let enabled = Set(instances.map(\.id))
+        return snapshot.tasks.filter { enabled.contains($0.sourceID) }
     }
-    var summaryDescription: String {
-        "\(instances.map(\.label).joined(separator: " + ")): \(workingCount) working\(needsInput ? ", approval or input needed" : ""). \(selectedInstance.label) weekly quota remaining: \(weeklyText)"
-    }
-    private func cameraWingWidth(text: String, accessories: CGFloat = 0) -> CGFloat {
-        guard hasCamera else { return 0 }
-        let scale = metrics.cameraContentScale
-        let font = NSFont.monospacedDigitSystemFont(ofSize: 10 * scale, weight: .semibold)
-        let textWidth = (text as NSString).size(withAttributes: [.font: font]).width
-        // Leave room for the outer curve and the edge of the camera cutout.
-        return ceil(max(metrics.cameraSideWidth, textWidth + (accessories + 12) * scale))
-    }
-    var cameraLeftWidth: CGFloat { cameraWingWidth(text: weeklyText) }
-    var cameraRightWidth: CGFloat {
-        // Reserve only the working count, its icon and an optional question
-        // mark. Waiting sessions remain in Active but are not still working.
-        cameraWingWidth(text: countText(workingCount), accessories: needsInput ? 18 : 8)
-    }
-    var compactWidth: CGFloat { hasCamera ? cameraLeftWidth + metrics.cameraWidth + cameraRightWidth : metrics.width }
-    var centerOffset: CGFloat {
-        // Unequal wings reclaim menu space without shifting the camera gap.
-        metrics.centerOffset + (cameraRightWidth - cameraLeftWidth) / 2
-    }
-    var compactHeight: CGFloat { metrics.compactHeight }
+    var taskActivity: TaskActivity { TaskActivity.aggregate(enabledTasks) }
+    var workingCount: Int { enabledTasks.filter { $0.activity == .running }.count }
+    var needsInput: Bool { enabledTasks.contains { $0.activity == .waiting } }
     func countText(_ count: Int) -> String { count > 99 ? "99+" : "\(count)" }
     var weeklyUsage: WeeklyUsage? { weeklyUsage(for: selectedInstance) }
     func weeklyUsage(for instance: CodexInstance) -> WeeklyUsage? {
@@ -212,7 +192,7 @@ final class CompanionModel: ObservableObject {
         return "\(remaining)%"
     }
     var visibleTasks: [CodexTask] {
-        snapshot.tasks.filter { showingCompleted ? !$0.isActive : $0.isActive }
+        enabledTasks.filter { showingCompleted ? !$0.isActive : $0.isActive }
     }
 
     func start() {
@@ -230,7 +210,7 @@ final class CompanionModel: ObservableObject {
     }
 
     func showUsage() {
-        expand?()
+        present?()
         showingUsage = true
         refreshUsage()
     }
@@ -255,7 +235,7 @@ final class CompanionModel: ObservableObject {
     func receiveUsage(source: SubscriptionSource, value: SubscriptionUsage?, loading: Bool) {
         guard source == usageSource else { return }
         if let value { subscriptionUsage = value }
-        usageLoading = expanded && showingUsage && loading
+        usageLoading = isPresented && showingUsage && loading
     }
 
     func refreshUsage(force: Bool = false) {
@@ -289,25 +269,24 @@ final class CompanionModel: ObservableObject {
             subscriptionUsage = SubscriptionUsage()
             usageLoading = false
         }
-        if expanded && showingUsage { refreshUsage() }
+        if isPresented && showingUsage { refreshUsage() }
     }
 
     func openSettings() {
         if let settingsAction { settingsAction(); return }
         if let application = settingsApplication, !application.isTerminated {
             application.activate(options: [.activateAllWindows])
-            collapse?()
+            dismiss?()
             return
         }
         guard !openingSettings else { return }
         if let process = settingsProcess, process.isRunning {
             NSRunningApplication(processIdentifier: process.processIdentifier)?.activate(options: [.activateAllWindows])
-            collapse?()
+            dismiss?()
             return
         }
         guard let executable = Bundle.main.executableURL else { return }
-        var environment = ProcessInfo.processInfo.environment
-        environment[DockPreferences.editorParentKey] = String(ProcessInfo.processInfo.processIdentifier)
+        let environment = ProcessInfo.processInfo.environment
         if Bundle.main.bundleURL.pathExtension == "app" {
             // Register the accessory editor with Launch Services so its window
             // can be activated even though it has no Dock tile of its own.
@@ -324,7 +303,7 @@ final class CompanionModel: ObservableObject {
                     self.settingsApplication = application
                     guard self.presentationRevision == revision else { return }
                     if let error { self.message = "Could not open settings: \(error.localizedDescription)" }
-                    else { self.collapse?() }
+                    else { self.dismiss?() }
                 }
             }
             return
@@ -336,7 +315,7 @@ final class CompanionModel: ObservableObject {
         do {
             try process.run()
             settingsProcess = process
-            collapse?()
+            dismiss?()
         } catch { message = "Could not open settings: \(error.localizedDescription)" }
     }
 
@@ -352,7 +331,7 @@ final class CompanionModel: ObservableObject {
             DispatchQueue.main.async {
                 guard let self, self.presentationRevision == revision else { return }
                 if let error { self.message = "Could not open Codex: \(error.localizedDescription)" }
-                else { self.collapse?() }
+                else { self.dismiss?() }
             }
         }
     }
@@ -376,7 +355,7 @@ final class CompanionModel: ObservableObject {
             if let error {
                 message = error
                 failedTask = task
-            } else { collapse?() }
+            } else { dismiss?() }
         }
     }
 

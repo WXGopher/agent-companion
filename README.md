@@ -6,18 +6,27 @@
 
 在 Windows 任务栏或 macOS 菜单栏查看 Codex 的任务状态与订阅用量。
 
+### v0.3.18 更新
+
+- macOS 统一使用菜单栏入口，移除刘海与独立 Dock 入口；重新打开应用直接显示 Tasks 弹窗。
+- 弹窗新增完整应用名、版本、运行数和持久化亮暗主题；Codex／Dodex 状态颜色与 Windows 统一。
+- 双开设置支持手动双向同步配置与全局个人指令，显示双方路径并在覆盖前备份目标。[发布说明](docs/releases/v0.3.18.md)
+
 ### 主要功能
 
 - **任务状态**：查看运行中、待处理和已结束的任务，点击返回对应对话或终端。
 - **Tasks / Usage**：切换任务与用量，查看剩余额度、重置时间、累计 Token 和最近七个有记录日期的用量柱状图。
 - **状态栏定制**：选择 Codex CLI 状态栏组件，实时预览并保存。
 - **Windows 集成**：任务栏分别显示 Codex（`C`）和 Dodex（`D`）的每周剩余额度；支持任务完成通知、开机启动，以及可选的工具审批和提问卡片。
-- **macOS 入口**：菜单栏显示每周剩余额度，Codex 在上、Dodex 在下；有历史读数的实例在闲置时继续显示，待更新的数值带 `*`，悬停可查看说明。尚无读数时显示默认图标；点击弹出任务／用量面板。Dock 图标可选，点击打开设置。菜单栏、Dock 和刘海可在设置中独立开关，默认仅显示菜单栏，已有选择保持不变。
+- **macOS 入口**：菜单栏显示每周剩余额度，Codex 在上、Dodex 在下；有历史读数的实例在闲置时继续显示，待更新的数值带 `*`，悬停可查看说明。尚无读数时显示 `—` 和对应任务状态；点击弹出任务／用量面板。macOS 仅保留菜单栏入口，设置从弹出面板底部打开。
+- **任务状态标记**：分别显示 Codex／Dodex 状态：蓝色呼吸表示进行中，黄色表示待确认／待输入或失败，绿色仅表示所有任务均完成，灰色表示无任务或停止、暂停、未知等状态。混合任务优先显示等待，其次显示运行；失败不会误报为完成。macOS 菜单栏与 Windows 任务栏使用相同颜色含义，Windows 保留现有图标形状。
+- **macOS 面板**：顶部显示 Agent Companion、当前版本和正在运行的任务数。点击底部的太阳／月亮按钮切换亮色／暗色主题，Tasks 和 Usage 同步更新；重启后保留主题选择，默认使用暗色。
 - **可选 Codex 双开（Windows / macOS）**：在设置中手动部署或接入 Dodex，任务标注来源，用量、缓存和 CLI 状态栏设置按实例管理。默认关闭，不自动接入或启动 Dodex。
+- **配置与个人指令同步**：双开页签显示双方文件路径，提供独立的 Codex → Dodex、Dodex → Codex 操作，手动覆盖 `config.toml` 或各自 `CODEX_HOME` 下的全局 `AGENTS.md`，覆盖前备份目标。配置可能含有内嵌密钥，同步时会一并复制；**不复制 `auth.json`**，保留目标实例的登录存储、数据库和日志设置。没有自动同步，详见[同步说明](docs/macos-dual-instance.md#manual-configuration-and-instruction-sync)。
 
 订阅用量复用对应实例的 Codex CLI ChatGPT 登录，无需 API Key。两个平台的 Usage 查询结果均按实例缓存 5 分钟，从查询完成时计时；切换页面直接复用有效缓存，手动刷新可立即重新查询。已过重置时间的额度不会继续显示为有效值。
 
-macOS 菜单栏可见时，即使面板关闭，也会按实例每 5 分钟刷新账号用量。缓存到期、读取失败或额度重置后，最后已知数值以 `*` 标记为待更新，收到有效新读数后恢复正常显示；不会把重置后的额度推算为 100%。后台和用量页共享查询与缓存，不启动模型任务。
+macOS 即使关闭面板，也会按实例每 5 分钟刷新账号用量。缓存到期、读取失败或额度重置后，最后已知数值以 `*` 标记为待更新。例如 `69%*` 表示上次有效读数为剩余 69%，正在等待新的有效结果；刷新取得有效读数后显示最新百分比并去掉星号。不会把重置后的额度推算为 100%。后台和用量页共享查询与缓存，不启动模型任务。
 
 ### 安装
 
@@ -58,15 +67,21 @@ dodex -C C:\projects\demo
 
 **macOS 双开**：设置 → Codex 双开 → 部署双开环境。需要本机已安装且签名有效的官方 Codex.app。完成后在“应用程序”中打开 Dodex 并登录。
 
-macOS 即使隐藏所有入口，重新打开 Agent Companion 仍会进入设置。
+macOS 重新打开 Agent Companion 会显示弹窗的 Tasks 页。刘海、悬停展开、显示器选择与独立 Dock 入口已移除；旧版入口偏好不会隐藏菜单栏，已保存的菜单栏位置继续保留。设置从弹窗底部打开。详见[菜单栏说明](docs/MACOS_MENU_BAR.md)。
 
 **双开隔离与停用**：两个平台的新环境均使用独立文件凭证、历史、数据库和个人配置，不复制原实例的账号数据。已有环境只有通过兼容性和隔离校验才会接入，冲突时停止且不覆盖。停用只关闭 Companion 对第二实例的监控，不退出 Dodex、不删除环境。暂不提供双开运行程序的自动更新或卸载。
 
-**升级**：先退出旧程序，再替换解压后的文件；已安装 Windows hooks 的用户需重新执行安装命令。已有配置会保留。
+**升级**：先退出旧程序及设置窗口，再替换文件；已安装 Windows hooks 的用户需重新执行安装命令。Codex 配置、账号和双开环境会保留。
 
 ## English
 
 See Codex tasks and subscription usage in the Windows taskbar or macOS menu bar.
+
+### New in v0.3.18
+
+- macOS now uses only the menu bar. The notch and separate Dock entry are removed; reopening the app shows the Tasks popup.
+- The popup adds the full app name, version, running count and saved light / dark themes. Codex / Dodex status colors match Windows.
+- Dual-instance Settings adds manual configuration and global-instruction sync in either direction, with both file paths and destination backups. [Release notes](docs/releases/v0.3.18.md)
 
 ### Features
 
@@ -74,12 +89,15 @@ See Codex tasks and subscription usage in the Windows taskbar or macOS menu bar.
 - **Tasks / Usage**: switch to remaining quota, reset times, lifetime tokens and a bar chart of the last seven reported days.
 - **Status bar editor**: choose Codex CLI components with a live preview.
 - **Windows integration**: separate taskbar readings for Codex (`C`) and Dodex (`D`) weekly quota remaining, completion notifications, startup settings, and optional tool approvals and question cards.
-- **macOS entry points**: the menu bar shows weekly quota remaining, with Codex above Dodex. Instances with a previous reading stay visible while idle; readings awaiting an update carry `*`, with an explanation on hover. The default icon appears before any readings are available; click it for tasks and usage. The optional Dock icon opens Settings. Configure menu bar, Dock and notch visibility independently in Settings. Only the menu bar is on by default; saved choices are preserved.
+- **macOS menu bar**: the menu bar shows weekly quota remaining, with Codex above Dodex. Instances with a previous reading stay visible while idle; readings awaiting an update carry `*`, with an explanation on hover. Before a reading is available, its row shows `—` and the task status; click it for tasks and usage. The menu bar is the only macOS entry; open Settings from the popup footer.
+- **Task status marks**: Codex / Dodex each show breathing blue for running tasks, yellow for approval/input or failure, green only when every task completed, and gray for no tasks, stopped, paused or unknown states. Waiting takes priority over running in mixed groups; failures never count as successful completion. The macOS menu bar and Windows taskbar use the same colors; Windows keeps its existing icon shapes.
+- **macOS panel**: the header shows Agent Companion, its current version and the number of running tasks. Use the sun / moon button at the bottom to switch light / dark themes across Tasks and Usage. Your theme choice is saved across restarts; dark is the default.
 - **Optional second Codex instance (Windows / macOS)**: explicitly deploy or connect Dodex in Settings. Tasks show their source; usage, caches and CLI status bar settings stay separate. Disabled by default, with no automatic adoption or launch.
+- **Configuration and personal instructions**: the dual-instance tab shows both file paths and separate Codex → Dodex / Dodex → Codex actions for manually overwriting `config.toml` or the global `AGENTS.md` in each `CODEX_HOME`, with destination backups. Config files may contain embedded secrets, which are copied; **`auth.json` is never copied**, and the destination's account storage, database and log settings remain independent. Sync is never automatic. See [sync behavior](docs/macos-dual-instance.md#manual-configuration-and-instruction-sync).
 
 Subscription usage uses each instance's Codex CLI ChatGPT login. No API key is needed. Both platforms cache Usage results separately for five minutes from completion; switching pages reuses a fresh result, while manual refresh reads again. Quota readings past their reset time are no longer treated as valid.
 
-While the macOS menu bar is visible, account usage refreshes every five minutes per instance even with the panel closed. After cache expiry, a failed read or a quota reset, the last known reading carries `*` until a valid update arrives. The app never infers 100% remaining after a reset. Background refresh and the Usage page share requests and caches without starting model tasks.
+On macOS, account usage refreshes every five minutes per instance even with the panel closed. After cache expiry, a failed read or a quota reset, the last known reading carries `*`. For example, `69%*` means the cached last reading was 69% remaining and a valid update is pending. Once refresh obtains a valid reading, the latest percentage appears without the star. The app never infers 100% remaining after a reset. Background refresh and the Usage page share requests and caches without starting model tasks.
 
 ### Install
 
@@ -120,11 +138,11 @@ The app is not Apple-notarized. If the first launch is blocked, follow [Apple's 
 
 **macOS second instance**: Settings → Codex 双开 → 部署双开环境. Requires a locally installed, validly signed official Codex.app. After deployment, open Dodex from Applications and sign in.
 
-On macOS, reopening Agent Companion opens Settings even if all entry points are hidden.
+On macOS, reopening Agent Companion shows the popup's Tasks page. The notch, hover expansion, display selection and separate Dock entry have been removed. Legacy entry preferences cannot hide the menu bar, and its saved position is retained. Open Settings from the popup footer. See the [menu-bar guide](docs/MACOS_MENU_BAR.md).
 
 **Isolation and disabling**: on both platforms, a fresh environment has separate file credentials, history, databases and personal settings, without copying account data from the original instance. Existing environments are adopted only after compatibility and isolation checks; conflicts stop without overwriting. Disabling integration stops Companion monitoring the second instance without quitting Dodex or deleting its environment. Automatic runtime updates and uninstall are not included.
 
-**Upgrade**: quit the old app and replace its files. If you installed Windows hooks, rerun the installation command. Existing settings are retained.
+**Upgrade**: quit the old app and its Settings window, then replace the files. If you installed Windows hooks, rerun the installation command. Codex configuration, accounts and the second-instance environment are retained.
 
 ## 截图 / Screenshots
 
@@ -148,7 +166,11 @@ On macOS, reopening Agent Companion opens Settings even if all entry points are 
 
 ### macOS
 
-<p align="center"><img src="docs/macos-notch.png" width="356" alt="macOS 刘海与任务列表 / Notch and tasks"></p>
+<p align="center"><img src="docs/macos-menu-bar.png" width="120" alt="macOS 菜单栏状态 / Menu-bar status"></p>
+<p align="center">
+  <img src="docs/macos-panel.png" width="356" alt="macOS 暗色任务面板 / Dark Tasks popup">
+  <img src="docs/macos-panel-light.png" width="356" alt="macOS 亮色任务面板 / Light Tasks popup">
+</p>
 
 <details>
 <summary>设置 / Settings</summary>

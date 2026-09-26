@@ -131,7 +131,7 @@ impl App {
                 )
                 .into(),
                 detail: format!("Dodex · {}", describe_session(state)).into(),
-                phase: state.phase.as_str().into(),
+                phase: task_status::phase(state).into(),
                 source: "dodex".into(),
                 jumpable: navigation::can_jump(state, true),
             }
@@ -203,6 +203,15 @@ impl App {
             } else {
                 primary.tasks
             };
+            let outcomes = if is_secondary {
+                task_status::outcomes(
+                    &secondary.as_ref().unwrap().table,
+                    HookSource::Codex,
+                    now_unix_secs(),
+                )
+            } else {
+                primary.outcomes
+            };
             if row.tier.is_empty() && tasks.total() == 0 {
                 continue;
             }
@@ -223,6 +232,7 @@ impl App {
                     crate::usage_cache::left_tier((row.fill * 100.0).round() as i64, good, warn)
                 },
                 tasks,
+                outcomes,
             });
         }
         if chips.is_empty() {
@@ -231,6 +241,7 @@ impl App {
                 value: "--".into(),
                 tier: "",
                 tasks: AgentTasks::default(),
+                outcomes: task_status::TaskOutcomes::default(),
             });
         }
     }

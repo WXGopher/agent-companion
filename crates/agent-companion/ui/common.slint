@@ -13,7 +13,7 @@ export struct SessionRow {
     title: string,
     // The line under the title in the flyout — a tool name, a summary.
     detail: string,
-    // "running" | "waitingForApproval" | "waitingForAnswer" | "completed"
+    // "running" | "waitingForApproval" | "waitingForAnswer" | "completed" | "failed" | "stopped"
     phase: string,
     // "claude" | "codex"
     source: string,
@@ -47,8 +47,9 @@ export struct UsageRow {
     resets: string,
 }
 
-// One agent's number in the taskbar readout: a dot in the agent's colour and
-// the percentage left of its tightest rate-limit window.
+// One instance's number in the taskbar readout: a task-status dot and the
+// percentage left of its tightest rate-limit window. C/D labels identify the
+// Codex instance independently of its current task state.
 export struct UsageChip {
     // "claude" | "codex", or "" for the placeholder shown when nothing has
     // reported anything yet.
@@ -63,6 +64,9 @@ export struct UsageChip {
     pending: int,
     running: int,
     done: int,
+    // Non-successful presentation outcomes, separate from lifecycle counts.
+    failed: int,
+    stopped: int,
 }
 
 export global Theme {
@@ -78,9 +82,34 @@ export global Theme {
     out property <color> dim: #9797ae;
     out property <color> faint: #7d7d94;
 
-    // One hue per agent, used for its mark, its dot, and its card's accent.
+    // Identity colours belong to agent marks and card accents.
     out property <color> claude: #e8824a;
     out property <color> codex: #4a9de8;
+
+    // Task status uses the same palette for every agent and instance.
+    out property <color> status-running: #4a9de8;
+    out property <color> status-completed: #55c98d;
+    out property <color> status-waiting: #e3bf52;
+    out property <color> status-idle: #6a6a80;
+
+    public pure function task-color(pending: int, running: int, done: int, failed: int, stopped: int) -> color {
+        pending > 0 ? self.status-waiting
+            : running > 0 ? self.status-running
+            : failed > 0 ? self.status-waiting
+            : done > 0 && stopped == 0 ? self.status-completed
+            : self.status-idle;
+    }
+
+    public pure function session-active(phase: string) -> bool {
+        phase == "running" || phase == "waitingForApproval" || phase == "waitingForAnswer";
+    }
+
+    public pure function session-color(phase: string) -> color {
+        phase == "waitingForApproval" || phase == "waitingForAnswer" || phase == "failed" ? self.status-waiting
+            : phase == "running" ? self.status-running
+            : phase == "completed" ? self.status-completed
+            : self.status-idle;
+    }
 
     // How much of a rate-limit window is left, at a glance. The turns are at
     // 50 % and 20 %; see `usage_cache::left_tier`.
@@ -217,13 +246,12 @@ export component ActionButton inherits Rectangle {
     }
 }
 
-// The coloured square that stands for one session in the tray panel. Full
-// strength while the agent works, breathing while it waits on the user, nearly
-// gone once it is done.
+// The coloured square that stands for one session in the tray panel. Running
+// and waiting sessions breathe; completed and idle sessions remain still.
 export component SessionBlock inherits Rectangle {
     in property <string> phase;
     in property <string> source;
-    // Driven by a single timer in the parent so every waiting block breathes in
+    // Driven by a single timer in the parent so every active block breathes in
     // step rather than each starting from whenever it appeared.
     in property <bool> pulse;
     in property <length> size: 18px;
@@ -231,12 +259,8 @@ export component SessionBlock inherits Rectangle {
     width: root.size;
     height: root.size;
     border-radius: root.size / 3;
-    background: root.source == "codex" || root.source == "dodex" ? Theme.codex : Theme.claude;
-    opacity: root.phase == "running"
-        ? 1.0
-        : (root.phase == "waitingForApproval" || root.phase == "waitingForAnswer")
-            ? (root.pulse ? 1.0 : 0.35)
-            : 0.22;
+    background: Theme.session-color(root.phase);
+    opacity: Theme.session-active(root.phase) ? (root.pulse ? 1.0 : 0.35) : 1.0;
 
     animate opacity { duration: 700ms; easing: ease-in-out; }
 }

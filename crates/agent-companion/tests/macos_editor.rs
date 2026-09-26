@@ -25,7 +25,7 @@ fn main() {
 #[cfg(target_os = "macos")]
 fn check_editor_startup() {
     use slint::{
-        ComponentHandle,
+        ComponentHandle, Model,
         language::ColorScheme,
         winit_030::{
             WinitWindowAccessor,
@@ -42,28 +42,20 @@ fn check_editor_startup() {
         }
     });
     let home = tempfile::tempdir().unwrap();
-    let config_path = home.path().join("config.toml");
-    let second_config_path = home.path().join("dodex/config.toml");
+    let fixture_root = home.path().canonicalize().unwrap();
+    let config_path = fixture_root.join("primary-profile-with-a-long-path-for-copying/config.toml");
+    let second_config_path =
+        fixture_root.join("dodex-profile-with-an-independent-home-and-login/config.toml");
+    std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(second_config_path.parent().unwrap()).unwrap();
     macos::prepare_editor().unwrap();
     let editor = codex_tui::Editor::new_isolated(config_path.clone()).unwrap();
-    // Freeze live preferences while rendering synthetic UI states. This never
-    // writes the user's display choice or changes the actual primary screen.
-    editor.preference_timer.stop();
+    // Freeze deployment polling while rendering synthetic UI states; all
+    // configuration and sync actions remain inside the temporary profiles.
+    editor.deployment_timer.stop();
     editor
         .window
         .set_config_path("/Users/example/.codex/config.toml".into());
-    editor
-        .window
-        .set_display_options(slint::ModelRc::new(slint::VecModel::from(vec![
-            "Follow primary display".into(),
-            "Built-in Retina Display".into(),
-            "Studio Display (Primary)".into(),
-            "Office Display (Disconnected)".into(),
-        ])));
-    editor.window.set_selected_display(0);
-    editor.window.set_display_status(
-        "Follows the primary display set in macOS. Changes save automatically.".into(),
-    );
     editor
         .window
         .global::<ui::Palette>()
@@ -72,21 +64,17 @@ fn check_editor_startup() {
     editor
         .window
         .set_config_path("/Users/example/.codex/config.toml".into());
-    editor.window.set_show_dock_icon(true);
-    editor.window.set_show_menu_bar(true);
-    editor.window.set_show_notch(false);
-    slint::Timer::single_shot(Duration::ZERO, macos::start_editor_preferences);
     let weak = editor.window.as_weak();
     let weak_editor = std::rc::Rc::downgrade(&editor);
     let timer = slint::Timer::default();
+    let completed = std::rc::Rc::new(std::cell::Cell::new(false));
+    let completed_check = completed.clone();
     let mut phase = 0;
     timer.start(slint::TimerMode::Repeated, Duration::from_millis(250), move || {
         let window = weak.upgrade().unwrap();
         assert!(window.get_macos_preferences());
         assert!(window.get_ready());
-        let displays = macos::display_settings().expect("Display preferences did not cross the native bridge");
-        assert_eq!(displays.options.first().unwrap().id, "");
-        assert!(displays.options.iter().any(|option| option.id == displays.selected_id));
+        assert!((0..=1).contains(&window.get_settings_page()));
         let mut created = false;
         window.window().with_winit_window(|native| {
             created = native.is_visible() == Some(true);
@@ -119,11 +107,11 @@ fn check_editor_startup() {
                     path.file_stem().unwrap().to_string_lossy(),
                     [
                         "light",
-                        "notch",
+                        "dual-light",
                         "dark",
                         "compact-dirty",
-                        "notch-dirty",
-                        "notch-error",
+                        "dual-dirty-dark",
+                        "dual-error-light",
                         "compact-error",
                         "all-components",
                         "hidden",
@@ -132,7 +120,21 @@ fn check_editor_startup() {
                         "dual-error",
                         "dual-deployed",
                         "dual-instance",
-                        "all-entries-hidden",
+                        "dual-primary-draft",
+                        "sync-ready-light",
+                        "sync-dirty-dark",
+                        "sync-progress",
+                        "sync-success-dark",
+                        "sync-noop-progress",
+                        "sync-noop-dark",
+                        "sync-reverse-progress",
+                        "sync-instructions-progress",
+                        "sync-instructions-reverse",
+                        "sync-disabled-missing-light",
+                        "sync-create-target",
+                        "sync-error-progress",
+                        "sync-error-light",
+                        "sync-instructions-light",
                     ][phase]
                 ))
             };
@@ -154,8 +156,6 @@ fn check_editor_startup() {
             }
             2 => {
                 window.window().set_size(slint::LogicalSize::new(820.0, 660.0));
-                window.set_selected_display(3);
-                window.set_display_status("Display disconnected. Using the primary display until it returns.".into());
                 window.invoke_toggle("git-branch".into(), true);
                 assert!(window.get_dirty());
                 assert!(window.get_preview().contains("main"));
@@ -165,10 +165,8 @@ fn check_editor_startup() {
                 assert!(window.get_dirty());
                 assert!(window.get_preview().contains("main"));
                 window.global::<ui::Palette>().set_color_scheme(ColorScheme::Light);
-                window.set_display_error(true);
-                window.set_dock_error(true);
-                window.set_menu_bar_error(true);
-                window.set_notch_error(true);
+                window.set_dual_error(true);
+                window.set_dual_message("部署未完成。现有配置和未应用的草稿均已保留。".into());
                 window.set_error(true);
                 window.set_message("Could not save: the status bar was changed outside Agent Companion. Reopen Settings to load the latest configuration.".into());
             }
@@ -190,17 +188,8 @@ fn check_editor_startup() {
             }
             8 => {
                 assert_eq!(window.get_selected_count(), 0);
-                // A selection that disappeared before saving must restore the
-                // persisted choice, without touching real display preferences.
-                window.set_display_error(false);
-                window.invoke_select_display("Unavailable display fixture".into());
-                assert!(window.get_display_error());
-                assert_eq!(macos::display_settings().unwrap(), displays);
-                assert_eq!(
-                    window.get_selected_display() as usize,
-                    displays.options.iter().position(|option| option.id == displays.selected_id).unwrap()
-                );
-                window.set_settings_page(2);
+                window.set_settings_page(1);
+                window.set_dual_error(false);
                 window.set_dual_message("创建独立环境，首次使用需要自行登录。".into());
             }
             9 => {
@@ -249,28 +238,197 @@ fn check_editor_startup() {
                 assert_eq!(window.get_selected_count(), 0);
                 assert!(!config_path.exists());
                 window.set_settings_page(1);
-                window.set_show_dock_icon(false);
-                window.set_show_menu_bar(false);
-                window.set_show_notch(false);
-                window.set_display_error(false);
-                window.set_dock_error(false);
-                window.set_menu_bar_error(false);
-                window.set_notch_error(false);
+            }
+            14 => {
+                assert_eq!(window.get_settings_page(), 1);
+                assert!(window.get_dirty(), "The dual page lost the primary draft");
+                assert!(!config_path.exists(), "Navigation must not have saved the original draft");
+                std::fs::write(&config_path, "model = 'primary-model'\napi_key = 'synthetic-config-token'\n[tui]\nstatus_line = ['model']\n").unwrap();
+                std::fs::write(&second_config_path, "model = 'secondary-model'\n[tui]\nstatus_line = ['current-dir']\n").unwrap();
+                for (path, value) in [(&config_path, "primary-login"), (&second_config_path, "secondary-login")] {
+                    std::fs::write(path.with_file_name("auth.json"), value).unwrap();
+                    std::fs::write(path.with_file_name("state.sqlite"), "database fixture").unwrap();
+                    std::fs::write(path.with_file_name("session.log"), "log fixture").unwrap();
+                }
+                std::fs::write(config_path.with_file_name("AGENTS.md"), "Primary global instructions\n").unwrap();
+                std::fs::write(second_config_path.with_file_name("AGENTS.md"), "Old secondary instructions\n").unwrap();
+                std::fs::write(second_config_path.with_file_name("AGENTS.override.md"), "Secondary override stays local\n").unwrap();
+                let editor = weak_editor.upgrade().unwrap();
+                editor.add_isolated_secondary(second_config_path.clone());
+                editor.reload_isolated_drafts();
+                window.set_settings_page(1);
+                window.set_dual_scroll_y(-330.0);
+            }
+            15 => {
+                let config = window.get_sync_files().row_data(0).unwrap();
+                let instructions = window.get_sync_files().row_data(1).unwrap();
+                assert_eq!(config.primary_path, config_path.to_string_lossy().as_ref());
+                assert_eq!(config.secondary_path, second_config_path.to_string_lossy().as_ref());
+                assert!(config.to_primary && config.to_secondary);
+                assert!(instructions.note.contains("AGENTS.override.md") && instructions.note.contains("可能优先"));
+                window.invoke_toggle("git-branch".into(), true);
+                assert!(window.get_dirty());
+                assert!(!window.get_sync_files().row_data(0).unwrap().to_secondary);
+                assert!(window.get_sync_files().row_data(1).unwrap().to_secondary);
+                let original = std::fs::read(&second_config_path).unwrap();
+                window.invoke_sync_profile("config".into(), true);
+                assert!(!window.get_sync_busy() && window.get_dirty());
+                assert_eq!(std::fs::read(&second_config_path).unwrap(), original);
+                assert!(window.get_sync_files().row_data(0).unwrap().message.contains("未应用"));
+                window.global::<ui::Palette>().set_color_scheme(ColorScheme::Dark);
+            }
+            16 => {
+                window.invoke_toggle("git-branch".into(), false);
+                assert!(!window.get_dirty());
+                // An inactive instance's dirty draft must block config sync too.
+                window.invoke_select_instance("Dodex".into());
+                window.invoke_toggle("weekly-limit".into(), true);
+                window.invoke_select_instance("Codex".into());
+                assert!(!window.get_dirty());
+                assert!(!window.get_sync_files().row_data(0).unwrap().to_secondary);
+                window.invoke_select_instance("Dodex".into());
+                window.invoke_toggle("weekly-limit".into(), false);
+                window.invoke_select_instance("Codex".into());
+                let source = std::fs::read(&config_path).unwrap();
+                window.invoke_sync_profile("config".into(), true);
+                assert!(window.get_sync_busy() && window.get_dual_busy());
+                assert_eq!(window.get_sync_files().row_data(0).unwrap().secondary_path, second_config_path.to_string_lossy().as_ref());
+                window.invoke_toggle("git-branch".into(), true);
+                window.invoke_apply();
+                window.invoke_restore_defaults();
+                window.invoke_sync_profile("instructions".into(), true);
+                assert!(!window.get_dirty(), "Editing while a file operation was pending changed a draft");
+                assert_eq!(std::fs::read(&config_path).unwrap(), source);
+                assert_eq!(std::fs::read_to_string(second_config_path.with_file_name("AGENTS.md")).unwrap(), "Old secondary instructions\n");
+            }
+            17 => {
+                window.invoke_refresh_sync();
+                if window.get_sync_busy() { return; }
+                let row = window.get_sync_files().row_data(0).unwrap();
+                assert!(!row.error, "{}", row.message);
+                assert!(row.message.contains("已覆盖"));
+                assert!(!row.backup_path.is_empty());
+                assert!(std::fs::read_to_string(row.backup_path.as_str()).unwrap().contains("secondary-model"));
+                assert!(std::fs::read_to_string(&second_config_path).unwrap().contains("synthetic-config-token"));
+                assert_eq!(window.get_selected_instance(), 0, "Sync changed the selected instance");
+                window.invoke_select_instance("Dodex".into());
+                assert_eq!(window.get_selected_count(), 1);
+                assert_eq!(agent_companion_core::install::codex_tui::read(&second_config_path).unwrap().visible_items(), ["model"]);
+                assert!(window.get_preview().contains("gpt"), "The target draft was not reloaded after overwrite");
+                window.invoke_select_instance("Codex".into());
+            }
+            18 => { window.invoke_sync_profile("config".into(), true); }
+            19 => {
+                window.invoke_refresh_sync();
+                if window.get_sync_busy() { return; }
+                let row = window.get_sync_files().row_data(0).unwrap();
+                assert!(!row.error && row.message.contains("一致") && row.backup_path.is_empty());
+            }
+            20 => {
+                let mut document = std::fs::read_to_string(&second_config_path).unwrap().parse::<toml_edit::DocumentMut>().unwrap();
+                document["model"] = toml_edit::value("reverse-model");
+                let mut items = toml_edit::Array::new();
+                items.push("current-dir");
+                document["tui"]["status_line"] = toml_edit::value(items);
+                std::fs::write(&second_config_path, document.to_string()).unwrap();
+                window.invoke_select_instance("Dodex".into());
+                window.invoke_sync_profile("config".into(), false);
+            }
+            21 => {
+                window.invoke_refresh_sync();
+                if window.get_sync_busy() { return; }
+                let row = window.get_sync_files().row_data(0).unwrap();
+                assert!(!row.error, "{}", row.message);
+                assert!(std::fs::read_to_string(row.backup_path.as_str()).unwrap().contains("primary-model"));
+                assert!(std::fs::read_to_string(&config_path).unwrap().contains("reverse-model"));
+                assert_eq!(window.get_selected_instance(), 1);
+                window.invoke_select_instance("Codex".into());
+                assert_eq!(window.get_selected_count(), 1);
+                assert!(window.get_preview().contains("~/agent-companion"));
+                window.invoke_toggle("git-branch".into(), true);
+                assert!(window.get_dirty());
+                window.set_dual_scroll_y(-1000.0);
+                window.invoke_sync_profile("instructions".into(), true);
+            }
+            22 => {
+                window.invoke_refresh_sync();
+                if window.get_sync_busy() { return; }
+                let row = window.get_sync_files().row_data(1).unwrap();
+                assert!(!row.error, "{}", row.message);
+                assert_eq!(std::fs::read_to_string(row.backup_path.as_str()).unwrap(), "Old secondary instructions\n");
+                assert!(window.get_dirty(), "Instruction sync discarded a status-bar draft");
+                assert_eq!(std::fs::read_to_string(second_config_path.with_file_name("AGENTS.md")).unwrap(), "Primary global instructions\n");
+                std::fs::write(second_config_path.with_file_name("AGENTS.md"), "Updated Dodex instructions\n").unwrap();
+                window.invoke_sync_profile("instructions".into(), false);
+            }
+            23 => {
+                window.invoke_refresh_sync();
+                if window.get_sync_busy() { return; }
+                assert_eq!(std::fs::read_to_string(config_path.with_file_name("AGENTS.md")).unwrap(), "Updated Dodex instructions\n");
+                assert_eq!(std::fs::read_to_string(window.get_sync_files().row_data(1).unwrap().backup_path.as_str()).unwrap(), "Primary global instructions\n");
+                assert!(window.get_dirty());
+                window.invoke_toggle("git-branch".into(), false);
+                weak_editor.upgrade().unwrap().set_isolated_monitoring(false);
+                std::fs::remove_file(config_path.with_file_name("AGENTS.md")).unwrap();
+                window.invoke_refresh_sync();
+                assert!(!window.get_dual_enabled() && window.get_dual_deployed());
+                let row = window.get_sync_files().row_data(1).unwrap();
+                assert!(!row.to_secondary && row.to_primary, "A missing source or disabled monitoring changed the wrong action");
+                assert!(window.get_sync_files().row_data(0).unwrap().to_secondary);
+                window.global::<ui::Palette>().set_color_scheme(ColorScheme::Light);
+            }
+            24 => {
+                assert!(window.get_dual_scroll_y() > -1000.0 && window.get_dual_scroll_y() < 0.0,
+                        "The Dual page scrolled beyond its actual content");
+                window.invoke_sync_profile("instructions".into(), true);
+                assert!(!window.get_sync_busy());
+                assert!(window.get_sync_files().row_data(1).unwrap().error);
+                window.invoke_sync_profile("instructions".into(), false);
+            }
+            25 => {
+                window.invoke_refresh_sync();
+                if window.get_sync_busy() { return; }
+                let row = window.get_sync_files().row_data(1).unwrap();
+                assert!(!row.error && row.backup_path.is_empty());
+                assert_eq!(std::fs::read_to_string(config_path.with_file_name("AGENTS.md")).unwrap(), "Updated Dodex instructions\n");
+                std::fs::write(&config_path, "api_key = 'synthetic-parser-secret'\n[broken =").unwrap();
+                window.invoke_sync_profile("config".into(), true);
+            }
+            26 => {
+                window.invoke_refresh_sync();
+                if window.get_sync_busy() { return; }
+                let row = window.get_sync_files().row_data(0).unwrap();
+                assert!(row.error && row.backup_path.is_empty());
+                assert!(!row.message.contains("synthetic-parser-secret") && !row.message.contains("api_key"));
+                assert!(std::fs::read_to_string(&second_config_path).unwrap().contains("reverse-model"));
+                window.set_dual_scroll_y(-330.0);
+            }
+            27 => {
+                window.invoke_refresh_sync();
+                assert!(window.get_sync_files().row_data(0).unwrap().error, "Refreshing file state erased the operation result");
+                window.set_dual_scroll_y(-1000.0);
             }
             _ => {
-                assert!(!window.get_show_dock_icon());
-                assert!(!window.get_show_menu_bar());
-                assert!(!window.get_show_notch());
+                for (path, value) in [(&config_path, "primary-login"), (&second_config_path, "secondary-login")] {
+                    assert_eq!(std::fs::read_to_string(path.with_file_name("auth.json")).unwrap(), value);
+                    assert_eq!(std::fs::read_to_string(path.with_file_name("state.sqlite")).unwrap(), "database fixture");
+                    assert_eq!(std::fs::read_to_string(path.with_file_name("session.log")).unwrap(), "log fixture");
+                }
+                assert_eq!(std::fs::read_to_string(second_config_path.with_file_name("AGENTS.override.md")).unwrap(), "Secondary override stays local\n");
+                completed_check.set(true);
                 slint::quit_event_loop().unwrap();
             }
         }
         phase += 1;
     });
     slint::run_event_loop().unwrap();
-    assert!(!home.path().join("config.toml").exists());
+    assert!(
+        completed.get(),
+        "The editor event loop exited before all scenarios completed"
+    );
     finished.send(()).unwrap();
     watchdog.join().unwrap();
     println!(
-        "PASS: opaque AppKit settings frame; three settings sections, light/dark, minimum size, long/hidden preview, entry/display errors, deployment default/progress/retry/success, isolated instance saves and hidden-entry recovery; navigation preserves separate drafts; no user config, deployment or display preference writes"
+        "PASS: opaque AppKit editor; two menu-only settings sections, light/dark/minimum-size layouts, separate status-bar drafts; manual bidirectional config/AGENTS sync with backups, no-op/error feedback, disabled-monitoring and missing-target support, override warnings, dirty/busy guards and retained selection; all file writes stayed in isolated fixtures"
     );
 }

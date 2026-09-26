@@ -1,5 +1,5 @@
-//! Native notch shell; the independent Slint editor uses its own process.
-use std::ffi::{CStr, CString, c_char};
+//! Native menu bar shell; the independent Slint editor uses its own process.
+use std::ffi::{CString, c_char};
 use std::fs::OpenOptions;
 use std::io;
 use std::sync::{Mutex, OnceLock, mpsc};
@@ -9,6 +9,12 @@ use crate::macos_deployment::InstanceConfig;
 use agent_companion_core::dashboard::{Dashboard, Instance, Snapshot};
 
 static SNAPSHOT: OnceLock<Mutex<Snapshot>> = OnceLock::new();
+
+/// Borrowed, NUL-terminated build version. The native UI must not free it.
+#[unsafe(no_mangle)]
+extern "C" fn agent_companion_version() -> *const c_char {
+    concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr().cast()
+}
 
 /// A launcher must not redirect the primary monitor through its inherited
 /// CODEX_HOME (for example when Companion is opened from Dodex's terminal).
@@ -24,55 +30,8 @@ pub fn primary_home() -> io::Result<std::path::PathBuf> {
 }
 
 unsafe extern "C" {
-    fn agent_companion_run_notch() -> i32;
-    fn agent_companion_prepare_editor() -> bool;
-    fn agent_companion_start_editor_preferences();
-    fn agent_companion_dock_visible() -> bool;
-    fn agent_companion_set_dock_visible(visible: bool) -> bool;
-    fn agent_companion_menu_bar_visible() -> bool;
-    fn agent_companion_notch_visible() -> bool;
-    fn agent_companion_set_menu_bar_visible(visible: bool) -> bool;
-    fn agent_companion_set_notch_visible(visible: bool) -> bool;
-    fn agent_companion_reopen_settings();
-    fn agent_companion_display_settings_json() -> *mut c_char;
-    fn agent_companion_free_native_string(pointer: *mut c_char);
-    fn agent_companion_select_display(identifier: *const c_char) -> bool;
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
-pub struct DisplayOption {
-    pub id: String,
-    pub label: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DisplaySettings {
-    pub options: Vec<DisplayOption>,
-    pub selected_id: String,
-    pub status: String,
-}
-
-pub fn display_settings() -> Option<DisplaySettings> {
-    // SAFETY: the UI thread receives a Swift-owned, NUL-terminated allocation
-    // and always frees it through the matching native allocator.
-    unsafe {
-        let pointer = agent_companion_display_settings_json();
-        if pointer.is_null() {
-            return None;
-        }
-        let settings = serde_json::from_slice(CStr::from_ptr(pointer).to_bytes()).ok();
-        agent_companion_free_native_string(pointer);
-        settings
-    }
-}
-
-pub fn select_display(identifier: &str) -> bool {
-    let Ok(identifier) = CString::new(identifier) else {
-        return false;
-    };
-    // SAFETY: UI-thread call; Swift borrows the string only for this call.
-    unsafe { agent_companion_select_display(identifier.as_ptr()) }
+    fn agent_companion_run_menu_bar() -> i32;
+    fn agent_companion_reopen_menu();
 }
 
 /// Configure Slint before it creates its AppKit event loop, including when
@@ -82,14 +41,8 @@ pub fn prepare_editor() -> Result<(), slint::PlatformError> {
         event_loop::EventLoop,
         platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS},
     };
-    // SAFETY: standalone editor startup runs on the process main thread.
-    let visible = unsafe { agent_companion_prepare_editor() };
     let mut builder = EventLoop::with_user_event();
-    builder.with_activation_policy(if visible {
-        ActivationPolicy::Regular
-    } else {
-        ActivationPolicy::Accessory
-    });
+    builder.with_activation_policy(ActivationPolicy::Accessory);
     slint::BackendSelector::new()
         .backend_name("winit".into())
         .with_winit_event_loop_builder(builder)
@@ -97,38 +50,6 @@ pub fn prepare_editor() -> Result<(), slint::PlatformError> {
         // alone leaves AppKit's title bar clear; settings need an opaque frame.
         .with_winit_window_attributes_hook(|attributes| attributes.with_transparent(false))
         .select()
-}
-
-pub fn dock_visible() -> bool {
-    // SAFETY: called by the editor on its main UI thread.
-    unsafe { agent_companion_dock_visible() }
-}
-
-pub fn menu_bar_visible() -> bool {
-    // SAFETY: main-thread preferences bridge, no borrowed storage.
-    unsafe { agent_companion_menu_bar_visible() }
-}
-pub fn notch_visible() -> bool {
-    // SAFETY: main-thread preferences bridge, no borrowed storage.
-    unsafe { agent_companion_notch_visible() }
-}
-pub fn set_menu_bar_visible(visible: bool) -> bool {
-    // SAFETY: called by the editor on its main UI thread.
-    unsafe { agent_companion_set_menu_bar_visible(visible) }
-}
-pub fn set_notch_visible(visible: bool) -> bool {
-    // SAFETY: called by the editor on its main UI thread.
-    unsafe { agent_companion_set_notch_visible(visible) }
-}
-
-pub fn start_editor_preferences() {
-    // SAFETY: invoked by a Slint timer after its main-thread event loop starts.
-    unsafe { agent_companion_start_editor_preferences() }
-}
-
-pub fn set_dock_visible(visible: bool) -> bool {
-    // SAFETY: called by the editor on its main UI thread.
-    unsafe { agent_companion_set_dock_visible(visible) }
 }
 
 /// Swift owns the returned allocation until it calls the paired release.
@@ -149,7 +70,7 @@ unsafe extern "C" fn agent_companion_release_json(pointer: *mut c_char) {
     }
 }
 
-pub fn run() -> io::Result<()> {
+pub fn run_menu_bar() -> io::Result<()> {
     let home = primary_home()?;
     let user_home = std::env::var_os("HOME").ok_or_else(|| {
         io::Error::new(
@@ -165,12 +86,13 @@ pub fn run() -> io::Result<()> {
         .write(true)
         .create(true)
         .truncate(false)
+        // Keep the historical filename to exclude older running versions too.
         .open(state_dir.join("notch.lock"))?;
     match instance.try_lock() {
         Ok(()) => {}
         Err(std::fs::TryLockError::WouldBlock) => {
             // SAFETY: notification-only main-thread bridge to the existing app.
-            unsafe { agent_companion_reopen_settings() };
+            unsafe { agent_companion_reopen_menu() };
             return Ok(());
         }
         Err(std::fs::TryLockError::Error(error)) => return Err(error),
@@ -201,14 +123,14 @@ pub fn run() -> io::Result<()> {
             }
         })?;
     // SAFETY: main calls this on the process main thread; AppKit owns the UI loop.
-    let result = unsafe { agent_companion_run_notch() };
+    let result = unsafe { agent_companion_run_menu_bar() };
     let _ = stop.send(());
     let _ = worker.join();
     drop(instance);
     if result == 0 {
         Ok(())
     } else {
-        Err(io::Error::other("could not start the macOS notch"))
+        Err(io::Error::other("could not start the macOS menu bar app"))
     }
 }
 

@@ -241,7 +241,7 @@ enum SubscriptionUsageTests {
             executablePath: "/synthetic/second/codex", databasePath: "/synthetic/second/sqlite",
             weekly: WeeklyUsage(usedPercent: 80, resetsAt: nil, expired: false), error: "Synthetic second error")
         model.snapshot.instances = [primary, secondary]
-        model.expanded = true
+        model.isPresented = true
         model.showUsage()
         reader.completions[0](fixture)
         model.selectInstance("dodex")
@@ -352,27 +352,27 @@ enum SubscriptionUsageTests {
 
         let model = CompanionModel(usageReader: reader)
         model.snapshot.codexHome = "/model"
-        model.expanded = true
+        model.isPresented = true
         model.showUsage()
         let request = reader.completions.last!
-        model.expanded = false
+        model.isPresented = false
         request(fixture)
         precondition(!model.usageLoading && model.subscriptionUsage.tokens == nil,
-                     "Closing the notch left a loading state or accepted a cancelled result")
-        model.expanded = true
+                     "Closing the popup left a loading state or accepted a cancelled result")
+        model.isPresented = true
         model.showUsage()
         reader.completions.last!(fixture)
         let completedReads = reader.homes.count
         model.showTasks()
-        model.expanded = false
-        model.expanded = true
+        model.isPresented = false
+        model.isPresented = true
         model.showUsage()
         precondition(reader.homes.count == completedReads && !model.usageLoading && model.subscriptionUsage.tokens != nil,
-                     "Returning to Usage after collapsing the notch bypassed the cache")
+                     "Returning to Usage after closing the popup bypassed the cache")
         model.snapshot.weekly = WeeklyUsage(usedPercent: 90, resetsAt: nil, expired: false)
         model.subscriptionUsage = fixture
         model.subscriptionUsage.readAt = Date()
-        precondition(model.weeklyText == "68%", "Fresh account quota did not reach the compact strip")
+        precondition(model.weeklyText == "68%", "Fresh account quota did not reach the quota card")
         model.subscriptionUsage.readAt = Date().addingTimeInterval(-301)
         precondition(model.weeklyText == "10%", "An old account read overrode the local source")
     }
@@ -419,74 +419,56 @@ enum SubscriptionUsageTests {
     }
 
     @MainActor private static func layouts(output: URL) throws {
-        for camera in [false, true] {
-            let screen = CGRect(x: -10000, y: -10000, width: 1280, height: 720)
-            let model = CompanionModel(usageReader: FakeReader())
-            model.metrics = camera ? NotchMetrics(screen: screen, safeTop: 32,
-                topLeft: CGRect(x: screen.minX, y: screen.maxY - 32, width: 550, height: 32),
-                topRight: CGRect(x: screen.minX + 730, y: screen.maxY - 32, width: 550, height: 32)) : NotchMetrics(screen: screen)
-            model.snapshot = CodexSnapshot(weekly: WeeklyUsage(usedPercent: 32, resetsAt: 4_000_000_000, expired: false), loading: false)
-            model.expanded = true
-            model.showingUsage = true
-            let panel = NSPanel(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
-            panel.isReleasedWhenClosed = false
-            let presentation = NotchPresentation(panel: panel, model: model, reduceMotion: { true })
-            defer { presentation.stop(); model.stop(); panel.close() }
-            var expected: NSRect?
-            for state in ["loading", "ready", "signed-out", "unsupported", "dual"] {
-                model.subscriptionUsage = fixture
-                model.usageLoading = state == "loading"
-                if state == "loading" { model.subscriptionUsage = SubscriptionUsage() }
-                if state == "signed-out" { model.subscriptionUsage = .failure("Sign in to Codex with your ChatGPT subscription, then refresh.") }
-                if state == "unsupported" {
-                    model.subscriptionUsage.tokens = nil
-                    model.subscriptionUsage.tokenError = "Update Codex CLI to read token activity."
-                }
-                if state == "dual" {
-                    expected = nil
-                    model.snapshot.instances = [
-                        CodexInstance(instanceId: "codex", label: "Codex", codexHome: "/synthetic/main"),
-                        CodexInstance(instanceId: "dodex", label: "Dodex", codexHome: "/synthetic/second")
-                    ]
-                    model.selectedInstanceID = "dodex"
-                }
-                presentation.update(screen: screen, animated: false)
-                RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-                precondition(panel.frame.width == model.compactWidth && panel.frame.maxY == screen.maxY && screen.contains(panel.frame))
-                if let expected { precondition(panel.frame == expected, "Usage state resized the panel") }
-                expected = panel.frame
-                let view = presentation.surface
-                let image = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
-                view.cacheDisplay(in: view.bounds, to: image)
-                try image.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("usage-\(camera ? "camera" : "external")-\(state).png"))
-                if state == "ready" {
-                    // Both pages remain mounted. Select the Usage viewport by
-                    // its specified height, rather than the first page's view.
-                    let usageHeight = (330 * model.metrics.detailScale).rounded()
-                    guard let scroll = scrollViews(in: view).first(where: { abs($0.frame.height - usageHeight) < 1 }),
-                          let document = scroll.documentView else { fatalError("No usage scroll view") }
-                    precondition(abs(scroll.contentView.bounds.minY) < 1, "The first account response scrolled past the subscription limits")
-                    precondition(document.bounds.height > scroll.contentSize.height, "Remaining usage fields must be reachable by scrolling")
-                    scroll.contentView.scroll(to: CGPoint(x: 0, y: document.bounds.height - scroll.contentSize.height))
-                    scroll.reflectScrolledClipView(scroll.contentView)
-                    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-                    let offset = scroll.contentView.bounds.minY
-                    model.subscriptionUsage.readAt = model.subscriptionUsage.readAt?.addingTimeInterval(1)
-                    presentation.update(screen: screen, animated: false)
-                    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-                    precondition(scrollViews(in: view).contains(where: { $0 === scroll }) && abs(scroll.contentView.bounds.minY - offset) < 1,
-                                 "A usage refresh reset the scroll position or replaced the scroll view")
-                    view.cacheDisplay(in: view.bounds, to: image)
-                    try image.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("usage-\(camera ? "camera" : "external")-bottom.png"))
-                }
+        let model = CompanionModel(usageReader: FakeReader())
+        model.snapshot = CodexSnapshot(weekly: WeeklyUsage(usedPercent: 32, resetsAt: 4_000_000_000, expired: false), loading: false)
+        model.isPresented = true
+        model.showingUsage = true
+        let popup = PopupTestWindow(model: model)
+        let panel = popup.panel, view = popup.host
+        defer { model.stop(); panel.close() }
+        let expected = panel.frame
+        for state in ["loading", "ready", "signed-out", "unsupported", "dual"] {
+            model.subscriptionUsage = fixture
+            model.usageLoading = state == "loading"
+            if state == "loading" { model.subscriptionUsage = SubscriptionUsage() }
+            if state == "signed-out" { model.subscriptionUsage = .failure("Sign in to Codex with your ChatGPT subscription, then refresh.") }
+            if state == "unsupported" {
+                model.subscriptionUsage.tokens = nil
+                model.subscriptionUsage.tokenError = "Update Codex CLI to read token activity."
             }
-            model.showTasks()
-            presentation.update(screen: screen, animated: false)
-            precondition(!model.showingUsage && panel.frame.width == model.compactWidth)
-            model.expanded = false
-            presentation.update(screen: screen, animated: false)
-            precondition(panel.frame.height == model.compactHeight)
+            if state == "dual" {
+                model.snapshot.instances = [
+                    CodexInstance(instanceId: "codex", label: "Codex", codexHome: "/synthetic/main"),
+                    CodexInstance(instanceId: "dodex", label: "Dodex", codexHome: "/synthetic/second")
+                ]
+                model.selectedInstanceID = "dodex"
+            }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+            precondition(panel.frame == expected && view.bounds.size == CGSize(width: 356, height: 560),
+                         "A Usage state resized the popup")
+            let image = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
+            view.cacheDisplay(in: view.bounds, to: image)
+            try image.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("usage-popup-\(state).png"))
+            if state == "ready" {
+                let usageHeight = (330 * CompanionPopupLayout.contentScale).rounded()
+                guard let scroll = scrollViews(in: view).first(where: { abs($0.frame.height - usageHeight) < 1 }),
+                      let document = scroll.documentView else { fatalError("No usage scroll view") }
+                precondition(abs(scroll.contentView.bounds.minY) < 1, "The first account response scrolled past subscription limits")
+                precondition(document.bounds.height > scroll.contentSize.height, "Remaining usage fields must be reachable by scrolling")
+                scroll.contentView.scroll(to: CGPoint(x: 0, y: document.bounds.height - scroll.contentSize.height))
+                scroll.reflectScrolledClipView(scroll.contentView)
+                RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+                let offset = scroll.contentView.bounds.minY
+                model.subscriptionUsage.readAt = model.subscriptionUsage.readAt?.addingTimeInterval(1)
+                RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+                precondition(scrollViews(in: view).contains(where: { $0 === scroll }) && abs(scroll.contentView.bounds.minY - offset) < 1,
+                             "A usage refresh reset the scroll position or replaced the scroll view")
+                view.cacheDisplay(in: view.bounds, to: image)
+                try image.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("usage-popup-bottom.png"))
+            }
         }
+        model.showTasks()
+        precondition(!model.showingUsage && panel.frame == expected)
     }
 
     private static func scrollViews(in view: NSView) -> [NSScrollView] {
@@ -494,58 +476,46 @@ enum SubscriptionUsageTests {
     }
 
     @MainActor private static func pinnedNavigation(output: URL) throws {
-        for camera in [false, true] {
-            let screen = CGRect(x: -10000, y: -10000, width: 1280, height: 720)
-            let reader = FakeReader()
-            let model = CompanionModel(usageReader: reader)
-            if camera {
-                model.metrics = NotchMetrics(screen: screen, safeTop: 32,
-                    topLeft: CGRect(x: screen.minX, y: screen.maxY - 32, width: 550, height: 32),
-                    topRight: CGRect(x: screen.minX + 730, y: screen.maxY - 32, width: 550, height: 32))
-            }
-            model.expanded = true
-            model.showingCompleted = true
-            model.showUsage()
-            reader.completions.last!(fixture)
-            let panel = NSPanel(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
-            panel.isReleasedWhenClosed = false
-            let presentation = NotchPresentation(panel: panel, model: model, reduceMotion: { true })
-            defer { presentation.stop(); model.stop(); panel.close() }
-            presentation.update(screen: screen, availableHeight: 280, animated: false)
-            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-            let surface = presentation.surface
-            let scrolls = scrollViews(in: surface)
-            precondition(scrolls.count >= 2, "The short-screen fixture did not exercise overflow")
-            let top = scrolls[0].convert(scrolls[0].bounds, to: surface).minY
-            precondition(top > model.compactHeight + 30, "Page navigation scrolled with the body")
-            func capture() -> NSBitmapImageRep {
-                let bitmap = surface.bitmapImageRepForCachingDisplay(in: surface.bounds)!
-                surface.cacheDisplay(in: surface.bounds, to: bitmap)
-                return bitmap
-            }
-            let before = capture()
-            for scroll in scrolls {
-                if let document = scroll.documentView {
-                    scroll.contentView.scroll(to: CGPoint(x: 0, y: max(0, document.bounds.height - scroll.contentSize.height)))
-                    scroll.reflectScrolledClipView(scroll.contentView)
-                }
-            }
-            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-            let after = capture()
-            let scale = CGFloat(before.pixelsHigh) / surface.bounds.height
-            for y in stride(from: Int((model.compactHeight + 4) * scale), to: Int((top - 4) * scale), by: 2) {
-                for x in stride(from: 10, to: before.pixelsWide - 10, by: 2) {
-                    precondition(before.colorAt(x: x, y: y) == after.colorAt(x: x, y: y),
-                                 "Scrolling moved or obscured Tasks / Usage navigation")
-                }
-            }
-            try after.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("usage-pinned-navigation-\(camera).png"))
-            for _ in 0..<10 {
-                model.showTasks()
-                precondition(!model.showingUsage && model.showingCompleted, "Returning lost the previous task filter")
-                model.showUsage()
-            }
-            precondition(reader.homes.count == 1, "Repeated navigation launched extra subscription requests")
+        let reader = FakeReader()
+        let model = CompanionModel(usageReader: reader)
+        model.isPresented = true
+        model.showingCompleted = true
+        model.showUsage()
+        reader.completions.last!(fixture)
+        let popup = PopupTestWindow(model: model)
+        let surface = popup.host
+        defer { model.stop(); popup.panel.close() }
+        let scrolls = scrollViews(in: surface)
+        precondition(scrolls.count >= 4, "The popup fixture did not exercise both page viewports")
+        let top = scrolls[0].convert(scrolls[0].bounds, to: surface).minY
+        precondition(top > CompanionPopupLayout.headerHeight + 30, "Page navigation scrolled with the body")
+        func capture() -> NSBitmapImageRep {
+            let bitmap = surface.bitmapImageRepForCachingDisplay(in: surface.bounds)!
+            surface.cacheDisplay(in: surface.bounds, to: bitmap)
+            return bitmap
         }
+        let before = capture()
+        for scroll in scrolls {
+            if let document = scroll.documentView {
+                scroll.contentView.scroll(to: CGPoint(x: 0, y: max(0, document.bounds.height - scroll.contentSize.height)))
+                scroll.reflectScrolledClipView(scroll.contentView)
+            }
+        }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        let after = capture()
+        let scale = CGFloat(before.pixelsHigh) / surface.bounds.height
+        for y in stride(from: Int((CompanionPopupLayout.headerHeight + 4) * scale), to: Int((top - 4) * scale), by: 2) {
+            for x in stride(from: 10, to: before.pixelsWide - 10, by: 2) {
+                precondition(before.colorAt(x: x, y: y) == after.colorAt(x: x, y: y),
+                             "Scrolling moved or obscured Tasks / Usage navigation")
+            }
+        }
+        try after.representation(using: .png, properties: [:])!.write(to: output.appendingPathComponent("usage-pinned-navigation-popup.png"))
+        for _ in 0..<10 {
+            model.showTasks()
+            precondition(!model.showingUsage && model.showingCompleted, "Returning lost the previous task filter")
+            model.showUsage()
+        }
+        precondition(reader.homes.count == 1, "Repeated navigation launched extra subscription requests")
     }
 }

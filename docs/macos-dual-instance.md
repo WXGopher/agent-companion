@@ -1,14 +1,15 @@
 # Optional macOS Codex instance
 
-Agent Companion starts with only the menu bar visible, the Dock and notch hidden,
-and second-instance support disabled. Settings controls each entry independently
-and preserves saved choices across upgrades. The menu bar shows weekly quota
-readings with Codex above Dodex. A previously available reading stays visible
-while idle; `*` and a tooltip identify last-known readings awaiting an update.
-The default terminal icon appears before any readings are available.
-Before explicit opt-in, opening Settings
-does not discover, deploy, adopt, or launch Dodex. Reopening Companion always reaches Settings,
-including when every entry point is hidden.
+Agent Companion uses the menu bar as its only macOS entry. The notch and
+separate Dock entry have been removed; legacy visibility preferences cannot
+hide the menu bar. Click the readout for Tasks / Usage and open Settings from
+the popup footer. Reopening Companion reveals the popup.
+
+Codex appears above Dodex, with each row showing its own task-status dot and
+weekly quota. A previous reading stays visible while idle; `*` and a tooltip
+identify last-known readings awaiting an update. Missing readings show `—`.
+Second-instance support remains disabled until explicit opt-in. Opening
+Settings does not discover, deploy, adopt, or launch Dodex before that opt-in.
 
 ## Deployment and compatibility
 
@@ -48,6 +49,36 @@ caches. It does not quit Dodex or delete files. Re-enabling validates the saved
 deployment before monitoring resumes. Runtime updates and uninstall are not
 provided.
 
+## Manual configuration and instruction sync
+
+The **Codex 双开** settings tab provides separate **Codex → Dodex** and
+**Dodex → Codex** overwrite actions for `config.toml` and the personal
+`AGENTS.md`. Both instances' full file paths are shown for manual editing.
+Sync is explicit: editing a file does not automatically change the other copy.
+A validated deployed Dodex profile can be synchronized while monitoring is
+disabled, without enabling it or launching either client.
+
+Configuration sync copies the source document, including any manually embedded
+provider tokens, MCP environment variables or HTTP headers. It preserves the
+destination's `cli_auth_credentials_store`, `sqlite_home` and `log_dir` settings
+so that account storage, databases and logs remain separate. It never copies
+`auth.json`, keychain entries, session history or an entire profile directory.
+Login credentials normally live outside `config.toml`, but the file is **not
+guaranteed to be secret-free**; see the official [authentication documentation](https://learn.chatgpt.com/docs/auth)
+and [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+
+Instruction sync copies only `AGENTS.md` inside each instance's Codex home,
+not repository instructions. The page identifies an `AGENTS.override.md` when
+present because it can take precedence; that file is not overwritten by the
+`AGENTS.md` action. See [global instruction discovery](https://learn.chatgpt.com/docs/agent-configuration/agents-md).
+
+Each overwrite backs up an existing destination before replacing it atomically.
+An absent source does not clear the destination; a missing destination can be
+created. Invalid configuration and concurrent changes fail without overwriting
+the target. Configuration sync is blocked while a status-bar draft has unsaved
+changes. The result reports whether anything changed and where a backup was
+saved. Restart the corresponding client to ensure it loads the saved files.
+
 ## Instance routing
 
 The primary instance uses `~/.codex`, independently of the environment of the
@@ -72,24 +103,24 @@ immediately; a missing or expired result is read again. The refresh button
 bypasses the cache, while repeated clicks during a read share that request.
 Closing the panel preserves completed results; cancelled reads create no cache.
 
-While the menu bar is visible, account usage refreshes every five minutes per
-instance, including with the popup closed. Background refresh and both Usage
-surfaces share requests for the same source. The five-minute refresh interval
+While Companion runs, account usage refreshes every five minutes per
+instance, including with the popup closed. Background refresh and the Usage
+page share requests for the same source. The five-minute refresh interval
 does not erase the last-known menu reading: stale values carry `*` until a valid
 update arrives, including after failures and quota resets. A valid local reading
 can replace a stale account reading. A reset never implies a new 100% allowance.
-Hiding the menu bar withdraws background demand without interrupting an open
-Usage page. Disabling an instance or replacing its home, database or runtime
-clears its cached data.
+The menu-bar entry stays enabled; quitting Companion stops background reads.
+Disabling an instance or replacing its home, database or runtime clears its
+cached data.
 
 ## Verification
 
 `cargo test -p agent-companion -p agent-companion-core --features agent-companion-core/server`
 covers deployment faults, interruptions, concurrent operations, isolated
 configuration saves and dashboard routing. Live-data tests remain ignored.
-`sh scripts/test-macos-ui.sh` checks the SwiftUI layouts and entry lifecycle;
-`--entries` runs just the menu/Dock/notch recovery checks, and `--menu-bar`
-checks valid single/dual readings, icon fallback and cached quota updates. The `macos_editor`
+`sh scripts/test-macos-ui.sh` checks the SwiftUI popup and menu-bar lifecycle;
+`--menu-bar` checks single/dual readings, task-state colors, missing readings,
+animation and cached quota updates. The `macos_editor`
 integration executable exercises the actual Slint window with synthetic
 configurations and deployment states. None of these tests deploy the local
 Dodex environment.

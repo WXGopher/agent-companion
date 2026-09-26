@@ -11,7 +11,7 @@ import { Theme, UsageChip } from "common.slint";
 // Deliberately austere. This is a readout on somebody else's furniture: no
 // border, no card, no background of its own beyond the faintest wash to lift
 // the text off whatever the shell paints behind it. The only colour is the
-// information — the agent's dot and the percentage's tier.
+// information — the task-status dot and the percentage's tier.
 //
 // It has no TouchArea, and that is not an omission. Clicks and drags on this
 // window are picked up in Rust, from Windows directly; see
@@ -29,12 +29,6 @@ component AgentBlock {
     property <length> chip-h: 15px;
     property <length> dot: 7px;
 
-    function agent-color() -> color {
-        chip.agent == "codex"
-            ? Theme.codex
-            : (chip.agent == "claude" ? Theme.claude : Theme.idle-dot);
-    }
-
     VerticalLayout {
         spacing: 1px;
         HorizontalLayout {
@@ -48,7 +42,8 @@ component AgentBlock {
                     width: root.dot;
                     height: root.dot;
                     border-radius: root.dot / 2;
-                    background: root.agent-color();
+                    background: Theme.task-color(chip.pending, chip.running, chip.done, chip.failed, chip.stopped);
+                    opacity: chip.pending > 0 || chip.running > 0 ? 0.25 + 0.75 * root.pulse : 1.0;
                 }
             }
             Text {
@@ -76,7 +71,7 @@ component AgentBlock {
                 spacing: 2px;
                 Text {
                     text: "?";
-                    color: Theme.thin;
+                    color: Theme.status-waiting;
                     opacity: 0.25 + 0.75 * root.pulse;
                     font-size: 11px;
                     font-weight: 700;
@@ -84,14 +79,14 @@ component AgentBlock {
                 }
                 Text {
                     text: chip.pending;
-                    color: Theme.thin;
+                    color: Theme.status-waiting;
                     font-size: 11px;
                     font-weight: 600;
                     vertical-alignment: center;
                 }
             }
 
-            // Working: the agent's own colour, breathing.
+            // Working: blue for every agent, breathing.
             if chip.running > 0: HorizontalLayout {
                 spacing: 2px;
                 Rectangle {
@@ -102,13 +97,13 @@ component AgentBlock {
                         width: root.dot;
                         height: root.dot;
                         border-radius: root.dot / 2;
-                        background: root.agent-color();
+                        background: Theme.status-running;
                         opacity: 0.25 + 0.75 * root.pulse;
                     }
                 }
                 Text {
                     text: chip.running;
-                    color: Theme.faint;
+                    color: Theme.status-running;
                     font-size: 11px;
                     font-weight: 600;
                     vertical-alignment: center;
@@ -120,14 +115,14 @@ component AgentBlock {
                 spacing: 2px;
                 Text {
                     text: "✓";
-                    color: Theme.faint;
+                    color: Theme.task-color(0, 0, chip.done, chip.failed, chip.stopped);
                     font-size: 11px;
                     font-weight: 600;
                     vertical-alignment: center;
                 }
                 Text {
                     text: chip.done;
-                    color: Theme.faint;
+                    color: Theme.task-color(0, 0, chip.done, chip.failed, chip.stopped);
                     font-size: 11px;
                     font-weight: 600;
                     vertical-alignment: center;

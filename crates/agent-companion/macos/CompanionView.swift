@@ -1,21 +1,29 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import SwiftUI
 
-struct CompanionView: View {
+enum CompanionPopupLayout {
+    static let width: CGFloat = 356
+    static let height: CGFloat = 560
+    static let headerHeight: CGFloat = 28
+    static let contentScale: CGFloat = 0.9
+}
+
+struct CompanionPopupView: View {
+
     @ObservedObject var model: CompanionModel
-    var showsDetails: Bool? = nil
-    var drawsBackground = true
-    var detailsHeight: CGFloat? = nil
+    @ObservedObject var themePreferences: ThemePreferences = .shared
+    var version = CompanionAppInfo.version
     @State private var hoveredTask: String?
+    @State private var themeSaveFailed = false
+    private var palette: CompanionPalette { themePreferences.theme.palette }
 
     // Snap layout dimensions to points so fractional density scaling cannot
     // change the viewport's rounding when an empty/populated tab is selected.
-    private func scaled(_ value: CGFloat) -> CGFloat { (value * model.metrics.detailScale).rounded() }
-    private func fontSize(_ value: CGFloat) -> CGFloat { max(9, value * model.metrics.detailScale) }
-    private func compactScaled(_ value: CGFloat) -> CGFloat { value * min(1, model.compactWidth / 179) }
+    private func scaled(_ value: CGFloat) -> CGFloat { (value * CompanionPopupLayout.contentScale).rounded() }
+    private func fontSize(_ value: CGFloat) -> CGFloat { max(9, value * CompanionPopupLayout.contentScale) }
     private var taskViewportHeight: CGFloat {
-        let active = model.snapshot.tasks.filter { $0.isActive }.count
-        let finished = model.snapshot.tasks.count - active
+        let active = model.enabledTasks.filter { $0.isActive }.count
+        let finished = model.enabledTasks.count - active
         func height(_ count: Int) -> CGFloat { count == 0 ? 132 : min(CGFloat(count) * 58, 232) }
         // Both tabs share one viewport, so switching filters cannot resize the
         // panel or move the footer. Empty states need room for their guidance.
@@ -24,122 +32,82 @@ struct CompanionView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            compact
-            if showsDetails ?? model.expanded {
-                expanded
-                    .allowsHitTesting(model.expanded)
-                    .accessibilityHidden(!model.expanded)
+            applicationHeader(version: version)
+            content
+        }
+        .frame(width: CompanionPopupLayout.width, height: CompanionPopupLayout.height, alignment: .top)
+        .background(palette.background)
+        .foregroundStyle(palette.primaryText)
+        .tint(palette.accent)
+        .environment(\.companionTheme, themePreferences.theme)
+        .preferredColorScheme(themePreferences.theme.colorScheme)
+        .onExitCommand { model.dismiss?() }
+        .alert("Could not save theme", isPresented: $themeSaveFailed) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Try changing the theme again.")
+        }
+    }
+
+    private func applicationHeader(version: String) -> some View {
+        let count = model.workingCount
+        let status = "\(count) running \(count == 1 ? "task" : "tasks")"
+        return HStack(spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(CompanionAppInfo.title)
+                    .font(.system(size: 12, weight: .semibold)).fixedSize()
+                    .accessibilityIdentifier("popup-app-title")
+                Text("v" + version)
+                    .font(.system(size: 10)).foregroundStyle(palette.secondaryText)
+                    .lineLimit(1).minimumScaleFactor(0.8)
+                    .accessibilityLabel("Version " + version)
+                    .accessibilityIdentifier("popup-app-version")
+                    .help("Version " + version)
             }
-        }
-        .frame(width: model.compactWidth)
-        .background {
-            if drawsBackground {
-                NotchOutline(hasCamera: model.hasCamera, expansion: model.expanded ? 1 : 0).fill(.black)
+            Spacer(minLength: 0)
+            HStack(spacing: 5) {
+                TaskActivityMark(activity: model.taskActivity, animating: model.animatesTaskActivity)
+                    .frame(width: 6)
+                Text("\(count) running")
+                    .font(.system(size: 11, weight: .medium)).monospacedDigit().fixedSize()
             }
-        }
-        .frame(maxHeight: .infinity, alignment: .top)
-        .foregroundStyle(.white)
-        .preferredColorScheme(.dark)
-        .onExitCommand { model.collapse?() }
-    }
-
-    private var compact: some View {
-        Button { model.expand?() } label: {
-            Group {
-                if model.hasCamera {
-                    cameraSummary
-                } else {
-                    ordinarySummary
-                }
-            }
-            .font(.system(size: compactScaled(12)))
-            .frame(width: model.compactWidth, height: model.compactHeight)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("notch-summary")
-        .accessibilityLabel(model.summaryDescription)
-        .accessibilityHint("Open task list")
-        .help(model.summaryDescription + " · \(model.snapshot.completedCount) finished in the last 15 minutes")
-        .contextMenu {
-            Button("Show tasks") { model.showTasks(); model.expand?() }
-            Button("Subscription usage") { model.showUsage() }
-            Button("Settings…") { model.openSettings() }
-            Divider()
-            Button("Quit Agent Companion") { model.quit?() }
-        }
-    }
-
-    private var ordinarySummary: some View {
-        HStack(spacing: 0) {
-            quotaSummary(scale: compactScaled(1.2))
-            Spacer(minLength: compactScaled(8))
-            workingSummary(scale: compactScaled(1.2))
-        }
-        .frame(height: model.metrics.statsHeight)
-        .padding(.horizontal, compactScaled(10))
-    }
-
-    private var cameraSummary: some View {
-        let scale = model.metrics.cameraContentScale
-        return HStack(spacing: 0) {
-            quotaSummary(scale: scale)
-            .frame(maxWidth: .infinity, alignment: .trailing)
-            .padding(.leading, 9 * scale).padding(.trailing, 3 * scale)
-            .frame(width: model.cameraLeftWidth)
-
-            // These are physical camera pixels, not a place to draw content.
-            Color.clear.frame(width: model.metrics.cameraWidth)
-
-            workingSummary(scale: scale)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.leading, 3 * scale).padding(.trailing, 9 * scale)
-            .frame(width: model.cameraRightWidth)
-        }
-        .frame(height: model.metrics.cameraHeight)
-    }
-
-    private func quotaSummary(scale: CGFloat) -> some View {
-        Text(model.weeklyText)
-            .font(.system(size: 10 * scale, weight: .semibold)).monospacedDigit()
-            .foregroundStyle(model.quotaTint).lineLimit(1).fixedSize()
-    }
-
-    private func workingSummary(scale: CGFloat) -> some View {
-        HStack(spacing: 4 * scale) {
-            HStack(spacing: 2 * scale) {
-                Image(systemName: "circle.inset.filled")
-                    .font(.system(size: 6 * scale, weight: .semibold)).frame(width: 6 * scale)
-                Text(model.countText(model.workingCount))
-                    .font(.system(size: 10 * scale, weight: .semibold)).monospacedDigit()
-                    .lineLimit(1).fixedSize()
-            }
-            .foregroundStyle(model.workingCount > 0 ? CompanionModel.accent : .white.opacity(0.55))
+            .foregroundStyle(count > 0 ? palette.primaryText : palette.mutedText)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(status)
+            .accessibilityValue(model.taskActivity.description)
+            .accessibilityIdentifier("popup-running-count")
+            .help(status + " · " + model.taskActivity.description)
             if model.needsInput {
                 Image(systemName: "questionmark")
-                    .font(.system(size: 10 * scale, weight: .bold)).frame(width: 6 * scale)
-                    .foregroundStyle(.orange)
+                    .font(.system(size: 10, weight: .bold)).frame(width: 6)
+                    .foregroundStyle(TaskActivity.waiting.color(in: themePreferences.theme))
+                    .accessibilityLabel("Tasks need approval or input")
+                    .accessibilityIdentifier("popup-needs-input")
+                    .help("A task needs approval or input")
             }
         }
+        .padding(.horizontal, scaled(16))
+        .frame(width: CompanionPopupLayout.width, height: CompanionPopupLayout.headerHeight)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("popup-header")
     }
 
-    private var expanded: some View {
+    private var content: some View {
         VStack(alignment: .leading, spacing: scaled(13)) {
             pageNavigation
-            expandedContent
-            Divider().overlay(.white.opacity(0.06))
+            pageContent
+            Divider().overlay(palette.separator)
             footer
         }
         .padding(.horizontal, scaled(16)).padding(.top, scaled(12)).padding(.bottom, scaled(16))
         .frame(maxWidth: .infinity)
-        .frame(height: detailsHeight)
+        .frame(height: CompanionPopupLayout.height - CompanionPopupLayout.headerHeight)
     }
 
-    private var expandedContent: some View {
+    private var pageContent: some View {
         // Page selection is presentation state, not view identity or geometry.
         // Keep both trees and size to their shared maximum. Replacing a page
-        // with `if` destroys its NSScrollView and changes the measured height
-        // before the native panel finishes resizing, flashing the footer.
+        // with `if` destroys its NSScrollView and can flash the footer.
         ZStack(alignment: .top) {
             pageViewport { taskContent }
                 .opacity(model.showingUsage ? 0 : 1)
@@ -148,7 +116,7 @@ struct CompanionView: View {
                 .accessibilityHidden(model.showingUsage)
             pageViewport {
                 SubscriptionUsageView(usage: model.subscriptionUsage, loading: model.usageLoading,
-                                      scale: model.metrics.detailScale, refresh: { model.refreshUsage(force: true) },
+                                      scale: CompanionPopupLayout.contentScale, refresh: { model.refreshUsage(force: true) },
                                       instances: model.instances, selectedInstanceID: model.selectedInstanceID,
                                       selectInstance: model.selectInstance)
             }
@@ -159,21 +127,15 @@ struct CompanionView: View {
         }
         // Do not disable a hidden page: AppKit would remove its legacy
         // scrollers, reflow its text and clamp its saved scroll offset.
-        // The surface owns expand/collapse motion. Page changes must never
-        // inherit a SwiftUI fade or animate layout independently of that surface.
+        // Page changes must never animate layout or flash the fixed footer.
         .transaction { $0.animation = nil; $0.disablesAnimations = true }
     }
 
     @ViewBuilder private func pageViewport<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        if detailsHeight != nil {
-            // Overflow belongs to each page. Sharing this scroll offset would
-            // open Usage below its content after scrolling a long task error.
-            ScrollView { content() }
-                .scrollIndicators(.visible)
-                .frame(maxHeight: .infinity)
-        } else {
-            content()
-        }
+        // Each page keeps its own overflow position while tabs change.
+        ScrollView { content() }
+            .scrollIndicators(.visible)
+            .frame(maxHeight: .infinity)
     }
 
     private var pageNavigation: some View {
@@ -183,13 +145,13 @@ struct CompanionView: View {
                 pageTab("Usage", usage: true)
             }
             .padding(scaled(3))
-            .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: scaled(9)))
-            Button { model.collapse?() } label: {
-                Image(systemName: "chevron.up").font(.system(size: fontSize(11), weight: .medium))
+            .background(palette.controlTrack, in: RoundedRectangle(cornerRadius: scaled(9)))
+            Button { model.dismiss?() } label: {
+                Image(systemName: "xmark").font(.system(size: fontSize(11), weight: .medium))
                     .frame(width: scaled(26), height: scaled(26))
             }
-            .buttonStyle(.plain).foregroundStyle(.secondary).help("Collapse (Esc)")
-            .accessibilityLabel("Collapse panel")
+            .buttonStyle(.plain).foregroundStyle(palette.secondaryText).help("Close (Esc)")
+            .accessibilityLabel("Close popup")
         }
     }
 
@@ -200,13 +162,13 @@ struct CompanionView: View {
             if usage { model.showUsage() } else { model.showTasks() }
         } label: {
             Text(title).font(.system(size: fontSize(12), weight: .medium))
-                .foregroundStyle(selected ? CompanionModel.accent : .white.opacity(0.6))
+                .foregroundStyle(selected ? palette.accent : palette.secondaryText)
                 .frame(maxWidth: .infinity, minHeight: scaled(26))
                 .contentShape(Rectangle())
-                .background(.white.opacity(selected ? 0.10 : 0), in: RoundedRectangle(cornerRadius: scaled(6)))
+                .background(selected ? palette.selectedControl : .clear, in: RoundedRectangle(cornerRadius: scaled(6)))
         }
         .buttonStyle(.plain)
-        .accessibilityIdentifier(usage ? "notch-usage-tab" : "notch-tasks-tab")
+        .accessibilityIdentifier(usage ? "popup-usage-tab" : "popup-tasks-tab")
         .accessibilityLabel(usage ? "Subscription usage" : "Task list")
         .accessibilityAddTraits(selected ? .isSelected : [])
         .help(usage ? "Subscription usage (⌘3)" : "Task list (⌘0)")
@@ -273,7 +235,7 @@ struct CompanionView: View {
                         .buttonStyle(.bordered).controlSize(.small).font(.system(size: fontSize(11)))
                     }
                 }
-                .padding(scaled(10)).background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: scaled(10)))
+                .padding(scaled(10)).background(palette.notice, in: RoundedRectangle(cornerRadius: scaled(10)))
             }
         }
     }
@@ -284,12 +246,24 @@ struct CompanionView: View {
                 Button { model.openSettings() } label: { Label("Settings", systemImage: "gearshape").fixedSize() }
                     .help("Customize the Codex CLI status bar…")
                 Spacer(minLength: 0)
+                Button {
+                    themeSaveFailed = !themePreferences.toggle()
+                } label: {
+                    Image(systemName: themePreferences.theme.toggleSymbol)
+                        .font(.system(size: fontSize(12)))
+                        .frame(width: scaled(26), height: scaled(26))
+                        .contentShape(Rectangle())
+                }
+                .help(themePreferences.theme.toggleLabel)
+                .accessibilityLabel(themePreferences.theme.toggleLabel)
+                .accessibilityValue(themePreferences.theme == .dark ? "Dark theme" : "Light theme")
+                .accessibilityIdentifier("companion-theme-toggle")
                 Button { model.quit?() } label: { Image(systemName: "power") }
                     .help("Quit Agent Companion").accessibilityLabel("Quit Agent Companion")
             }
             Button { model.openCodex() } label: { Label("Open Codex", systemImage: "arrow.up.forward.app").fixedSize() }
         }
-        .buttonStyle(.plain).font(.system(size: fontSize(11))).foregroundStyle(.secondary)
+        .buttonStyle(.plain).font(.system(size: fontSize(11))).foregroundStyle(palette.secondaryText)
     }
 
     private func weekly(_ instance: CodexInstance) -> some View {
@@ -297,40 +271,40 @@ struct CompanionView: View {
         let remaining = model.weeklyRemainingPercent(for: instance)
         return VStack(alignment: .leading, spacing: scaled(7)) {
             HStack(spacing: scaled(8)) {
-                Text("\(instance.label) weekly quota").font(.system(size: fontSize(11))).foregroundStyle(.secondary)
+                Text("\(instance.label) weekly quota").font(.system(size: fontSize(11))).foregroundStyle(palette.secondaryText)
                 Spacer()
                 Text(model.weeklyText(for: instance) + (remaining == nil ? "" : " left"))
                     .font(.system(size: fontSize(12), weight: .medium)).monospacedDigit()
             }
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
-                    Capsule().fill(.white.opacity(0.10))
+                    Capsule().fill(palette.quotaTrack)
                     if let remaining {
-                        Capsule().fill(remaining <= 10 ? Color.orange : CompanionModel.accent)
+                        Capsule().fill(remaining <= 10 ? palette.warning : palette.accent)
                             .frame(width: geometry.size.width * CGFloat(remaining) / 100)
                     }
                 }
             }.frame(height: scaled(3)).accessibilityHidden(true)
             if let usage, !usage.expired, let resets = usage.resetsAt {
                 Text("Resets \(Date(timeIntervalSince1970: resets).formatted(date: .abbreviated, time: .shortened))")
-                    .font(.system(size: fontSize(10))).foregroundStyle(.secondary)
+                    .font(.system(size: fontSize(10))).foregroundStyle(palette.secondaryText)
             } else {
                 Text(usage?.expired == true ? "Waiting for a new \(instance.label) usage reading after reset." : "Usage appears after \(instance.label) records a rate limit reading.")
-                    .font(.system(size: fontSize(10))).foregroundStyle(.secondary)
+                    .font(.system(size: fontSize(10))).foregroundStyle(palette.secondaryText)
             }
         }
-        .padding(scaled(12)).background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: scaled(12)))
+        .padding(scaled(12)).background(palette.surface, in: RoundedRectangle(cornerRadius: scaled(12)))
     }
 
     private func tab(_ title: String, count: Int, completed: Bool) -> some View {
         Button { model.showingCompleted = completed } label: {
             HStack(spacing: scaled(5)) {
                 Text(title)
-                Text(model.countText(count)).monospacedDigit().foregroundStyle(model.showingCompleted == completed ? CompanionModel.accent : .white.opacity(0.55))
+                Text(model.countText(count)).monospacedDigit().foregroundStyle(model.showingCompleted == completed ? palette.accent : palette.mutedText)
             }
             .font(.system(size: fontSize(11), weight: .medium)).fixedSize()
             .padding(.horizontal, scaled(8)).padding(.vertical, scaled(7))
-            .background(.white.opacity(model.showingCompleted == completed ? 0.11 : 0.035), in: Capsule())
+            .background(model.showingCompleted == completed ? palette.selectedControl : palette.inactiveControl, in: Capsule())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(title), \(count) tasks")
@@ -341,25 +315,27 @@ struct CompanionView: View {
     private func taskRow(_ task: CodexTask) -> some View {
         Button { model.jump(to: task) } label: {
             HStack(spacing: scaled(10)) {
-                Image(systemName: task.symbol).foregroundStyle(task.tint).font(.system(size: fontSize(13))).frame(width: scaled(18))
+                TaskActivityMark(activity: task.activity, symbol: task.symbol, size: fontSize(13),
+                                 animating: model.animatesTaskActivity && model.isPresented && !model.showingUsage)
+                    .frame(width: scaled(18))
                 VStack(alignment: .leading, spacing: scaled(5)) {
                     Text(task.title).font(.system(size: fontSize(12), weight: .medium)).lineLimit(1)
                     HStack(spacing: scaled(5)) {
-                        if model.compactWidth >= 260 {
+                        if CompanionPopupLayout.width >= 260 {
                             Text(task.project).lineLimit(1)
                             Text("·")
                         }
-                        Text(task.sourceLabel).foregroundStyle(CompanionModel.accent).lineLimit(1).fixedSize()
+                        Text(task.sourceLabel).foregroundStyle(palette.accent).lineLimit(1).fixedSize()
                         Text(task.status).lineLimit(1).fixedSize()
                         Spacer(minLength: scaled(4))
                         Text(age(task.updatedAt)).monospacedDigit().fixedSize()
-                    }.font(.system(size: fontSize(10))).foregroundStyle(.secondary)
+                    }.font(.system(size: fontSize(10))).foregroundStyle(palette.secondaryText)
                 }
                 if model.jumpingID == task.id { ProgressView().controlSize(.mini) }
-                else { Image(systemName: "arrow.up.right").font(.system(size: fontSize(10))).foregroundStyle(.secondary) }
+                else { Image(systemName: "arrow.up.right").font(.system(size: fontSize(10))).foregroundStyle(palette.secondaryText) }
             }
             .padding(.horizontal, scaled(10)).frame(height: scaled(54))
-            .background(.white.opacity(hoveredTask == task.id ? 0.10 : 0.045), in: RoundedRectangle(cornerRadius: scaled(10)))
+            .background(hoveredTask == task.id ? palette.hover : palette.row, in: RoundedRectangle(cornerRadius: scaled(10)))
             .contentShape(RoundedRectangle(cornerRadius: scaled(10)))
         }
         .buttonStyle(.plain)
@@ -394,15 +370,15 @@ struct CompanionView: View {
 
     private func empty(_ title: String, detail: String, symbol: String) -> some View {
         VStack(spacing: scaled(9)) {
-            Image(systemName: symbol).font(.system(size: fontSize(22))).foregroundStyle(.white.opacity(0.35))
+            Image(systemName: symbol).font(.system(size: fontSize(22))).foregroundStyle(palette.mutedIcon)
             Text(title).font(.system(size: fontSize(12), weight: .medium))
-            Text(detail).font(.system(size: fontSize(11))).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            Text(detail).font(.system(size: fontSize(11))).foregroundStyle(palette.secondaryText).multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity).frame(height: scaled(132)).padding(.horizontal, scaled(25))
     }
 
     private func notice(_ text: String, symbol: String) -> some View {
-        Label(text, systemImage: symbol).font(.system(size: fontSize(11))).foregroundStyle(.orange)
+        Label(text, systemImage: symbol).font(.system(size: fontSize(11))).foregroundStyle(palette.warning)
             .fixedSize(horizontal: false, vertical: true)
     }
 }

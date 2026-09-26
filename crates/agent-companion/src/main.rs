@@ -1,7 +1,8 @@
 //! Agent Companion's user-facing binary.
 //!
-//! On macOS, no subcommand opens the compact Codex notch. `codex-tui` opens
-//! the independent status bar editor; closing that editor exits its process.
+//! On macOS, running without a subcommand starts the Codex menu bar app.
+//! `codex-tui` opens the independent status bar editor; closing that editor exits
+//! its process.
 //! On Windows it runs the app: a usage readout in the taskbar, cards
 //! for the approvals a session needs, a tray icon, and the named-pipe server
 //! that feeds them all. The subcommands are the parts that have to
@@ -64,9 +65,9 @@ enum Command {
     Dodex(DodexArgs),
     /// Open the standalone Codex CLI status bar editor. Apply, close, then restart Codex.
     CodexTui,
-    /// Show the compact Codex task and weekly usage notch.
+    /// Show Codex tasks and usage in the menu bar.
     #[cfg(target_os = "macos")]
-    Notch,
+    MenuBar,
     /// Watch the hook event stream in a terminal, with no windows at all.
     #[cfg(windows)]
     Headless(headless::Args),
@@ -195,7 +196,7 @@ fn main() -> ExitCode {
         #[cfg(windows)]
         None => app::run(),
         #[cfg(target_os = "macos")]
-        None | Some(Command::Notch) => macos::run(),
+        None | Some(Command::MenuBar) => macos::run_menu_bar(),
         #[cfg(all(not(windows), not(target_os = "macos")))]
         None => codex_tui::run(),
         Some(Command::CodexTui) => codex_tui::run(),

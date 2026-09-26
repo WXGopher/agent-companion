@@ -2,6 +2,8 @@
 import SwiftUI
 
 struct SubscriptionUsageView: View {
+    @Environment(\.companionTheme) private var theme
+    private var palette: CompanionPalette { theme.palette }
     let usage: SubscriptionUsage
     let loading: Bool
     let scale: CGFloat
@@ -19,10 +21,10 @@ struct SubscriptionUsageView: View {
                     ForEach(instances) { instance in
                         Button { selectInstance(instance.id) } label: {
                             Text(instance.label).font(.system(size: f(11), weight: .medium))
-                                .foregroundStyle(instance.id == selectedInstanceID ? CompanionModel.accent : Color.white.opacity(0.65))
+                                .foregroundStyle(instance.id == selectedInstanceID ? palette.accent : palette.secondaryText)
                                 .frame(maxWidth: .infinity, minHeight: s(25))
                                 .contentShape(Rectangle())
-                                .background(.white.opacity(instance.id == selectedInstanceID ? 0.12 : 0.035),
+                                .background(instance.id == selectedInstanceID ? palette.selectedControl : palette.inactiveControl,
                                             in: RoundedRectangle(cornerRadius: s(6)))
                         }
                         .buttonStyle(.plain)
@@ -34,7 +36,7 @@ struct SubscriptionUsageView: View {
             }
             HStack {
                 Text(loading ? "Refreshing…" : updatedText)
-                    .font(.system(size: f(10))).foregroundStyle(.secondary).lineLimit(1)
+                    .font(.system(size: f(10))).foregroundStyle(palette.secondaryText).lineLimit(1)
                 Spacer(minLength: s(4))
                 Button(action: refresh) {
                     Image(systemName: "arrow.clockwise").frame(width: s(26), height: s(24))
@@ -72,7 +74,7 @@ struct SubscriptionUsageView: View {
                 limits
                 tokens
                 Text("Codex account activity may be delayed. Token totals do not measure remaining allowance.")
-                    .font(.system(size: f(10))).foregroundStyle(.secondary)
+                    .font(.system(size: f(10))).foregroundStyle(palette.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -93,15 +95,15 @@ struct SubscriptionUsageView: View {
                 ForEach(limits.buckets, id: \.id) { bucket in
                     VStack(alignment: .leading, spacing: s(10)) {
                         Text(bucketTitle(bucket.id, bucket.value))
-                            .font(.system(size: f(11), weight: .medium)).foregroundStyle(.secondary)
+                            .font(.system(size: f(11), weight: .medium)).foregroundStyle(palette.secondaryText)
                             .fixedSize(horizontal: false, vertical: true)
                         if let primary = bucket.value.primary { quota(primary, fallback: "Primary") }
                         if let secondary = bucket.value.secondary { quota(secondary, fallback: "Secondary") }
                         if bucket.value.primary == nil && bucket.value.secondary == nil {
-                            Text("No allowance window reported.").font(.system(size: f(11))).foregroundStyle(.secondary)
+                            Text("No allowance window reported.").font(.system(size: f(11))).foregroundStyle(palette.secondaryText)
                         }
                     }
-                    .padding(s(11)).background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: s(12)))
+                    .padding(s(11)).background(palette.surface, in: RoundedRectangle(cornerRadius: s(12)))
                 }
             }
         }
@@ -117,25 +119,25 @@ struct SubscriptionUsageView: View {
         let remaining = window.remaining()
         return VStack(alignment: .leading, spacing: s(5)) {
             HStack(spacing: s(5)) {
-                Text(window.title(fallback: fallback)).foregroundStyle(.secondary)
+                Text(window.title(fallback: fallback)).foregroundStyle(palette.secondaryText)
                 Spacer(minLength: 0)
                 Text(remaining.map { "\($0)% left" } ?? "—").monospacedDigit()
-                    .foregroundStyle(remaining.map { $0 <= 10 } == true ? .orange : CompanionModel.accent)
+                    .foregroundStyle(remaining.map { $0 <= 10 } == true ? palette.warning : palette.accent)
             }
             .font(.system(size: f(11), weight: .medium))
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
-                    Capsule().fill(.white.opacity(0.10))
-                    Capsule().fill(remaining.map { $0 <= 10 } == true ? .orange : CompanionModel.accent)
+                    Capsule().fill(palette.quotaTrack)
+                    Capsule().fill(remaining.map { $0 <= 10 } == true ? palette.warning : palette.accent)
                         .frame(width: geometry.size.width * CGFloat(remaining ?? 0) / 100)
                 }
             }.frame(height: s(3)).accessibilityHidden(true)
             if remaining == nil {
                 Text("Reset passed · refresh for a new reading")
-                    .font(.system(size: f(9))).foregroundStyle(.secondary)
+                    .font(.system(size: f(9))).foregroundStyle(palette.secondaryText)
             } else if let resets = window.resetsAt {
                 Text("Resets \(Date(timeIntervalSince1970: resets).formatted(date: .abbreviated, time: .shortened))")
-                    .font(.system(size: f(9))).foregroundStyle(.secondary)
+                    .font(.system(size: f(9))).foregroundStyle(palette.secondaryText)
             }
         }
         .accessibilityElement(children: .combine)
@@ -153,9 +155,9 @@ struct SubscriptionUsageView: View {
                 if let latest = tokens.recentDays.first {
                     VStack(alignment: .leading, spacing: s(8)) {
                         HStack {
-                            Text("Latest day").foregroundStyle(.secondary)
+                            Text("Latest day").foregroundStyle(palette.secondaryText)
                             Spacer(minLength: s(2))
-                            Text(latest.startDate).foregroundStyle(.secondary)
+                            Text(latest.startDate).foregroundStyle(palette.secondaryText)
                         }.font(.system(size: f(10)))
                         Text(UsageNumber.short(latest.tokens) + " tokens")
                             .font(.system(size: f(15), weight: .semibold)).monospacedDigit()
@@ -163,27 +165,27 @@ struct SubscriptionUsageView: View {
                             .accessibilityLabel(UsageNumber.full(latest.tokens) + " tokens on " + latest.startDate)
                         dailyChart(tokens.recentDays)
                         Text("Last \(tokens.recentDays.count) reported days")
-                            .font(.system(size: f(9))).foregroundStyle(.secondary)
+                            .font(.system(size: f(9))).foregroundStyle(palette.secondaryText)
                     }
-                    .padding(s(11)).background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: s(12)))
+                    .padding(s(11)).background(palette.surface, in: RoundedRectangle(cornerRadius: s(12)))
                 } else {
-                    Text("Daily history is not available.").font(.system(size: f(10))).foregroundStyle(.secondary)
+                    Text("Daily history is not available.").font(.system(size: f(10))).foregroundStyle(palette.secondaryText)
                 }
                 VStack(spacing: s(8)) {
                     detail("Current streak", value: dayCount(tokens.summary.currentStreakDays))
                     detail("Longest streak", value: dayCount(tokens.summary.longestStreakDays))
                     detail("Longest turn", value: UsageNumber.duration(tokens.summary.longestRunningTurnSec))
                 }
-                .padding(s(11)).background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: s(12)))
+                .padding(s(11)).background(palette.surface, in: RoundedRectangle(cornerRadius: s(12)))
                 Text("— = not reported. Account input/output breakdown unavailable.")
-                    .font(.system(size: f(9))).foregroundStyle(.secondary)
+                    .font(.system(size: f(9))).foregroundStyle(palette.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
 
     private func sectionTitle(_ title: String) -> some View {
-        Text(title).font(.system(size: f(9), weight: .semibold)).tracking(s(0.7)).foregroundStyle(.secondary)
+        Text(title).font(.system(size: f(9), weight: .semibold)).tracking(s(0.7)).foregroundStyle(palette.secondaryText)
     }
 
     private func metric(_ title: String, value: Int64?) -> some View {
@@ -191,13 +193,13 @@ struct SubscriptionUsageView: View {
         let label = title + ": " + UsageNumber.full(value) + " tokens"
         let valueText = Text(amount).font(.system(size: f(15), weight: .semibold))
             .monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
-            .foregroundStyle(CompanionModel.accent)
+            .foregroundStyle(palette.accent)
         return VStack(alignment: .leading, spacing: s(6)) {
-            Text(title).font(.system(size: f(10))).foregroundStyle(.secondary)
+            Text(title).font(.system(size: f(10))).foregroundStyle(palette.secondaryText)
             valueText
         }
         .frame(maxWidth: .infinity, alignment: .leading).padding(s(10))
-        .background(CompanionModel.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: s(11)))
+        .background(palette.accentSurface, in: RoundedRectangle(cornerRadius: s(11)))
         .help(label)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(label)
@@ -219,11 +221,11 @@ struct SubscriptionUsageView: View {
         let label = day.startDate + ": " + UsageNumber.full(day.tokens) + " tokens"
         return VStack(spacing: s(4)) {
             ZStack(alignment: .bottom) {
-                RoundedRectangle(cornerRadius: s(2)).fill(.white.opacity(0.05))
-                RoundedRectangle(cornerRadius: s(2)).fill(CompanionModel.accent.opacity(0.75))
+                RoundedRectangle(cornerRadius: s(2)).fill(palette.chartTrack)
+                RoundedRectangle(cornerRadius: s(2)).fill(palette.accent.opacity(0.75))
                     .frame(height: height)
             }.frame(height: s(38))
-            Text(String(day.startDate.suffix(2))).font(.system(size: f(8))).foregroundStyle(.secondary)
+            Text(String(day.startDate.suffix(2))).font(.system(size: f(8))).foregroundStyle(palette.secondaryText)
         }
         .help(label)
         .accessibilityElement(children: .ignore)
@@ -237,7 +239,7 @@ struct SubscriptionUsageView: View {
 
     private func detail(_ title: String, value: String) -> some View {
         HStack(spacing: s(6)) {
-            Text(title).foregroundStyle(.secondary)
+            Text(title).foregroundStyle(palette.secondaryText)
             Spacer(minLength: 0)
             Text(value).monospacedDigit().multilineTextAlignment(.trailing)
         }.font(.system(size: f(10))).accessibilityElement(children: .combine)
@@ -245,10 +247,10 @@ struct SubscriptionUsageView: View {
 
     private func guidance(_ text: String, symbol: String) -> some View {
         VStack(alignment: .leading, spacing: s(10)) {
-            Image(systemName: symbol).font(.system(size: f(20))).foregroundStyle(CompanionModel.accent)
+            Image(systemName: symbol).font(.system(size: f(20))).foregroundStyle(palette.accent)
             Text(text).font(.system(size: f(11))).fixedSize(horizontal: false, vertical: true)
         }
         .padding(s(12)).frame(maxWidth: .infinity, alignment: .leading)
-        .background(.white.opacity(0.055), in: RoundedRectangle(cornerRadius: s(12)))
+        .background(palette.surface, in: RoundedRectangle(cornerRadius: s(12)))
     }
 }

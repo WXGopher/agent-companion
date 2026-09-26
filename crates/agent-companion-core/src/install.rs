@@ -77,6 +77,8 @@ mod codex;
 pub mod codex_tui;
 #[cfg(feature = "config-edit")]
 mod files;
+#[cfg(feature = "config-edit")]
+pub mod profile_sync;
 #[cfg(feature = "server")]
 pub use codex::{CODEX_HOOKS, CodexReport, install_codex, status_codex, uninstall_codex};
 

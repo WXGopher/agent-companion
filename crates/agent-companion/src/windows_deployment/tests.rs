@@ -271,3 +271,80 @@ fn packaged_hardlinks_are_copied_as_independent_runtime_files() {
         b"signed package contents"
     );
 }
+
+#[test]
+fn explicit_profile_sync_preserves_disabled_preference_and_target_isolation() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("official");
+    fs::create_dir_all(source.join("resources")).unwrap();
+    fs::write(source.join("ChatGPT.exe"), b"desktop fixture").unwrap();
+    fs::write(source.join("resources/codex.exe"), b"cli fixture").unwrap();
+    let root = temp.path().join("Dodex");
+    let verify = |_: &Path| Ok("fixture-hash".to_owned());
+    let instance = ensure_instance(&root, || Ok(source), &verify).unwrap();
+    save_preference(&root, false).unwrap();
+    let preference = root.parent().unwrap().join("dual-instance.json");
+    let original_preference = fs::read(&preference).unwrap();
+    let primary = temp.path().join("primary");
+    fs::create_dir(&primary).unwrap();
+    fs::write(primary.join("config.toml"), "model = 'source-model'\ncli_auth_credentials_store = 'keyring'\n[profiles.work]\nlog_dir = 'synthetic-primary-log'\n").unwrap();
+    let old_secondary = fs::read(instance.codex_home.join("config.toml")).unwrap();
+    let outcome = with_deployment_lock(&root, || {
+        sync_profile_file_under_lock(
+            &root,
+            &verify,
+            &primary,
+            FileKind::Config,
+            Direction::ToSecondary,
+        )
+    })
+    .unwrap();
+    assert_eq!(
+        fs::read(outcome.backup_path.unwrap()).unwrap(),
+        old_secondary
+    );
+    validate_with(&root, true, &verify).unwrap();
+    fs::write(
+        instance.codex_home.join("config.toml"),
+        configuration(&instance) + "model = 'reverse-model'\n",
+    )
+    .unwrap();
+    with_deployment_lock(&root, || {
+        sync_profile_file_under_lock(
+            &root,
+            &verify,
+            &primary,
+            FileKind::Config,
+            Direction::ToPrimary,
+        )
+    })
+    .unwrap();
+    let copied = fs::read_to_string(primary.join("config.toml")).unwrap();
+    assert!(
+        copied.contains("reverse-model")
+            && copied.contains("keyring")
+            && copied.contains("synthetic-primary-log")
+    );
+    assert!(!copied.contains(&instance.database_dir.to_string_lossy().to_string()));
+    fs::remove_file(instance.codex_home.join("config.toml")).unwrap();
+    assert!(validate_with(&root, true, &verify).is_err());
+    let recreated = with_deployment_lock(&root, || {
+        sync_profile_file_under_lock(
+            &root,
+            &verify,
+            &primary,
+            FileKind::Config,
+            Direction::ToSecondary,
+        )
+    })
+    .unwrap();
+    assert!(recreated.changed && recreated.backup_path.is_none());
+    validate_with(&root, true, &verify).unwrap();
+    assert_eq!(fs::read(preference).unwrap(), original_preference);
+    assert!(
+        !read_json::<Preference>(&root.parent().unwrap().join("dual-instance.json"))
+            .unwrap()
+            .enabled
+    );
+    assert!(!instance.codex_home.join("auth.json").exists());
+}

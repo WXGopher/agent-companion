@@ -1,5 +1,6 @@
 //! Status-bar draft state and the native editor. Opening/toggling never writes;
-//! only Apply and Restore Codex defaults touch Codex's user configuration.
+//! Apply/Restore save status-line drafts; explicit profile sync overwrites one
+//! selected file after backing up the target. Opening/toggling never writes.
 
 #[cfg(target_os = "macos")]
 use crate::macos_deployment as deployment;
@@ -9,6 +10,10 @@ use crate::windows_deployment as deployment;
 use std::{cell::RefCell, collections::HashSet, path::PathBuf, rc::Rc};
 
 use agent_companion_core::install::codex_tui::{self as config, StatusLine};
+#[cfg(any(target_os = "macos", windows))]
+use agent_companion_core::install::profile_sync::{
+    self, Direction, FileKind, ProfilePair, SyncOutcome,
+};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
 use crate::ui;
@@ -142,6 +147,21 @@ struct InstanceDrafts {
     secondary_selected: bool,
 }
 
+#[cfg(any(target_os = "macos", windows))]
+struct SyncOperation {
+    kind: FileKind,
+    target: PathBuf,
+    receiver: std::sync::mpsc::Receiver<Result<SyncOutcome, String>>,
+}
+
+#[cfg(any(target_os = "macos", windows))]
+#[derive(Clone, Default)]
+struct SyncFeedback {
+    message: String,
+    error: bool,
+    backup: Option<PathBuf>,
+}
+
 impl InstanceDrafts {
     fn new(primary: PathBuf) -> Self {
         Self {
@@ -201,10 +221,16 @@ pub(crate) struct Editor {
     drafts: RefCell<InstanceDrafts>,
     left_rows: Rc<VecModel<ui::StatusComponent>>,
     right_rows: Rc<VecModel<ui::StatusComponent>>,
-    #[cfg(target_os = "macos")]
-    display_settings: RefCell<Option<crate::macos::DisplaySettings>>,
     #[cfg(any(target_os = "macos", windows))]
-    pub(crate) preference_timer: slint::Timer,
+    sync_rows: Rc<VecModel<ui::ProfileSyncFile>>,
+    #[cfg(any(target_os = "macos", windows))]
+    sync_paths: RefCell<Option<ProfilePair>>,
+    #[cfg(any(target_os = "macos", windows))]
+    sync_operation: RefCell<Option<SyncOperation>>,
+    #[cfg(any(target_os = "macos", windows))]
+    sync_feedback: RefCell<[SyncFeedback; 2]>,
+    #[cfg(any(target_os = "macos", windows))]
+    pub(crate) deployment_timer: slint::Timer,
     #[cfg(any(target_os = "macos", windows))]
     deployment_operation:
         RefCell<Option<std::sync::mpsc::Receiver<Result<deployment::DeploymentStatus, String>>>>,
@@ -231,6 +257,26 @@ impl Editor {
     #[allow(dead_code)]
     pub(crate) fn add_isolated_secondary(&self, path: PathBuf) {
         assert!(!self.live_deployment);
+        let primary = self.drafts.borrow().primary.path.clone();
+        let home = path.parent().unwrap();
+        let paths = |config: PathBuf| profile_sync::ProfilePaths {
+            instructions: config.parent().unwrap().join("AGENTS.md"),
+            instructions_override: config
+                .parent()
+                .unwrap()
+                .join("AGENTS.override.md")
+                .is_file()
+                .then(|| config.parent().unwrap().join("AGENTS.override.md")),
+            config,
+        };
+        *self.sync_paths.borrow_mut() = Some(ProfilePair {
+            primary: paths(primary),
+            secondary: paths(path.clone()),
+            secondary_isolation: profile_sync::IsolationPaths {
+                sqlite_home: home.join("sqlite"),
+                log_dir: home.join("log"),
+            },
+        });
         self.drafts.borrow_mut().set_secondary(Some(path));
         self.window
             .set_instance_options(ModelRc::new(VecModel::from(vec![
@@ -238,6 +284,41 @@ impl Editor {
                 "Dodex".into(),
             ])));
         self.window.set_dual_enabled(true);
+        self.window.set_dual_deployed(true);
+        self.refresh_profile_sync();
+    }
+
+    #[cfg(all(any(target_os = "macos", windows), test))]
+    #[allow(dead_code)]
+    pub(crate) fn set_isolated_monitoring(&self, enabled: bool) {
+        assert!(!self.live_deployment);
+        let path = self
+            .sync_paths
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .secondary
+            .config
+            .clone();
+        self.drafts
+            .borrow_mut()
+            .set_secondary(enabled.then_some(path));
+        self.window.set_dual_enabled(enabled);
+        self.refresh_profile_sync();
+    }
+
+    #[cfg(all(any(target_os = "macos", windows), test))]
+    #[allow(dead_code)]
+    pub(crate) fn reload_isolated_drafts(&self) {
+        assert!(!self.live_deployment);
+        {
+            let mut drafts = self.drafts.borrow_mut();
+            drafts.primary.load().unwrap();
+            if let Some(secondary) = drafts.secondary.as_mut() {
+                secondary.load().unwrap();
+            }
+        }
+        self.refresh();
     }
 
     fn new_inner(path: PathBuf, _live_deployment: bool) -> Result<Rc<Self>, slint::PlatformError> {
@@ -246,10 +327,16 @@ impl Editor {
             drafts: RefCell::new(InstanceDrafts::new(path)),
             left_rows: Rc::new(VecModel::default()),
             right_rows: Rc::new(VecModel::default()),
-            #[cfg(target_os = "macos")]
-            display_settings: RefCell::new(None),
             #[cfg(any(target_os = "macos", windows))]
-            preference_timer: slint::Timer::default(),
+            sync_rows: Rc::new(VecModel::default()),
+            #[cfg(any(target_os = "macos", windows))]
+            sync_paths: RefCell::new(None),
+            #[cfg(any(target_os = "macos", windows))]
+            sync_operation: RefCell::new(None),
+            #[cfg(any(target_os = "macos", windows))]
+            sync_feedback: RefCell::new(Default::default()),
+            #[cfg(any(target_os = "macos", windows))]
+            deployment_timer: slint::Timer::default(),
             #[cfg(any(target_os = "macos", windows))]
             deployment_operation: RefCell::new(None),
             #[cfg(any(target_os = "macos", windows))]
@@ -276,6 +363,33 @@ impl Editor {
         editor
             .window
             .set_catalog_version(config::CATALOG_VERSION.into());
+        #[cfg(any(target_os = "macos", windows))]
+        {
+            editor
+                .window
+                .set_sync_files(ModelRc::from(editor.sync_rows.clone()));
+            let weak = Rc::downgrade(&editor);
+            editor.window.on_sync_profile(move |file, to_secondary| {
+                if let Some(editor) = weak.upgrade() {
+                    editor.start_profile_sync(file.as_str(), to_secondary);
+                }
+            });
+            let weak = Rc::downgrade(&editor);
+            editor
+                .window
+                .on_open_sync_file(move |file, secondary, edit| {
+                    if let Some(editor) = weak.upgrade() {
+                        editor.open_sync_file(file.as_str(), secondary, edit);
+                    }
+                });
+            let weak = Rc::downgrade(&editor);
+            editor.window.on_refresh_sync(move || {
+                if let Some(editor) = weak.upgrade() {
+                    editor.refresh_profile_sync();
+                }
+            });
+            editor.refresh_profile_sync();
+        }
         #[cfg(target_os = "macos")]
         {
             editor.window.set_mono_font("Menlo".into());
@@ -302,79 +416,13 @@ impl Editor {
                     editor.select_instance(label.as_str());
                 }
             });
-            editor
-                .window
-                .set_show_dock_icon(crate::macos::dock_visible());
-            editor
-                .window
-                .set_show_menu_bar(crate::macos::menu_bar_visible());
-            editor.window.set_show_notch(crate::macos::notch_visible());
             let weak = Rc::downgrade(&editor);
-            editor.window.on_toggle_menu_bar(move |visible| {
-                if let Some(editor) = weak.upgrade() {
-                    let saved = crate::macos::set_menu_bar_visible(visible);
-                    editor
-                        .window
-                        .set_show_menu_bar(crate::macos::menu_bar_visible());
-                    editor.window.set_menu_bar_error(!saved);
-                }
-            });
-            let weak = Rc::downgrade(&editor);
-            editor.window.on_toggle_notch(move |visible| {
-                if let Some(editor) = weak.upgrade() {
-                    let saved = crate::macos::set_notch_visible(visible);
-                    editor.window.set_show_notch(crate::macos::notch_visible());
-                    editor.window.set_notch_error(!saved);
-                }
-            });
-            let weak = Rc::downgrade(&editor);
-            editor.window.on_toggle_dock_icon(move |visible| {
-                if let Some(editor) = weak.upgrade() {
-                    let saved = crate::macos::set_dock_visible(visible);
-                    editor
-                        .window
-                        .set_show_dock_icon(crate::macos::dock_visible());
-                    editor.window.set_dock_error(!saved);
-                }
-            });
-            editor.refresh_display_settings();
-            let weak = Rc::downgrade(&editor);
-            editor.window.on_select_display(move |label| {
-                if let Some(editor) = weak.upgrade() {
-                    // Resolve the displayed option to its stable identity,
-                    // rather than persisting a transient list/screen index.
-                    let identifier =
-                        editor
-                            .display_settings
-                            .borrow()
-                            .as_ref()
-                            .and_then(|settings| {
-                                settings
-                                    .options
-                                    .iter()
-                                    .find(|option| option.label == label.as_str())
-                                    .map(|option| option.id.clone())
-                            });
-                    let saved = identifier.is_some_and(|id| crate::macos::select_display(&id));
-                    editor.window.set_display_error(!saved);
-                    editor.refresh_display_settings();
-                }
-            });
-            let weak = Rc::downgrade(&editor);
-            editor.preference_timer.start(
+            editor.deployment_timer.start(
                 slint::TimerMode::Repeated,
                 std::time::Duration::from_millis(300),
                 move || {
                     if let Some(editor) = weak.upgrade() {
                         editor.refresh_deployment();
-                        editor.refresh_display_settings();
-                        editor
-                            .window
-                            .set_show_dock_icon(crate::macos::dock_visible());
-                        editor
-                            .window
-                            .set_show_menu_bar(crate::macos::menu_bar_visible());
-                        editor.window.set_show_notch(crate::macos::notch_visible());
                     }
                 },
             );
@@ -403,7 +451,9 @@ impl Editor {
             let weak = Rc::downgrade(&editor);
             editor.window.on_open_dual(move || {
                 if let Some(editor) = weak.upgrade() {
-                    if editor.deployment_operation.borrow().is_some() {
+                    if editor.deployment_operation.borrow().is_some()
+                        || editor.sync_operation.borrow().is_some()
+                    {
                         return;
                     }
                     let (sender, receiver) = std::sync::mpsc::channel();
@@ -416,7 +466,7 @@ impl Editor {
                 }
             });
             let weak = Rc::downgrade(&editor);
-            editor.preference_timer.start(
+            editor.deployment_timer.start(
                 slint::TimerMode::Repeated,
                 std::time::Duration::from_millis(500),
                 move || {
@@ -429,6 +479,8 @@ impl Editor {
         let weak = Rc::downgrade(&editor);
         editor.window.on_toggle(move |id, enabled| {
             if let Some(editor) = weak.upgrade() {
+                #[cfg(any(target_os = "macos", windows))]
+                if editor.sync_operation.borrow().is_some() { return; }
                 if let Some(draft) = editor.drafts.borrow_mut().active_mut().draft.as_mut() {
                     draft.toggle(&id, enabled);
                 }
@@ -458,13 +510,317 @@ impl Editor {
     }
 
     #[cfg(any(target_os = "macos", windows))]
+    fn start_profile_sync(&self, key: &str, to_secondary: bool) {
+        let Some(kind) = sync_kind(key) else {
+            return;
+        };
+        if self.sync_operation.borrow().is_some() || self.deployment_operation.borrow().is_some() {
+            return;
+        }
+        self.refresh_profile_sync();
+        if self.sync_operation.borrow().is_some()
+            || self.deployment_operation.borrow().is_some()
+            || self.window.get_dual_busy()
+        {
+            return;
+        }
+        let Some(pair) = self.sync_paths.borrow().clone() else {
+            return;
+        };
+        let index = sync_index(&kind);
+        if kind == FileKind::Config && self.config_sync_dirty(&pair) {
+            self.sync_feedback.borrow_mut()[index] = SyncFeedback {
+                message: "状态栏有未应用的更改。请先在「Codex CLI」页签应用更改，再覆盖配置。"
+                    .into(),
+                error: true,
+                backup: None,
+            };
+            self.refresh_profile_sync();
+            return;
+        }
+        let source = sync_path(&pair, &kind, !to_secondary);
+        if !regular_file(source) {
+            self.sync_feedback.borrow_mut()[index] = SyncFeedback {
+                message: "源文件不存在或不是常规文件，未执行覆盖。".into(),
+                error: true,
+                backup: None,
+            };
+            self.refresh_profile_sync();
+            return;
+        }
+        let target = sync_path(&pair, &kind, to_secondary).to_owned();
+        let direction = if to_secondary {
+            Direction::ToSecondary
+        } else {
+            Direction::ToPrimary
+        };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        *self.sync_operation.borrow_mut() = Some(SyncOperation {
+            kind,
+            target,
+            receiver,
+        });
+        self.sync_feedback.borrow_mut()[index] = SyncFeedback {
+            message: "正在备份目标并覆盖文件…".into(),
+            error: false,
+            backup: None,
+        };
+        let live = self.live_deployment;
+        let worker = std::thread::Builder::new()
+            .name("codex-profile-sync".into())
+            .spawn(move || {
+                let result = if live {
+                    deployment::sync_profile_file(kind, direction)
+                } else {
+                    profile_sync::sync_file(&pair, kind, direction).map_err(profile_sync_error)
+                };
+                let _ = sender.send(result);
+            });
+        if worker.is_err() {
+            self.sync_operation.borrow_mut().take();
+            self.sync_feedback.borrow_mut()[index] = SyncFeedback {
+                message: "无法开始文件同步，请重试。".into(),
+                error: true,
+                backup: None,
+            };
+        }
+        self.update_profile_sync();
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
+    fn config_sync_dirty(&self, pair: &ProfilePair) -> bool {
+        let drafts = self.drafts.borrow();
+        std::iter::once(&drafts.primary)
+            .chain(drafts.secondary.iter())
+            .any(|state| {
+                (state.path == pair.primary.config || state.path == pair.secondary.config)
+                    && state.draft.as_ref().is_some_and(Draft::dirty)
+            })
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
+    fn refresh_profile_sync(&self) {
+        let completed =
+            self.sync_operation.borrow().as_ref().and_then(|operation| {
+                match operation.receiver.try_recv() {
+                    Ok(result) => Some(result),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        Some(Err("文件同步已中断，请刷新状态后重试。".into()))
+                    }
+                }
+            });
+        if let Some(result) = completed {
+            let operation = self.sync_operation.borrow_mut().take().unwrap();
+            let index = sync_index(&operation.kind);
+            let feedback = match result {
+                Ok(outcome) => {
+                    if operation.kind == FileKind::Config {
+                        // Both involved drafts were clean when work began, and
+                        // edit/save callbacks stay blocked until it completes.
+                        // Reload only the target; preserve the source and selection.
+                        let mut drafts = self.drafts.borrow_mut();
+                        if drafts.primary.path == operation.target {
+                            let _ = drafts.primary.load();
+                        } else if let Some(target) = drafts
+                            .secondary
+                            .as_mut()
+                            .filter(|state| state.path == operation.target)
+                        {
+                            let _ = target.load();
+                        }
+                    }
+                    SyncFeedback {
+                        message: if outcome.changed {
+                            "文件已覆盖。请重新启动相应 Codex / Dodex 会话以载入更改。"
+                        } else {
+                            "文件内容已一致，无需写入或创建备份。"
+                        }
+                        .into(),
+                        error: false,
+                        backup: outcome.backup_path,
+                    }
+                }
+                Err(message) => SyncFeedback {
+                    message,
+                    error: true,
+                    backup: None,
+                },
+            };
+            self.sync_feedback.borrow_mut()[index] = feedback;
+            self.refresh();
+        }
+        self.update_profile_sync();
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
+    fn update_profile_sync(&self) {
+        let busy = self.sync_operation.borrow().is_some();
+        let deployment_busy = self.deployment_operation.borrow().is_some()
+            || (self.live_deployment && deployment::status().busy);
+        // Validation shares the deployment lock. Keep the last validated paths
+        // visible while an operation holds it, then rediscover on completion.
+        if self.live_deployment && !busy && !deployment_busy {
+            match deployment::profile_sync_paths() {
+                Ok(pair) => {
+                    *self.sync_paths.borrow_mut() = Some(pair);
+                    self.window.set_sync_status(
+                        "每次手动选择覆盖方向；不会自动同步或建立链接。目标文件存在时会先备份。"
+                            .into(),
+                    );
+                    self.window.set_sync_error(false);
+                }
+                Err(error) => {
+                    self.sync_paths.borrow_mut().take();
+                    let deployed = deployment::status().deployed;
+                    self.window.set_sync_status(if deployed {
+                        error.into()
+                    } else {
+                        "请先部署并验证 Dodex 环境，再手动同步文件。".into()
+                    });
+                    self.window.set_sync_error(deployed);
+                }
+            }
+        } else if !self.live_deployment
+            && let Some(pair) = self.sync_paths.borrow_mut().as_mut()
+        {
+            // Keep the isolated native fixture's metadata current without ever
+            // discovering a real secondary profile or changing deployment state.
+            for paths in [&mut pair.primary, &mut pair.secondary] {
+                let path = paths.instructions.with_file_name("AGENTS.override.md");
+                paths.instructions_override = path.exists().then_some(path);
+            }
+        }
+        self.window.set_sync_busy(busy);
+        self.window.set_dual_busy(busy || deployment_busy);
+        let pair = self.sync_paths.borrow();
+        let dirty = pair
+            .as_ref()
+            .is_some_and(|pair| self.config_sync_dirty(pair));
+        let primary_config = self.drafts.borrow().primary.path.clone();
+        let primary_instructions = primary_config.with_file_name("AGENTS.md");
+        for (index, kind) in [FileKind::Config, FileKind::Instructions]
+            .into_iter()
+            .enumerate()
+        {
+            let primary = pair
+                .as_ref()
+                .map(|pair| sync_path(pair, &kind, false))
+                .unwrap_or(if kind == FileKind::Config {
+                    &primary_config
+                } else {
+                    &primary_instructions
+                });
+            let secondary = pair.as_ref().map(|pair| sync_path(pair, &kind, true));
+            let primary_exists = regular_file(primary);
+            let secondary_exists = secondary.is_some_and(regular_file);
+            let mut note = String::new();
+            if kind == FileKind::Config && dirty {
+                note.push_str("Codex 或 Dodex 状态栏有未应用的更改，请先在「Codex CLI」页签应用后再同步配置。Dodex 已停用时需先重新启用以处理其草稿。");
+            }
+            if kind == FileKind::Instructions
+                && let Some(pair) = pair.as_ref()
+            {
+                for (name, paths) in [("Codex", &pair.primary), ("Dodex", &pair.secondary)] {
+                    if let Some(path) = &paths.instructions_override {
+                        if !note.is_empty() {
+                            note.push('\n');
+                        }
+                        note.push_str(&format!("{name} 的 {} 可能优先于同目录 AGENTS.md；本操作不会修改该 override 文件。", path.display()));
+                    }
+                }
+            }
+            if !primary_exists || !secondary_exists {
+                if !note.is_empty() {
+                    note.push('\n');
+                }
+                note.push_str("源文件不存在时对应方向不可用；目标文件不存在时可创建。");
+            }
+            let feedback = self.sync_feedback.borrow()[index].clone();
+            let available =
+                pair.is_some() && !busy && !deployment_busy && !(kind == FileKind::Config && dirty);
+            let row = ui::ProfileSyncFile {
+                key: if kind == FileKind::Config {
+                    "config"
+                } else {
+                    "instructions"
+                }
+                .into(),
+                title: if kind == FileKind::Config {
+                    "config.toml"
+                } else {
+                    "AGENTS.md"
+                }
+                .into(),
+                primary_path: primary.to_string_lossy().as_ref().into(),
+                secondary_path: secondary
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+                    .into(),
+                primary_exists,
+                secondary_exists,
+                to_secondary: available && primary_exists,
+                to_primary: available && secondary_exists,
+                note: note.into(),
+                message: feedback.message.into(),
+                error: feedback.error,
+                backup_path: feedback
+                    .backup
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+                    .into(),
+            };
+            if self.sync_rows.row_count() <= index {
+                self.sync_rows.push(row);
+            } else if self.sync_rows.row_data(index).as_ref() != Some(&row) {
+                self.sync_rows.set_row_data(index, row);
+            }
+        }
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
+    fn open_sync_file(&self, key: &str, secondary: bool, edit: bool) {
+        let Some(kind) = sync_kind(key) else {
+            return;
+        };
+        self.refresh_profile_sync();
+        if edit && (self.sync_operation.borrow().is_some() || self.window.get_dual_busy()) {
+            return;
+        }
+        let path = if let Some(pair) = self.sync_paths.borrow().as_ref() {
+            sync_path(pair, &kind, secondary).to_owned()
+        } else if !secondary {
+            let primary = self.drafts.borrow().primary.path.clone();
+            if kind == FileKind::Config {
+                primary
+            } else {
+                primary.with_file_name("AGENTS.md")
+            }
+        } else {
+            return;
+        };
+        let result = open_profile_path(&path, edit);
+        if result.is_err() {
+            self.sync_feedback.borrow_mut()[sync_index(&kind)] = SyncFeedback {
+                message: "无法打开文件或所在目录。可复制上方路径后手动打开。".into(),
+                error: true,
+                backup: None,
+            };
+            self.refresh_profile_sync();
+        }
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
     fn start_deployment(&self, enabled: Option<bool>) {
         if !self.live_deployment {
             return;
         }
         // Mark the operation pending before spawning so even two clicks in the
         // same event-loop turn cannot start two workers.
-        if self.deployment_operation.borrow().is_some() || deployment::status().busy {
+        if self.deployment_operation.borrow().is_some()
+            || self.sync_operation.borrow().is_some()
+            || deployment::status().busy
+        {
             return;
         }
         *self.deployment_error.borrow_mut() = None;
@@ -488,6 +844,7 @@ impl Editor {
 
     #[cfg(any(target_os = "macos", windows))]
     fn refresh_deployment(&self) {
+        self.refresh_profile_sync();
         if !self.live_deployment {
             return;
         }
@@ -507,7 +864,9 @@ impl Editor {
             *self.deployment_error.borrow_mut() = result.err();
         }
         let status = deployment::status();
-        let busy = status.busy || self.deployment_operation.borrow().is_some();
+        let busy = status.busy
+            || self.deployment_operation.borrow().is_some()
+            || self.sync_operation.borrow().is_some();
         let active = deployment::active_instance();
         let (available, selection_changed) = {
             let mut drafts = self.drafts.borrow_mut();
@@ -613,38 +972,6 @@ impl Editor {
         }
     }
 
-    #[cfg(target_os = "macos")]
-    fn refresh_display_settings(&self) {
-        let Some(settings) = crate::macos::display_settings() else {
-            self.window.set_display_error(true);
-            return;
-        };
-        let mut previous = self.display_settings.borrow_mut();
-        if previous
-            .as_ref()
-            .is_none_or(|old| old.options != settings.options)
-        {
-            let labels = settings
-                .options
-                .iter()
-                .map(|option| option.label.as_str().into())
-                .collect::<Vec<_>>();
-            self.window
-                .set_display_options(ModelRc::new(VecModel::from(labels)));
-        }
-        let selected = settings
-            .options
-            .iter()
-            .position(|option| option.id == settings.selected_id)
-            .unwrap_or(0);
-        // Also restore the control after a failed save, even when the stored
-        // snapshot did not change. Updating properties never invokes selection.
-        self.window.set_selected_display(selected as i32);
-        self.window
-            .set_display_status(settings.status.as_str().into());
-        *previous = Some(settings);
-    }
-
     pub fn show(&self) -> Result<(), slint::PlatformError> {
         if !self.window.window().is_visible() {
             match self.drafts.borrow_mut().active_mut().load() {
@@ -672,6 +999,8 @@ impl Editor {
     }
 
     fn refresh(&self) {
+        #[cfg(any(target_os = "macos", windows))]
+        self.update_profile_sync();
         let drafts = self.drafts.borrow();
         let state = drafts.active();
         self.window
@@ -700,6 +1029,10 @@ impl Editor {
     }
 
     fn save(&self, restore: bool) {
+        #[cfg(any(target_os = "macos", windows))]
+        if self.sync_operation.borrow().is_some() {
+            return;
+        }
         if self.drafts.borrow().active().draft.is_none() {
             return;
         }
@@ -734,10 +1067,88 @@ impl Editor {
     }
 }
 
+#[cfg(any(target_os = "macos", windows))]
+fn sync_kind(key: &str) -> Option<FileKind> {
+    match key {
+        "config" => Some(FileKind::Config),
+        "instructions" => Some(FileKind::Instructions),
+        _ => None,
+    }
+}
+
+#[cfg(any(target_os = "macos", windows))]
+fn sync_index(kind: &FileKind) -> usize {
+    usize::from(*kind == FileKind::Instructions)
+}
+
+#[cfg(any(target_os = "macos", windows))]
+fn sync_path<'a>(pair: &'a ProfilePair, kind: &FileKind, secondary: bool) -> &'a std::path::Path {
+    let paths = if secondary {
+        &pair.secondary
+    } else {
+        &pair.primary
+    };
+    match kind {
+        FileKind::Config => &paths.config,
+        FileKind::Instructions => &paths.instructions,
+    }
+}
+
+#[cfg(any(target_os = "macos", windows))]
+fn regular_file(path: &std::path::Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_file())
+}
+
+#[cfg(any(target_os = "macos", windows))]
+fn profile_sync_error(error: std::io::Error) -> String {
+    // Filesystem/TOML diagnostics are intentionally not shown: a parser may
+    // include a source excerpt containing a token or provider credential.
+    match error.kind() {
+        std::io::ErrorKind::NotFound => "同步失败：源文件或部署目录不存在，请刷新后重试。",
+        std::io::ErrorKind::PermissionDenied => "同步失败：没有读取源文件或写入目标目录的权限。",
+        std::io::ErrorKind::InvalidData => "同步失败：配置格式或隔离设置无效，请检查文件后重试。",
+        _ => "同步失败：文件无法安全读取、备份或覆盖，请检查路径与权限后重试。",
+    }
+    .into()
+}
+
+#[cfg(any(target_os = "macos", windows))]
+fn open_profile_path(path: &std::path::Path, edit: bool) -> std::io::Result<()> {
+    if edit && !regular_file(path) {
+        return Err(std::io::ErrorKind::NotFound.into());
+    }
+    let mut destination = path;
+    while !destination.exists() {
+        destination = destination.parent().ok_or(std::io::ErrorKind::NotFound)?;
+    }
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = std::process::Command::new("/usr/bin/open");
+        if edit {
+            command.arg("-t");
+        } else if destination.is_file() {
+            command.arg("-R");
+        }
+        command.arg(destination);
+        command
+    };
+    #[cfg(windows)]
+    let mut command = {
+        let mut command =
+            std::process::Command::new(if edit { "notepad.exe" } else { "explorer.exe" });
+        if !edit && destination.is_file() {
+            command.arg(format!("/select,{}", destination.display()));
+        } else {
+            command.arg(destination);
+        }
+        command
+    };
+    command.spawn().map(|_| ())
+}
+
 fn configuration_error(error: &std::io::Error) -> String {
     // TOML parse errors include source excerpts, which can contain credentials
     // in unrelated settings. Never render those excerpts in the macOS UI.
-    #[cfg(target_os = "macos")]
     if error.kind() == std::io::ErrorKind::InvalidData {
         return "The selected config.toml is invalid. Check its syntax and status-line values, then reopen Settings.".into();
     }
@@ -774,11 +1185,6 @@ pub fn run() -> std::io::Result<()> {
         slint::CloseRequestResponse::HideWindow
     });
     editor.show().map_err(std::io::Error::other)?;
-    #[cfg(target_os = "macos")]
-    slint::Timer::single_shot(
-        std::time::Duration::ZERO,
-        crate::macos::start_editor_preferences,
-    );
     slint::run_event_loop().map_err(std::io::Error::other)
 }
 
