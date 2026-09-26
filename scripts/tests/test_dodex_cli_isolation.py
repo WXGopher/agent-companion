@@ -1,8 +1,8 @@
 """Offline CLI entry tests; no credentials, network, or interactive sessions."""
 import importlib.util
 import json
-import os
 from pathlib import Path
+import runpy
 import signal
 import subprocess
 import tempfile
@@ -49,7 +49,7 @@ sys.exit(int(os.environ.get("TEST_EXIT", "0")))
             "OPENAI_FEDERATION_RULE_ID": "synthetic-federation",
             "CODEX_SANDBOX": "seatbelt", "CODEX_SANDBOX_NETWORK_DISABLED": "1",
             "CODEX_NETWORK_PROXY_ACTIVE": "1", "CODEX_NETWORK_ALLOW_LOCAL_BINDING": "0",
-            "ELECTRON_RUN_AS_NODE": "1", "DYLD_INSERT_LIBRARIES": "/synthetic/library",
+            "ELECTRON_RUN_AS_NODE": "1",
             "NODE_OPTIONS": "--synthetic", "NODE_PATH": "/synthetic/node",
             "UNRELATED_SETTING": "kept",
         }
@@ -73,8 +73,22 @@ sys.exit(int(os.environ.get("TEST_EXIT", "0")))
                     "OPENAI_ACCESS_TOKEN", "OPENAI_BASE_URL", "CHATGPT_ACCESS_TOKEN",
                     "OPENAI_IDENTITY_TOKEN_FILE", "OPENAI_WORKLOAD_IDENTITY_CONTEXT",
                     "OPENAI_FEDERATION_RULE_ID",
-                    "ELECTRON_RUN_AS_NODE", "DYLD_INSERT_LIBRARIES", "NODE_OPTIONS", "NODE_PATH"):
+                    "ELECTRON_RUN_AS_NODE", "NODE_OPTIONS", "NODE_PATH"):
             self.assertNotIn(key, captured["env"])
+
+    def test_dynamic_loader_variables_are_removed_without_spawning_them(self):
+        # dyld consumes these before Python can execute the wrapper. Passing a
+        # fake library to a real interpreter can abort it on Homebrew/macOS CI,
+        # so test this part of the generated filter with an ordinary dictionary.
+        namespace = runpy.run_path(str(self.wrapper), run_name="primary_entry_filter_test")
+        inherited = {**self.env, "DYLD_INSERT_LIBRARIES": "/synthetic/library",
+                     "DYLD_LIBRARY_PATH": "/synthetic/libraries",
+                     "DYLD_FRAMEWORK_PATH": "/synthetic/frameworks"}
+        filtered = namespace["primary_environment"](inherited)
+        self.assertFalse(any(key.startswith("DYLD_") for key in filtered))
+        self.assertEqual(inherited["DYLD_INSERT_LIBRARIES"], "/synthetic/library")
+        self.assertEqual(filtered["CODEX_HOME"], str(self.user_home / ".codex"))
+        self.assertEqual(filtered["PATH"], self.env["PATH"])
 
     def test_exec_keeps_pid_and_signal_termination(self):
         self.env["TEST_WAIT_SIGNAL"] = "1"
