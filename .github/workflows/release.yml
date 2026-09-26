@@ -40,6 +40,11 @@ jobs:
           fi
       - name: Format
         run: cargo fmt --all --check
+      - name: Check Dodex maintenance helpers
+        if: runner.os == 'macOS'
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_prepare_dodex_manager.py'
+          python3 -m unittest discover -s scripts/tests -p 'test_*.py'
       - name: Build test binaries
         run: cargo build ${{ matrix.packages }} --target ${{ matrix.target }} --locked
       - name: Clippy

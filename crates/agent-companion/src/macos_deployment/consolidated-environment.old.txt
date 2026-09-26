@@ -1,0 +1,17 @@
+def isolated_environment(paths, inherited=None):
+    inherited = os.environ if inherited is None else inherited
+    env = {key: value for key, value in inherited.items()
+           if not key.startswith("CODEX_") and key not in AUTH_ENV
+           and not key.startswith("ELECTRON_") and not key.startswith("DYLD_")
+           and key not in {"NODE_OPTIONS", "NODE_PATH"}}
+    env.update({
+        "CODEX_HOME": str(paths.home),
+        "CODEX_INSTALL_DIR": str(paths.home / "bin"),
+        "CODEX_ELECTRON_USER_DATA_PATH": str(paths.data),
+        "CODEX_SQLITE_HOME": str(paths.home / "sqlite"),
+        "CODEX_CLI_PATH": str(paths.cli),
+        "CODEX_APP_SERVER_FORCE_CLI": "1",
+        "CODEX_APP_SERVER_USE_LOCAL_DAEMON": "0",
+        "CODEX_SPARKLE_ENABLED": "false",
+    })
+    return env

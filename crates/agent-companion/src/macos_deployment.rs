@@ -29,6 +29,16 @@ const LEGACY_PLIST_SHA256: &str =
 const LEGACY_MANAGER_SHA256: &str =
     "777d6146f9f101c14e9a96afebff824767c5d820c6e3f05a91af23bc792565ae";
 
+// Launch-only repair produced by scripts/prepare-dodex-manager.py.
+const REPAIRED_LEGACY_MANAGER_SHA256: &str =
+    "cc38a979239ed95058743c089d97c3c0c89cb73ee8dd2c27a9c8a82ebaf452ee";
+
+#[path = "macos_deployment/desktop.rs"]
+mod desktop;
+#[path = "macos_deployment/icon_signature.rs"]
+mod icon_signature;
+pub use desktop::desktop_entry;
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InstanceConfig {
     pub id: String,
@@ -498,14 +508,7 @@ impl Operations for SystemOps {
         ] {
             regular_file(&app.join(relative))?;
         }
-        let status = Command::new("/usr/bin/codesign")
-            .args(["--verify", "--deep", "--strict", "-R", OFFICIAL_REQUIREMENT])
-            .arg(app)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map_err(|_| "无法执行应用签名校验。")?;
-        if !status.success() {
+        if !icon_signature::verify(app)? {
             return Err("Codex 应用签名无效或不是 OpenAI 官方签名；未修改现有环境。".into());
         }
         if !runtime_supports_isolation(&app.join("Contents/Resources/app.asar"))? {
@@ -528,7 +531,10 @@ impl Operations for SystemOps {
     }
     fn legacy_fingerprints_match(&self, launcher: &Path, manager: &Path) -> bool {
         file_sha256(launcher).as_deref() == Some(LEGACY_LAUNCHER_SHA256)
-            && file_sha256(manager).as_deref() == Some(LEGACY_MANAGER_SHA256)
+            && matches!(
+                file_sha256(manager).as_deref(),
+                Some(LEGACY_MANAGER_SHA256 | REPAIRED_LEGACY_MANAGER_SHA256)
+            )
             && launcher
                 .parent()
                 .and_then(Path::parent)
@@ -823,6 +829,9 @@ fn validate_legacy_with_config(
     require_config: bool,
     check_runtime: bool,
 ) -> Result<InstanceConfig, String> {
+    if exists(&desktop::repair_root(layout).join(MANIFEST)) {
+        return desktop::validate_repaired(layout, ops, require_config, check_runtime);
+    }
     let runtime = layout.system_applications.join("Codex B Runtime.app");
     let home = layout.user_home.join(".codex-second");
     let data = layout.user_home.join("Library/Application Support/Codex-B");

@@ -1,0 +1,1 @@
+                    raise ManagerError("No complete canonical Dodex snapshot is available. Legacy snapshots remain preserved and require explicit migration.")

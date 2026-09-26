@@ -1,0 +1,2 @@
+    checked = command(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)])
+    if checked.returncode:

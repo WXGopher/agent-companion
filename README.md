@@ -6,11 +6,11 @@
 
 在 Windows 任务栏或 macOS 菜单栏查看 Codex 的任务状态与订阅用量。
 
-### v0.3.18 更新
+### v0.3.19 更新
 
-- macOS 统一使用菜单栏入口，移除刘海与独立 Dock 入口；重新打开应用直接显示 Tasks 弹窗。
-- 弹窗新增完整应用名、版本、运行数和持久化亮暗主题；Codex／Dodex 状态颜色与 Windows 统一。
-- 双开设置支持手动双向同步配置与全局个人指令，显示双方路径并在覆盖前备份目标。[发布说明](docs/releases/v0.3.18.md)
+- 修复已审计旧版 Dodex 的桌面启动链路：明确使用独立目录，TUI 运行时也能启动桌面 App。
+- 增加桌面校验／修复命令，兼容标准 Finder 自定义图标，保留官方程序的签名检查。
+- 源码仓库提供可选的入口整理、CLI 环境隔离和 Dock 清理工具；升级 App 不会自动执行迁移。[发布说明](docs/releases/v0.3.19.md)
 
 ### 主要功能
 
@@ -77,11 +77,11 @@ macOS 重新打开 Agent Companion 会显示弹窗的 Tasks 页。刘海、悬�
 
 See Codex tasks and subscription usage in the Windows taskbar or macOS menu bar.
 
-### New in v0.3.18
+### New in v0.3.19
 
-- macOS now uses only the menu bar. The notch and separate Dock entry are removed; reopening the app shows the Tasks popup.
-- The popup adds the full app name, version, running count and saved light / dark themes. Codex / Dodex status colors match Windows.
-- Dual-instance Settings adds manual configuration and global-instruction sync in either direction, with both file paths and destination backups. [Release notes](docs/releases/v0.3.18.md)
+- Repair the audited legacy Dodex desktop launch path: bind its independent directories and allow desktop startup while the TUI runs.
+- Add desktop validation / repair commands and standard Finder custom-icon compatibility while retaining official signature checks.
+- Provide optional source-checkout tools for entry consolidation, CLI environment isolation and Dock cleanup. Upgrading the App does not run these migrations automatically. [Release notes](docs/releases/v0.3.19.md)
 
 ### Features
 

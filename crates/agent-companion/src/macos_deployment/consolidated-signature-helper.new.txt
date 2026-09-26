@@ -1,0 +1,47 @@
+def official_signature_valid(app, strict):
+    arguments = ["/usr/bin/codesign", "--verify", "--deep"]
+    if strict:
+        arguments.append("--strict")
+    arguments.extend(["-R", '=anchor apple generic and identifier "com.openai.codex" and certificate leaf[subject.OU] = "2DC432GLL2"', str(app)])
+    return command(arguments).returncode == 0
+
+
+def standard_custom_icon(app):
+    icon = app / "Icon\r"
+    try:
+        metadata = icon.lstat()
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size != 0 or metadata.st_nlink != 1:
+            return False
+        attributes = command(["/usr/bin/xattr", str(icon)])
+        info = command(["/usr/bin/xattr", "-px", "com.apple.FinderInfo", str(app)])
+        parts = info.stdout.decode("ascii").split()
+        if any(len(part) != 2 for part in parts):
+            return False
+        finder = bytes(int(part, 16) for part in parts)
+        return (attributes.returncode == 0 and info.returncode == 0
+                and b"com.apple.ResourceFork" in attributes.stdout.splitlines()
+                and len(finder) == 32 and finder[8] & 0x04 != 0)
+    except (OSError, UnicodeError, ValueError):
+        return False
+
+
+def verify_original_signature(app):
+    if official_signature_valid(app, True):
+        return True
+    if not standard_custom_icon(app) or not official_signature_valid(app, False):
+        return False
+    with tempfile.TemporaryDirectory(prefix="dodex-icon-verification-") as folder:
+        copy = Path(folder) / "Runtime.app"
+        # Require APFS copy-on-write; never strip the installed signed bundle.
+        if command(["/bin/cp", "-cR", str(app), str(copy)]).returncode:
+            raise ManagerError("Cannot create a private APFS icon verification clone; the installed app was not modified.")
+        if not standard_custom_icon(copy):
+            return False
+        (copy / "Icon\r").unlink()
+        if command(["/usr/bin/xattr", "-d", "com.apple.FinderInfo", str(copy)]).returncode:
+            return False
+        # Nested attributes, forks, executables and sealed resources are unchanged.
+        return official_signature_valid(copy, True)
+
+
+def verify_application(app):

@@ -1,0 +1,14 @@
+    def active_pids(self, include_launcher=True):
+        result = command(["/bin/ps", "-axo", "pid=,comm="], timeout=10)
+        if result.returncode:
+            raise ManagerError("Cannot establish whether B is stopped.")
+        prefixes = [str(self.paths.runtime) + "/", "/Applications/Codex B Runtime.app/"]
+        if include_launcher:
+            prefixes.append(str(self.paths.launcher) + "/")
+        pids = []
+        for line in result.stdout.decode("utf-8", "replace").splitlines():
+            fields = line.strip().split(None, 1)
+            if len(fields) == 2 and fields[0].isdigit() and int(fields[0]) != os.getpid():
+                if any(fields[1].startswith(prefix) for prefix in prefixes):
+                    pids.append(int(fields[0]))
+        return pids

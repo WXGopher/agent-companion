@@ -2,9 +2,9 @@ use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tempfile::TempDir;
 
-struct Fixture {
+pub(super) struct Fixture {
     _directory: TempDir,
-    layout: Layout,
+    pub(super) layout: Layout,
 }
 impl Fixture {
     fn new() -> Self {
@@ -27,12 +27,12 @@ impl Fixture {
     }
 }
 #[derive(Default)]
-struct FakeOps {
-    copied: AtomicUsize,
-    verified: AtomicUsize,
-    fail_copy: bool,
-    fail_copied_signature: bool,
-    legacy: bool,
+pub(super) struct FakeOps {
+    pub(super) copied: AtomicUsize,
+    pub(super) verified: AtomicUsize,
+    pub(super) fail_copy: bool,
+    pub(super) fail_copied_signature: bool,
+    pub(super) legacy: bool,
 }
 impl Operations for FakeOps {
     fn verify_runtime(&self, app: &Path) -> Result<(), String> {
@@ -164,6 +164,8 @@ fn launcher_clears_all_inherited_auth_and_instance_overrides() {
     fixture.source();
     let instance = deploy_fixture(&fixture, &FakeOps::default());
     let result = Command::new(instance.launcher_app.join("Contents/MacOS/Dodex"))
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
         .env("OPENAI_API_KEY", "synthetic")
         .env("CHATGPT_ACCESS_TOKEN", "synthetic")
         .env("CODEX_THREAD_ID", "synthetic")
@@ -388,7 +390,7 @@ fn malformed_nested_and_inline_config_overrides_are_rejected() {
     fs::write(&config, "'cli_auth_credentials_store' = 'file' # synthetic compatible\n[profiles.work]\ncli_auth_credentials_store = 'file'\n").unwrap();
     validate_config(&config, &instance).unwrap();
 }
-fn legacy_fixture() -> (Fixture, InstanceConfig) {
+pub(super) fn legacy_fixture() -> (Fixture, InstanceConfig) {
     let fixture = Fixture::new();
     let layout = &fixture.layout;
     let runtime = layout.system_applications.join("Codex B Runtime.app");
