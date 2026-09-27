@@ -153,17 +153,21 @@ impl InstanceDashboards {
     }
 
     fn primary_descriptor(home: &std::path::Path) -> (Instance, std::path::PathBuf) {
+        let system_applications = std::path::Path::new("/Applications");
+        let user_applications = home.parent().unwrap_or(home).join("Applications");
+        Self::primary_descriptor_in(home, system_applications, &user_applications)
+    }
+
+    fn primary_descriptor_in(
+        home: &std::path::Path,
+        system_applications: &std::path::Path,
+        user_applications: &std::path::Path,
+    ) -> (Instance, std::path::PathBuf) {
         let database = agent_companion_core::dashboard::database_home(home);
-        let app = [
-            std::path::PathBuf::from("/Applications/Codex.app"),
-            home.parent().unwrap_or(home).join("Applications/Codex.app"),
-        ]
-        .into_iter()
-        .find(|app| app.join("Contents/MacOS/ChatGPT").is_file());
-        let executable = app
-            .as_ref()
-            .map(|app| app.join("Contents/Resources/codex"))
-            .filter(|path| path.is_file());
+        let found = crate::macos_primary_app::discover(system_applications, user_applications);
+        let (app, executable) = found
+            .map(|found| (Some(found.app), found.executable))
+            .unwrap_or_default();
         (
             Instance {
                 instance_id: "codex".into(),
@@ -216,6 +220,34 @@ impl InstanceDashboards {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn renamed_primary_descriptor_routes_app_and_cli_to_the_same_primary_bundle() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let system = root.join("Applications");
+        let user = root.join("user/Applications");
+        let home = root.join("user/.codex");
+        let app = system.join("ChatGPT.app");
+        std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        std::fs::create_dir_all(app.join("Contents/Resources")).unwrap();
+        std::fs::write(app.join("Contents/Info.plist"), b"<plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>com.openai.codex</string></dict></plist>").unwrap();
+        for relative in ["Contents/MacOS/ChatGPT", "Contents/Resources/codex"] {
+            let file = app.join(relative);
+            std::fs::write(&file, "synthetic executable, never run").unwrap();
+            std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let (instance, database) = InstanceDashboards::primary_descriptor_in(&home, &system, &user);
+        assert_eq!(instance.instance_id, "codex");
+        assert_eq!(instance.codex_home, home.to_string_lossy());
+        assert_eq!(instance.app_path.as_deref(), app.to_str());
+        assert_eq!(
+            instance.executable_path.as_deref(),
+            app.join("Contents/Resources/codex").to_str()
+        );
+        assert_eq!(instance.database_path.as_deref(), database.to_str());
+    }
 
     #[test]
     fn primary_database_changes_refresh_metadata_and_reader_without_restart() {

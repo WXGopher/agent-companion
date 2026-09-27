@@ -71,6 +71,7 @@ enum SubscriptionUsageTests {
     }
 
     @MainActor static func run(output: URL) throws {
+        try PrimaryCodexAppTests.run()
         try parsing()
         monitorLifecycle()
         cacheFreshness()

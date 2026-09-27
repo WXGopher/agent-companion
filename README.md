@@ -6,11 +6,11 @@
 
 在 Windows 任务栏或 macOS 菜单栏查看 Codex 的任务状态与订阅用量。
 
-### v0.3.20 更新
+### v0.3.21 更新
 
-- macOS 菜单栏状态圆点更大，蓝、绿、黄更鲜明，灰色更亮；加强描边，适应深浅及彩色背景。
-- 运行呼吸最低保持 80% 不透明度，避免圆点在动画暗相位融进壁纸。
-- 保留状态颜色含义、系统百分比文字和“减少动态效果”支持。[发布说明](docs/releases/v0.3.20.md)
+- 修复长 TUI 会话的状态漏读：首次读取大日志时充分使用读取预算；已确认运行、且仍持有写入锁的任务不再因十五分钟无输出而消失。
+- 无法判断写入锁时保留事件状态，避免数据库短暂不可读时误报任务断开；完成或空闲任务不会因进程存活而变为运行。
+- macOS 兼容目录名为 `ChatGPT.app`、应用身份仍为 Codex 的官方安装，恢复打开应用、桌面跳转和运行程序发现。[发布说明](docs/releases/v0.3.21.md)
 
 ### 主要功能
 
@@ -65,7 +65,7 @@ dodex -C C:\projects\demo
 
 应用尚未经过 Apple 公证；首次打开若被拦截，可按 [Apple 官方说明](https://support.apple.com/102445)在“系统设置 → 隐私与安全性”中选择“仍要打开”。
 
-**macOS 双开**：设置 → Codex 双开 → 部署双开环境。需要本机已安装且签名有效的官方 Codex.app。完成后在“应用程序”中打开 Dodex 并登录。
+**macOS 双开**：设置 → Codex 双开 → 部署双开环境。需要本机已安装且签名有效的官方 Codex 应用；兼容 `Codex.app` 和保留 Codex 身份的 `ChatGPT.app` 安装名。完成后在“应用程序”中打开 Dodex 并登录。
 
 macOS 重新打开 Agent Companion 会显示弹窗的 Tasks 页。刘海、悬停展开、显示器选择与独立 Dock 入口已移除；旧版入口偏好不会隐藏菜单栏，已保存的菜单栏位置继续保留。设置从弹窗底部打开。详见[菜单栏说明](docs/MACOS_MENU_BAR.md)。
 
@@ -77,11 +77,11 @@ macOS 重新打开 Agent Companion 会显示弹窗的 Tasks 页。刘海、悬�
 
 See Codex tasks and subscription usage in the Windows taskbar or macOS menu bar.
 
-### New in v0.3.20
+### New in v0.3.21
 
-- Make macOS menu-bar status dots larger, with stronger blue, green and yellow fills, brighter gray and clearer outlines on light, dark and colored backgrounds.
-- Keep running dots at least 80% opaque throughout their breathing animation so they remain visible against wallpaper.
-- Preserve status meanings, system-rendered percentage text and Reduce Motion support. [Release notes](docs/releases/v0.3.20.md)
+- Improve long-running TUI detection: use the full initial log-read budget, and retain known active tasks with a held writer lock after fifteen minutes without output.
+- Keep event state when writer liveness is unknown, avoiding false disconnections during temporary database failures. A live process alone cannot turn idle or completed work into running work.
+- On macOS, recognize official Codex installations named `ChatGPT.app`, restoring application opening, desktop navigation and runtime discovery. [Release notes](docs/releases/v0.3.21.md)
 
 ### Features
 
@@ -136,7 +136,7 @@ The command is installed in a supported user command directory already on the cu
 
 The app is not Apple-notarized. If the first launch is blocked, follow [Apple's instructions](https://support.apple.com/102445) to choose **Open Anyway** in System Settings → Privacy & Security.
 
-**macOS second instance**: Settings → Codex 双开 → 部署双开环境. Requires a locally installed, validly signed official Codex.app. After deployment, open Dodex from Applications and sign in.
+**macOS second instance**: Settings → Codex 双开 → 部署双开环境. Requires a locally installed, validly signed official Codex application, named `Codex.app` or `ChatGPT.app` with the Codex identity. After deployment, open Dodex from Applications and sign in.
 
 On macOS, reopening Agent Companion shows the popup's Tasks page. The notch, hover expansion, display selection and separate Dock entry have been removed. Legacy entry preferences cannot hide the menu bar, and its saved position is retained. Open Settings from the popup footer. See the [menu-bar guide](docs/MACOS_MENU_BAR.md).
 

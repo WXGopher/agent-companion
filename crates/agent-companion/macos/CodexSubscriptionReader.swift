@@ -138,14 +138,22 @@ final class CodexSubscriptionReader: SubscriptionReading {
     }
 
     static func findExecutable() -> URL? {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let paths = ProcessInfo.processInfo.environment["PATH", default: ""].split(separator: ":")
+        findExecutable(home: FileManager.default.homeDirectoryForCurrentUser,
+                       searchPath: ProcessInfo.processInfo.environment["PATH", default: ""],
+                       systemApplications: URL(fileURLWithPath: "/Applications"),
+                       systemCLIPaths: ["/opt/homebrew/bin/codex", "/usr/local/bin/codex"])
+    }
+
+    static func findExecutable(home: URL, searchPath: String, systemApplications: URL,
+                               systemCLIPaths: [String]) -> URL? {
+        let paths = searchPath.split(separator: ":")
             .filter { $0.hasPrefix("/") }.map { String($0) + "/codex" }
-        let candidates = paths + [home.appendingPathComponent(".local/bin/codex").path,
-            "/opt/homebrew/bin/codex", "/usr/local/bin/codex",
-            "/Applications/Codex.app/Contents/Resources/codex",
-            home.appendingPathComponent("Applications/Codex.app/Contents/Resources/codex").path]
-        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }.map { URL(fileURLWithPath: $0) }
+        let candidates = paths + [home.appendingPathComponent(".local/bin/codex").path] + systemCLIPaths
+        if let executable = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
+            return URL(fileURLWithPath: executable)
+        }
+        return PrimaryCodexApp.findExecutable(systemApplications: systemApplications,
+                                              userApplications: home.appendingPathComponent("Applications"))
     }
 
     func read(codexHome: String, completion: @escaping (SubscriptionUsage) -> Void) {

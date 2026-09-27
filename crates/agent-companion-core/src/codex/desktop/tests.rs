@@ -141,6 +141,7 @@ fn explicit_database_directory_keeps_locks_at_instance_home_and_clears_old_cache
     let home = tempfile::tempdir().unwrap();
     let lock_dir = home.path().join("thread-writer-locks");
     std::fs::create_dir(&lock_dir).unwrap();
+    File::create(lock_dir.join(".coordination.lock")).unwrap();
     let lock = File::create(lock_dir.join(format!("{ID}.lock"))).unwrap();
     lock.lock().unwrap();
     let mut cache = SessionCache::default();
@@ -202,6 +203,7 @@ fn a_live_writer_keeps_a_quiet_turn_and_a_closed_writer_cannot_keep_it_alive() {
     let fixture = Fixture::new();
     let locks = fixture.dir.path().join("thread-writer-locks");
     std::fs::create_dir(&locks).unwrap();
+    File::create(locks.join(".coordination.lock")).unwrap();
     let writer = File::create(locks.join(format!("{ID}.lock"))).unwrap();
     writer.lock().unwrap();
     let quiet = fixture.scan(NOW + STALE_AFTER_SECS);
@@ -278,6 +280,37 @@ fn a_temporary_database_failure_retains_state_for_a_bounded_interval() {
 }
 
 #[test]
+fn cached_history_unknown_writer_does_not_stop_a_newer_rollout() {
+    let fixture = Fixture::new();
+    let locks = fixture.dir.path().join("thread-writer-locks");
+    std::fs::create_dir(&locks).unwrap();
+    File::create(locks.join(".coordination.lock")).unwrap();
+    let lock_path = locks.join(format!("{ID}.lock"));
+    let writer = File::create(&lock_path).unwrap();
+    writer.lock().unwrap();
+    let mut cache = Cache::default();
+    let mut sessions = vec![];
+    cache.merge(fixture.dir.path(), NOW, &mut sessions);
+    assert!(sessions[0].observed_alive);
+    fixture
+        .history
+        .execute("DROP TABLE thread_turns", [])
+        .unwrap();
+    drop(writer);
+    std::fs::remove_file(lock_path).unwrap();
+    let mut rollout = SessionState::new(ID, HookSource::Codex, NOW + 1);
+    rollout.last_event = "agent_reasoning".into();
+    sessions = vec![rollout];
+    cache.merge(fixture.dir.path(), NOW + 2, &mut sessions);
+    assert_eq!(sessions[0].phase, Phase::Running);
+    assert_eq!(sessions[0].last_seen, NOW + 1);
+    assert!(
+        !sessions[0].observed_alive,
+        "unknown lock state cannot preserve liveness proof"
+    );
+}
+
+#[test]
 #[ignore = "reads the installed Codex history without changing any thread"]
 fn native_paginated_history_is_readable() {
     let home = std::env::var_os("CODEX_HOME")
@@ -296,4 +329,246 @@ fn native_paginated_history_is_readable() {
             .filter(|state| state.observed_alive)
             .count()
     );
+}
+
+#[test]
+fn a_reacquired_writer_cannot_revive_stale_in_progress_history() {
+    let fixture = Fixture::new();
+    let locks = fixture.dir.path().join("thread-writer-locks");
+    std::fs::create_dir(&locks).unwrap();
+    File::create(locks.join(".coordination.lock")).unwrap();
+    let writer = File::create(locks.join(format!("{ID}.lock"))).unwrap();
+    writer.lock().unwrap();
+    let mut cache = SessionCache::default();
+    assert!(cache.scan(fixture.dir.path(), NOW).unwrap()[0].observed_alive);
+    drop(writer);
+    assert_eq!(
+        cache.scan(fixture.dir.path(), NOW + 1).unwrap()[0].phase,
+        Phase::Completed
+    );
+    let writer = File::open(locks.join(format!("{ID}.lock"))).unwrap();
+    writer.lock().unwrap();
+    assert_eq!(
+        cache.scan(fixture.dir.path(), NOW + 2).unwrap()[0].phase,
+        Phase::Completed
+    );
+    assert!(
+        cache
+            .scan(fixture.dir.path(), NOW + 86400)
+            .unwrap()
+            .is_empty()
+    );
+    fixture
+        .history
+        .execute("UPDATE thread_turns SET turn_id = 'turn-2'", [])
+        .unwrap();
+    assert_eq!(
+        cache.scan(fixture.dir.path(), NOW + 3).unwrap()[0].phase,
+        Phase::Running
+    );
+}
+
+#[test]
+fn subsecond_rollout_state_is_not_overwritten_by_older_history() {
+    for completed in [true, false] {
+        let fixture = Fixture::new();
+        fixture
+            .history
+            .execute(
+                "INSERT INTO thread_items VALUES (?1, 'turn-1', ?2)",
+                (ID, (NOW * 1000 + 300) as i64),
+            )
+            .unwrap();
+        if !completed {
+            fixture
+                .history
+                .execute(
+                    "UPDATE thread_turns SET status = 'completed', completed_at = ?1",
+                    [NOW as i64],
+                )
+                .unwrap();
+        }
+        let mut rollout = SessionState::new(ID, HookSource::Codex, NOW - 10);
+        rollout.last_seen = NOW;
+        rollout.phase = if completed {
+            Phase::Completed
+        } else {
+            Phase::Running
+        };
+        rollout.codex_activity = Some(CodexActivity {
+            turn: Some(if completed { "turn-1" } else { "turn-2" }.into()),
+            at: u128::from(NOW) * 1_000_000_000 + 500_000_000,
+            started_at: None,
+        });
+        let mut sessions = vec![rollout.clone()];
+        Cache::default().merge(fixture.dir.path(), NOW + 1, &mut sessions);
+        assert_eq!(sessions[0].phase, rollout.phase);
+        assert_eq!(sessions[0].codex_activity, rollout.codex_activity);
+    }
+}
+
+#[test]
+fn second_precision_history_completion_wins_over_same_turn_rollout_activity() {
+    let fixture = Fixture::new();
+    fixture
+        .history
+        .execute(
+            "UPDATE thread_turns SET status = 'completed', completed_at = ?1",
+            [NOW as i64],
+        )
+        .unwrap();
+    let mut rollout = SessionState::new(ID, HookSource::Codex, NOW - 10);
+    rollout.last_seen = NOW;
+    rollout.codex_activity = Some(CodexActivity {
+        turn: Some("turn-1".into()),
+        at: u128::from(NOW) * 1_000_000_000 + 300_000_000,
+        started_at: None,
+    });
+    let mut sessions = vec![rollout];
+    Cache::default().merge(fixture.dir.path(), NOW + 1, &mut sessions);
+    assert_eq!(sessions[0].phase, Phase::Completed);
+    assert_eq!(sessions[0].last_event, "task_complete");
+}
+
+#[test]
+fn stopped_history_survives_a_database_outage_but_archiving_removes_its_cache() {
+    let fixture = Fixture::new();
+    let locks = fixture.dir.path().join("thread-writer-locks");
+    std::fs::create_dir(&locks).unwrap();
+    File::create(locks.join(".coordination.lock")).unwrap();
+    let writer = File::create(locks.join(format!("{ID}.lock"))).unwrap();
+    writer.lock().unwrap();
+    let mut cache = SessionCache::default();
+    cache.scan(fixture.dir.path(), NOW).unwrap();
+    drop(writer);
+    assert_eq!(
+        cache.scan(fixture.dir.path(), NOW + 1).unwrap()[0].phase,
+        Phase::Completed
+    );
+    fixture
+        .history
+        .execute("ALTER TABLE thread_turns RENAME TO unavailable", [])
+        .unwrap();
+    assert!(cache.scan(fixture.dir.path(), NOW + 32).unwrap().is_empty());
+    assert!(cache.stopped.contains_key(ID));
+    fixture
+        .history
+        .execute("ALTER TABLE unavailable RENAME TO thread_turns", [])
+        .unwrap();
+    let writer = File::open(locks.join(format!("{ID}.lock"))).unwrap();
+    writer.lock().unwrap();
+    assert_eq!(
+        cache.scan(fixture.dir.path(), NOW + 33).unwrap()[0].phase,
+        Phase::Completed
+    );
+    fixture
+        .state
+        .execute("UPDATE threads SET archived = 1", [])
+        .unwrap();
+    assert!(cache.scan(fixture.dir.path(), NOW + 34).unwrap().is_empty());
+    assert!(cache.stopped.is_empty());
+}
+
+#[test]
+fn leaving_the_history_query_window_is_not_evidence_of_deletion() {
+    let fixture = Fixture::new();
+    let locks = fixture.dir.path().join("thread-writer-locks");
+    std::fs::create_dir(&locks).unwrap();
+    File::create(locks.join(".coordination.lock")).unwrap();
+    let writer = File::create(locks.join(format!("{ID}.lock"))).unwrap();
+    let mut cache = SessionCache::default();
+    assert_eq!(
+        cache.scan(fixture.dir.path(), NOW).unwrap()[0].phase,
+        Phase::Completed
+    );
+    for index in 1..=256 {
+        let id = format!("02a08965-575f-7870-b001-{index:012x}");
+        fixture
+            .state
+            .execute(
+                "INSERT INTO threads VALUES (?1, '/synthetic', '', '', 0, 'cli', 'paginated', ?2)",
+                (&id, (NOW + index) as i64),
+            )
+            .unwrap();
+        fixture
+            .history
+            .execute(
+                "INSERT INTO thread_turns VALUES (?1, 'other', 1, 'completed', ?2, ?2)",
+                (&id, NOW as i64),
+            )
+            .unwrap();
+    }
+    assert!(
+        !cache
+            .scan(fixture.dir.path(), NOW + 1)
+            .unwrap()
+            .iter()
+            .any(|session| session.session_id == ID)
+    );
+    writer.lock().unwrap();
+    fixture
+        .state
+        .execute(
+            "UPDATE threads SET updated_at = ?1 WHERE id = ?2",
+            ((NOW + 300) as i64, ID),
+        )
+        .unwrap();
+    let sessions = cache.scan(fixture.dir.path(), NOW + 2).unwrap();
+    assert_eq!(
+        sessions
+            .iter()
+            .find(|session| session.session_id == ID)
+            .unwrap()
+            .phase,
+        Phase::Completed
+    );
+}
+
+#[test]
+fn an_exact_timestamp_tie_between_different_turns_uses_known_start_order() {
+    for new_rollout in [true, false] {
+        let fixture = Fixture::new();
+        if new_rollout {
+            fixture
+                .history
+                .execute(
+                    "UPDATE thread_turns SET status = 'completed', completed_at = ?1",
+                    [NOW as i64],
+                )
+                .unwrap();
+        } else {
+            fixture
+                .history
+                .execute(
+                    "UPDATE thread_turns SET turn_id = 'turn-2', started_at = ?1",
+                    [NOW as i64],
+                )
+                .unwrap();
+        }
+        let mut rollout = SessionState::new(ID, HookSource::Codex, NOW - 10);
+        rollout.last_seen = NOW;
+        rollout.phase = if new_rollout {
+            Phase::Running
+        } else {
+            Phase::Completed
+        };
+        rollout.last_event = if new_rollout {
+            "task_started"
+        } else {
+            "task_complete"
+        }
+        .into();
+        rollout.codex_activity = Some(CodexActivity {
+            turn: Some(if new_rollout { "turn-2" } else { "turn-1" }.into()),
+            at: u128::from(NOW) * 1_000_000_000,
+            started_at: Some(u128::from(if new_rollout { NOW } else { NOW - 10 }) * 1_000_000_000),
+        });
+        let mut sessions = vec![rollout];
+        Cache::default().merge(fixture.dir.path(), NOW + 1, &mut sessions);
+        assert_eq!(sessions[0].phase, Phase::Running);
+        assert_eq!(
+            sessions[0].codex_activity.as_ref().unwrap().turn.as_deref(),
+            Some("turn-2")
+        );
+    }
 }
