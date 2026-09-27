@@ -1,9 +1,12 @@
-//! Render the compact panel at common scales and exercise its full-details link.
+//! Render the panel and Settings at common scales and exercise real controls.
 
 use std::{cell::RefCell, rc::Rc};
 
 use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
 use slint::platform::{Platform, PointerEventButton, WindowAdapter, WindowEvent};
+use slint::private_unstable_api::re_exports::{
+    AccessibleRole, AccessibleStringProperty, ItemRc, WindowInner,
+};
 use slint::{ComponentHandle, ModelRc, Rgb8Pixel, VecModel};
 
 struct TestPlatform(Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>);
@@ -61,7 +64,90 @@ fn click(window: &MinimalSoftwareWindow, x: f32, y: f32) {
     });
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ControlBounds {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
+// Read the real accessible control's geometry, then exercise normal pointer
+// delivery. No accessibility action or controller callback substitutes a click.
+fn control_bounds(
+    window: &MinimalSoftwareWindow,
+    label: &str,
+    role: AccessibleRole,
+) -> ControlBounds {
+    let root = ItemRc::new_root(WindowInner::from_pub(window.window()).component());
+    let mut pending = vec![root];
+    let mut matches = Vec::new();
+    while let Some(item) = pending.pop() {
+        let mut child = item.first_child();
+        while let Some(next) = child {
+            child = next.next_sibling();
+            pending.push(next);
+        }
+        if item.is_accessible()
+            && item.accessible_role() == role
+            && item
+                .accessible_string_property(AccessibleStringProperty::Label)
+                .is_some_and(|value| value == label)
+            && item.is_visible()
+        {
+            let geometry = item.geometry();
+            let origin = item.map_to_window(geometry.origin);
+            matches.push(ControlBounds {
+                x: origin.x,
+                y: origin.y,
+                width: geometry.size.width,
+                height: geometry.size.height,
+            });
+        }
+    }
+    assert_eq!(matches.len(), 1, "one visible {role:?} named {label:?}");
+    let bounds = matches[0];
+    let size = window.size().to_logical(window.window().scale_factor());
+    assert!(
+        bounds.width > 0.0
+            && bounds.height > 0.0
+            && bounds.x >= 0.0
+            && bounds.y >= 0.0
+            && bounds.x + bounds.width <= size.width
+            && bounds.y + bounds.height <= size.height,
+        "{label:?} must fit inside the rendered window: {bounds:?} / {size:?}"
+    );
+    bounds
+}
+
+fn click_control(window: &MinimalSoftwareWindow, label: &str, role: AccessibleRole) {
+    let bounds = control_bounds(window, label, role);
+    click(
+        window,
+        bounds.x + bounds.width / 2.0,
+        bounds.y + bounds.height / 2.0,
+    );
+}
+
+fn checked_blue_pixels(
+    window: &MinimalSoftwareWindow,
+    pixels: &[Rgb8Pixel],
+    bounds: ControlBounds,
+) -> usize {
+    let scale = window.window().scale_factor();
+    let width = window.size().width as usize;
+    let left = (bounds.x * scale).ceil() as usize;
+    let right = ((bounds.x + bounds.width) * scale).floor() as usize;
+    let top = (bounds.y * scale).ceil() as usize;
+    let bottom = ((bounds.y + bounds.height) * scale).floor() as usize;
+    (top..bottom)
+        .flat_map(|y| (left..right).map(move |x| y * width + x))
+        .filter(|index| pixels[*index].b as i16 - pixels[*index].r as i16 > 60)
+        .count()
+}
+
 #[test]
+#[cfg(windows)]
 fn waiting_preview_renders_and_opens_full_details_at_common_scales() {
     let windows = Rc::new(RefCell::new(Vec::new()));
     slint::platform::set_platform(Box::new(TestPlatform(windows.clone()))).unwrap();
@@ -168,6 +254,12 @@ fn waiting_preview_renders_and_opens_full_details_at_common_scales() {
     card.set_form_text("hidden secret text".into());
     draw(&window, "codex-secret-question");
     card.hide().unwrap();
+}
+
+#[test]
+fn settings_controls_render_and_apply_at_common_scales() {
+    let windows = Rc::new(RefCell::new(Vec::new()));
+    slint::platform::set_platform(Box::new(TestPlatform(windows.clone()))).unwrap();
     codex_tui_editor_renders_and_applies_only_explicit_actions(&windows);
 }
 
@@ -181,6 +273,7 @@ fn codex_tui_editor_renders_and_applies_only_explicit_actions(
     let original = "# keep my config\n[features]\nhooks = true\n[tui]\ntheme = \"nord\"\n";
     std::fs::write(&path, original).unwrap();
     let editor = super::codex_tui::Editor::new_isolated(path.clone()).unwrap();
+    editor.window.set_macos_preferences(false);
     editor.window.set_windows_preferences(true);
     editor
         .window
@@ -212,7 +305,7 @@ fn codex_tui_editor_renders_and_applies_only_explicit_actions(
                 .window()
                 .set_size(slint::LogicalSize::new(width, height));
             draw(&window, &format!("codex-tui-default-{width}-{scale}"));
-            click(&window, 49.0, 339.0);
+            click_control(&window, "Model + reasoning", AccessibleRole::Checkbox);
             assert_eq!(
                 editor.window.get_selected_count(),
                 2,
@@ -234,6 +327,12 @@ fn codex_tui_editor_renders_and_applies_only_explicit_actions(
         .window
         .window()
         .set_size(slint::LogicalSize::new(820.0, 720.0));
+    let selected_pixels = draw(&window, "codex-tui-selected");
+    let checkbox = control_bounds(&window, "Model + reasoning", AccessibleRole::Checkbox);
+    assert!(
+        checked_blue_pixels(&window, &selected_pixels, checkbox) > 0,
+        "the checked control's actual bounds must contain its blue fill"
+    );
     editor
         .window
         .invoke_toggle("model-with-reasoning".into(), false);
@@ -241,13 +340,14 @@ fn codex_tui_editor_renders_and_applies_only_explicit_actions(
     assert!(!editor.window.get_preview().contains("gpt-6-astra"));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
     editor.window.invoke_toggle("git-branch".into(), true);
+    // Fluent animates the checked fill for 150 ms. Its first frame evaluates
+    // the changed state; the next mock-clock frame must show the final fill.
+    draw(&window, "codex-tui-draft-transition");
     let pixels = draw(&window, "codex-tui-draft");
-    let checked_blue = (334..344)
-        .flat_map(|y| (44..54).map(move |x| y * 820 + x))
-        .filter(|index| pixels[*index].b as i16 - pixels[*index].r as i16 > 60)
-        .count();
+    let checkbox = control_bounds(&window, "Model + reasoning", AccessibleRole::Checkbox);
     assert_eq!(
-        checked_blue, 0,
+        checked_blue_pixels(&window, &pixels, checkbox),
+        0,
         "the checkbox must repaint when the draft deselects it"
     );
     let draft = editor.window.get_preview();
@@ -260,7 +360,11 @@ fn codex_tui_editor_renders_and_applies_only_explicit_actions(
             .global::<super::ui::Palette>()
             .set_color_scheme(scheme);
         for page in [1, 2, 0] {
-            click(&window, [64.0, 162.0, 265.0][page as usize], 88.0);
+            click_control(
+                &window,
+                ["Codex CLI", "Taskbar & app", "Integrations"][page as usize],
+                AccessibleRole::Button,
+            );
             assert_eq!(editor.window.get_settings_page(), page);
             draw(&window, &format!("settings-page-{page}-{scheme:?}"));
             assert!(editor.window.get_dirty());
@@ -268,7 +372,7 @@ fn codex_tui_editor_renders_and_applies_only_explicit_actions(
             assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
         }
     }
-    click(&window, 743.0, 655.0);
+    click_control(&window, "Apply changes", AccessibleRole::Button);
     assert!(
         !editor.window.get_error(),
         "{}",
@@ -286,7 +390,7 @@ fn codex_tui_editor_renders_and_applies_only_explicit_actions(
     draw(&window, "codex-tui-hidden");
     editor.window.invoke_apply();
     assert_eq!(config::read(&path).unwrap().items, Some(vec![]));
-    click(&window, 618.0, 655.0);
+    click_control(&window, "Restore defaults", AccessibleRole::Button);
     assert_eq!(config::read(&path).unwrap().items, None);
     assert!(!editor.window.get_custom());
     assert_eq!(editor.window.get_selected_count(), 3);
@@ -352,6 +456,7 @@ fn codex_tui_editor_renders_and_applies_only_explicit_actions(
     editor.window.hide().unwrap();
 }
 
+#[cfg(windows)]
 fn flyout_pages_render_and_preserve_scroll(
     panel: &super::ui::FlyoutWindow,
     windows: &Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>,
@@ -539,6 +644,7 @@ fn flyout_pages_render_and_preserve_scroll(
     panel.hide().unwrap();
 }
 
+#[cfg(windows)]
 fn render_readme_flyout(
     source: &super::ui::FlyoutWindow,
     windows: &Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>,
