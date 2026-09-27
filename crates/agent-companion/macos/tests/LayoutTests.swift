@@ -14,6 +14,28 @@ func fixtureSnapshot() -> UnsafeMutablePointer<CChar>? {
 @_cdecl("agent_companion_release_json")
 func freeFixture(_ pointer: UnsafeMutablePointer<CChar>?) { free(pointer) }
 
+@_cdecl("agent_companion_usage_snapshot_json")
+func fixtureUsageSnapshot() -> UnsafeMutablePointer<CChar>? {
+    guard let path = ProcessInfo.processInfo.environment["AGENT_COMPANION_TEST_USAGE_SNAPSHOT"],
+          let text = try? String(contentsOfFile: path, encoding: .utf8) else {
+        return strdup("{\"intervalMinutes\":5,\"instances\":[]}")
+    }
+    return strdup(text)
+}
+@_cdecl("agent_companion_usage_event")
+func fixtureUsageEvent(_ json: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>? {
+    fixtureUsageSnapshot()
+}
+
+@_cdecl("agent_companion_update_panel_open")
+func fixtureUpdatePanelOpen() {}
+@_cdecl("agent_companion_update_snapshot_json")
+func fixtureUpdateSnapshot() -> UnsafeMutablePointer<CChar>? {
+    guard let path = ProcessInfo.processInfo.environment["AGENT_COMPANION_TEST_UPDATE_SNAPSHOT"],
+          let text = try? String(contentsOfFile: path, encoding: .utf8) else { return strdup("{}") }
+    return strdup(text)
+}
+
 // A single process-lifetime allocation matches the production bridge's borrowed
 // static storage. Cargo supplies its build version; standalone runs use a fixture.
 private let fixtureAppVersion = strdup(ProcessInfo.processInfo.environment["AGENT_COMPANION_TEST_VERSION"] ?? "0.0.0-test")!
@@ -25,14 +47,6 @@ struct LayoutTests {
     @MainActor static func main() throws {
         // Preserve the last completed scenario if a native assertion aborts CI.
         setbuf(stdout, nil)
-        if CommandLine.arguments.dropFirst().first == "app-server" {
-            try SubscriptionUsageTests.serveFixture()
-            return
-        }
-        if CommandLine.arguments.contains("--live-subscription") {
-            SubscriptionUsageTests.liveRead()
-            return
-        }
         if CommandLine.arguments.contains("--primary-discovery") {
             try PrimaryCodexAppTests.run()
             return
@@ -80,17 +94,25 @@ struct LayoutTests {
             ("--task-tabs", { try TaskTabTests.run(output: output) }),
             ("--page-switches", { try PageSwitchTests.run(output: output) }),
             ("--themes", { try ThemeTests.run(output: output) }),
-            ("--popup-header", { try PopupHeaderTests.run(output: output) })
+            ("--popup-header", { try PopupHeaderTests.run(output: output) }),
+            ("--app-updates", { try AppUpdateTests.run(output: output) })
         ]
         if let selected = suites.first(where: { CommandLine.arguments.contains($0.0) }) {
             try selected.1()
             return
         }
         let model = CompanionModel()
+        if ProcessInfo.processInfo.environment["AGENT_COMPANION_TEST_UPDATE_SNAPSHOT"] != nil {
+            let updates = RustAppUpdateBridge()
+            precondition(updates.snapshot() == FixtureAppUpdateBridge.available,
+                         "The native update bridge did not decode the Rust release snapshot")
+            print("Rust → Swift update serialization and allocation/release: passed")
+        }
         if ProcessInfo.processInfo.environment["AGENT_COMPANION_TEST_SNAPSHOT"] != nil {
             model.refresh()
             precondition(model.snapshot.error == nil && model.snapshot.activeCount == 7)
-            precondition(model.weeklyText == "55%" && model.snapshot.codexHome == "/synthetic/.codex")
+            let expectedQuota = ProcessInfo.processInfo.environment["AGENT_COMPANION_TEST_USAGE_SNAPSHOT"] == nil ? "—" : "55%"
+            precondition(model.weeklyText == expectedQuota && model.snapshot.codexHome == "/synthetic/.codex")
             print("Rust → Swift snapshot serialization and allocation/release: passed")
         }
         verifySnapshotRefresh()

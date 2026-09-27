@@ -96,12 +96,41 @@ struct CompanionPopupView: View {
         VStack(alignment: .leading, spacing: scaled(13)) {
             pageNavigation
             pageContent
+            if let release = model.appUpdate.release { updateNotice(version: release.version) }
             Divider().overlay(palette.separator)
             footer
         }
         .padding(.horizontal, scaled(16)).padding(.top, scaled(12)).padding(.bottom, scaled(16))
         .frame(maxWidth: .infinity)
         .frame(height: CompanionPopupLayout.height - CompanionPopupLayout.headerHeight)
+    }
+
+    private func updateNotice(version: String) -> some View {
+        HStack(spacing: scaled(8)) {
+            Image(systemName: "arrow.down.circle")
+                .accessibilityHidden(true)
+            Text("新版本 v\(version) 可用")
+                .lineLimit(1).minimumScaleFactor(0.85)
+                .accessibilityIdentifier("popup-update-version")
+            Spacer(minLength: scaled(4))
+            Button { model.viewRelease() } label: {
+                HStack(spacing: scaled(3)) {
+                    Text("查看更新")
+                    Image(systemName: "arrow.up.right").font(.system(size: fontSize(9)))
+                }
+                .fixedSize()
+            }
+            .buttonStyle(.plain)
+            .help("在 GitHub 查看此版本")
+            .accessibilityIdentifier("popup-update-link")
+        }
+        .font(.system(size: fontSize(11), weight: .medium))
+        .foregroundStyle(palette.accent)
+        .padding(.horizontal, scaled(10))
+        .frame(height: scaled(34))
+        .background(palette.selectedControl, in: RoundedRectangle(cornerRadius: scaled(8)))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("popup-update-notice")
     }
 
     private var pageContent: some View {
@@ -116,7 +145,7 @@ struct CompanionPopupView: View {
                 .accessibilityHidden(model.showingUsage)
             pageViewport {
                 SubscriptionUsageView(usage: model.subscriptionUsage, loading: model.usageLoading,
-                                      scale: CompanionPopupLayout.contentScale, refresh: { model.refreshUsage(force: true) },
+                                      scale: CompanionPopupLayout.contentScale, refresh: { model.refreshUsage() },
                                       instances: model.instances, selectedInstanceID: model.selectedInstanceID,
                                       selectInstance: model.selectInstance)
             }
@@ -285,11 +314,12 @@ struct CompanionPopupView: View {
                     }
                 }
             }.frame(height: scaled(3)).accessibilityHidden(true)
-            if let usage, !usage.expired, let resets = usage.resetsAt {
-                Text("Resets \(Date(timeIntervalSince1970: resets).formatted(date: .abbreviated, time: .shortened))")
+            if let resets = usage?.resetsAt {
+                Text(resets <= Date().timeIntervalSince1970 ? "Reset time passed · waiting for the next query" :
+                     "Resets \(Date(timeIntervalSince1970: resets).formatted(date: .abbreviated, time: .shortened))")
                     .font(.system(size: fontSize(10))).foregroundStyle(palette.secondaryText)
             } else {
-                Text(usage?.expired == true ? "Waiting for a new \(instance.label) usage reading after reset." : "Usage appears after \(instance.label) records a rate limit reading.")
+                Text("Usage appears after a successful \(instance.label) quota query.")
                     .font(.system(size: fontSize(10))).foregroundStyle(palette.secondaryText)
             }
         }

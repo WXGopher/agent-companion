@@ -18,6 +18,7 @@ pub mod server;
 pub mod state;
 pub mod transcript;
 pub mod usage;
+pub mod usage_service;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

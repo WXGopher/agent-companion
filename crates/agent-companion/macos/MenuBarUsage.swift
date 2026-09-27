@@ -1,18 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import AppKit
 
-/// Keep known readings visible while they refresh, with an explicit stale mark.
+/// Keep the last successful reading visible. An asterisk marks a failed query.
 /// Rendering never starts an account request or substitutes another instance.
 struct MenuBarUsage: Equatable {
     struct Reading {
-        let usage: WeeklyUsage
+        let usage: WeeklyUsage?
         var stale = false
+        var readAt: Date?
+        var error: String?
     }
     struct Row: Equatable {
         let id: String
         let label: String
         let remaining: Int?
         var stale = false
+        var readAt: Date?
+        var error: String?
+        var resetPassed = false
         let activity: TaskActivity
         let hasTasks: Bool
         var text: String { remaining.map { "\($0)%\(stale ? "*" : "")" } ?? "—" }
@@ -34,15 +39,15 @@ struct MenuBarUsage: Equatable {
                 let value = reading(instance)
                 let tasks = tasks.filter { $0.sourceID == instance.id }
                 return Row(id: instance.id, label: instance.label,
-                           remaining: value.map { 100 - min(100, max(0, $0.usage.usedPercent)) },
-                           stale: value.map { $0.stale || Self.remaining($0.usage, at: now) == nil } ?? false,
+                           remaining: Self.remaining(value?.usage, at: now),
+                           stale: value?.stale ?? false, readAt: value?.readAt, error: value?.error,
+                           resetPassed: value?.usage?.resetsAt.map { $0 <= now.timeIntervalSince1970 } ?? false,
                            activity: TaskActivity.aggregate(tasks), hasTasks: !tasks.isEmpty)
             }
     }
 
     static func remaining(_ usage: WeeklyUsage?, at now: Date) -> Int? {
-        guard let usage, !usage.expired,
-              usage.resetsAt.map({ $0 > now.timeIntervalSince1970 }) ?? true else { return nil }
+        guard let usage else { return nil }
         return 100 - min(100, max(0, usage.usedPercent))
     }
 
@@ -51,10 +56,14 @@ struct MenuBarUsage: Equatable {
         return rows.map { row in
             let quota: String
             if let remaining = row.remaining {
-                quota = row.stale ? "Last known weekly quota remaining: \(remaining)%; awaiting update"
+                quota = row.stale ? "Last successful weekly quota remaining: \(remaining)%*"
                     : "\(row.text) weekly quota remaining"
             } else { quota = "Weekly quota unavailable" }
-            return "\(row.label): \(row.statusDescription). \(quota)"
+            let success = row.readAt.map { "; last successful query \($0.formatted(date: .abbreviated, time: .shortened))" }
+                ?? "; no successful query yet"
+            let failure = row.error.map { "; latest query failed: \($0)" } ?? ""
+            let reset = row.resetPassed ? "; reset time passed, waiting for the next query" : ""
+            return "\(row.label): \(row.statusDescription). \(quota)\(success)\(failure)\(reset)"
         }.joined(separator: "; ")
     }
 
@@ -98,20 +107,6 @@ struct MenuBarUsage: Equatable {
         }
         dots.update(self)
         return dots
-    }
-}
-
-private extension TaskActivity {
-    /// Small menu-bar marks need a stronger fill than the popup's larger icons.
-    var menuBarColor: NSColor {
-        let rgb: (CGFloat, CGFloat, CGFloat)
-        switch self {
-        case .running: rgb = (0x16, 0x8b, 0xff)
-        case .completed: rgb = (0x25, 0xd7, 0x7a)
-        case .waiting, .failed: rgb = (0xff, 0xc5, 0x2f)
-        case .idle: rgb = (0xa2, 0xad, 0xbd)
-        }
-        return NSColor(srgbRed: rgb.0 / 255, green: rgb.1 / 255, blue: rgb.2 / 255, alpha: 1)
     }
 }
 
@@ -194,14 +189,16 @@ final class MenuBarActivityView: NSView {
         let origin = NSPoint(x: (bounds.width - image.size.width) / 2,
                              y: (bounds.height - image.size.height) / 2)
         let diameter: CGFloat = value.rows.count == 1 ? 8 : 7
-        // Keep the blue fill visible throughout the two-second breathing cycle.
-        let pulse = isAnimating ? 0.9 + 0.1 * cos(clock() * .pi) : 1
+        let time = clock()
         for (index, row) in value.rows.enumerated() {
             let centerY = origin.y + image.size.height * (1 - (CGFloat(index) + 0.5) / CGFloat(value.rows.count))
             let circle = NSBezierPath(ovalIn: NSRect(x: origin.x + 5 - diameter / 2,
                                                     y: centerY - diameter / 2,
                                                     width: diameter, height: diameter))
-            row.activity.menuBarColor.withAlphaComponent(row.activity == .running ? pulse : 1).setFill()
+            let bright = row.activity.indicatorColor
+            let fill = isAnimating && row.activity == .running
+                ? TaskActivity.breathingColor(bright, at: time) : bright
+            fill.setFill()
             circle.fill()
             // Dark inner and light outer edges separate the fill from bright,
             // dark and colored wallpapers, including the pressed background.

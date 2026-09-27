@@ -21,16 +21,21 @@ harness = false
 [dependencies]
 agent-companion-core = { workspace = true, features = ["config-edit"] }
 clap.workspace = true
+semver = "1"
 serde.workspace = true
 serde_json.workspace = true
 slint.workspace = true
+tokio.workspace = true
+ureq = { version = "3.4", default-features = false, features = ["rustls"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 sha2 = "0.10"
 toml_edit = "0.25.13"
 tempfile.workspace = true
 agent-companion-core = { workspace = true, features = ["server"] }
-tokio.workspace = true
 futures-util = { version = "0.3", features = ["sink"] }
 tokio-tungstenite = "0.28"
 tray-icon.workspace = true

@@ -92,7 +92,7 @@ final class CompanionModel: ObservableObject {
     @Published var isPresented = false {
         didSet {
             if isPresented != oldValue { presentationRevision &+= 1 }
-            if !isPresented { stopUsage() }
+            if !isPresented { historyDemand = nil }
         }
     }
     @Published var showingCompleted = false
@@ -105,6 +105,7 @@ final class CompanionModel: ObservableObject {
     @Published var jumpingID: String?
     @Published var dashboardError: String?
     @Published var animatesTaskActivity = false
+    @Published private(set) var appUpdate = AppUpdateSnapshot()
     var present: (() -> Void)?
     var dismiss: (() -> Void)?
     var quit: (() -> Void)?
@@ -115,20 +116,27 @@ final class CompanionModel: ObservableObject {
     private var openingSettings = false
     private var presentationRevision: UInt64 = 0
     private let openTask: (CodexTask, CodexInstance, @escaping (String?) -> Void) -> Void
-    private let subscriptionMonitor: SubscriptionMonitor
     private let clock: () -> Date
-    private var usageSource: SubscriptionSource?
-    weak var usageCoordinator: SubscriptionUsageCoordinator?
+    private let updateBridge: AppUpdateBridging
+    private let openReleaseURL: (URL) -> Void
+    var usageCoordinator: SubscriptionUsageCoordinator
+    private struct HistoryDemand {
+        var source: SubscriptionSource?
+        var pending = true
+    }
+    private var historyDemand: HistoryDemand?
 
     init(openTask: @escaping (CodexTask, CodexInstance, @escaping (String?) -> Void) -> Void = TerminalJump.open,
-         usageReader: SubscriptionReading = CodexSubscriptionReader(), clock: @escaping () -> Date = Date.init) {
+         usageBridge: SubscriptionUsageBridging = RustSubscriptionUsageBridge(),
+         updateBridge: AppUpdateBridging = RustAppUpdateBridge(),
+         openReleaseURL: @escaping (URL) -> Void = { _ = NSWorkspace.shared.open($0) },
+         clock: @escaping () -> Date = Date.init) {
         self.openTask = openTask
         self.clock = clock
-        subscriptionMonitor = SubscriptionMonitor(reader: usageReader, clock: clock)
-        subscriptionMonitor.onChange = { [weak self] value, loading in
-            if let value { self?.subscriptionUsage = value }
-            self?.usageLoading = loading
-        }
+        self.updateBridge = updateBridge
+        self.openReleaseURL = openReleaseURL
+        usageCoordinator = SubscriptionUsageCoordinator(bridge: usageBridge)
+        usageCoordinator.onChange = { [weak self] in self?.receiveUsageSnapshot() }
     }
 
     var instances: [CodexInstance] {
@@ -142,9 +150,8 @@ final class CompanionModel: ObservableObject {
     func selectInstance(_ id: String) {
         guard instances.contains(where: { $0.id == id }), selectedInstanceID != id else { return }
         selectedInstanceID = id
-        subscriptionUsage = SubscriptionUsage()
-        usageLoading = false
-        refreshUsage()
+        if showingUsage { historyDemand?.pending = true }
+        receiveUsageSnapshot()
     }
     var enabledTasks: [CodexTask] {
         let enabled = Set(instances.map(\.id))
@@ -156,40 +163,20 @@ final class CompanionModel: ObservableObject {
     func countText(_ count: Int) -> String { count > 99 ? "99+" : "\(count)" }
     var weeklyUsage: WeeklyUsage? { weeklyUsage(for: selectedInstance) }
     func weeklyUsage(for instance: CodexInstance) -> WeeklyUsage? {
-        cachedWeeklyUsage(for: instance)?.usage ?? instance.weekly
+        cachedWeeklyUsage(for: instance)?.usage
     }
     func cachedWeeklyUsage(for instance: CodexInstance) -> (usage: WeeklyUsage, readAt: Date)? {
-        if let usageCoordinator {
-            guard let cached = usageCoordinator.cachedWeeklyUsage(for: instance.usageSource),
-                  clock().timeIntervalSince(cached.readAt) >= 0,
-                  clock().timeIntervalSince(cached.readAt) < SubscriptionMonitor.refreshInterval,
-                  MenuBarUsage.remaining(cached.usage, at: clock()) != nil else { return nil }
-            return cached
-        }
-        // Each card uses only its own account cache or local snapshot.
-        let hasCurrentReading = usageSource == instance.usageSource || (usageSource == nil && subscriptionUsage.readAt != nil)
-        let usage = instance.id == selectedInstance.id && hasCurrentReading
-            ? subscriptionUsage : subscriptionMonitor.cachedUsage(for: instance.usageSource)
-        if let readAt = usage?.readAt, clock().timeIntervalSince(readAt) >= 0,
-           clock().timeIntervalSince(readAt) < SubscriptionMonitor.refreshInterval,
-           let limits = usage?.limits,
-           let bucket = limits.buckets.first(where: { $0.id == "codex" }),
-           let window = [bucket.value.primary, bucket.value.secondary].compactMap({ $0 })
-               .first(where: { $0.windowDurationMins == 10080 }) {
-            return (WeeklyUsage(usedPercent: window.usedPercent, resetsAt: window.resetsAt,
-                                expired: window.remaining(at: clock()) == nil), readAt)
-        }
-        return nil
+        usageCoordinator.cachedWeeklyUsage(for: instance.usageSource)
     }
     var weeklyRemainingPercent: Int? { weeklyRemainingPercent(for: selectedInstance) }
     func weeklyRemainingPercent(for instance: CodexInstance) -> Int? {
-        guard let usage = weeklyUsage(for: instance), !usage.expired else { return nil }
-        return 100 - min(100, max(0, usage.usedPercent))
+        MenuBarUsage.remaining(weeklyUsage(for: instance), at: clock())
     }
     var weeklyText: String { weeklyText(for: selectedInstance) }
     func weeklyText(for instance: CodexInstance) -> String {
         guard let remaining = weeklyRemainingPercent(for: instance) else { return "—" }
-        return "\(remaining)%"
+        let failed = usageCoordinator.state(for: instance.usageSource)?.limits.error != nil
+        return "\(remaining)%\(failed ? "*" : "")"
     }
     var visibleTasks: [CodexTask] {
         enabledTasks.filter { showingCompleted ? !$0.isActive : $0.isActive }
@@ -206,70 +193,99 @@ final class CompanionModel: ObservableObject {
     }
     func stop() {
         timer?.invalidate(); timer = nil
-        stopUsage()
     }
 
     func showUsage() {
+        let entering = !showingUsage
         present?()
         showingUsage = true
-        refreshUsage()
+        if entering || historyDemand == nil { historyDemand = HistoryDemand() }
+        receiveUsageSnapshot()
     }
 
     func showUsage(for instanceID: String) {
         guard instances.contains(where: { $0.id == instanceID }) else { return }
+        let changed = selectedInstanceID != instanceID
+        let alreadyShowing = showingUsage
         selectedInstanceID = instanceID
+        if alreadyShowing && changed { historyDemand?.pending = true }
         showUsage()
     }
 
     func showTasks() {
         showingUsage = false
-        stopUsage()
+        historyDemand = nil
     }
 
-    private func stopUsage() {
-        if let usageCoordinator { usageCoordinator.release(owner: self) }
-        else { subscriptionMonitor.stop() }
-        usageLoading = false
+    func receiveUsageSnapshot() {
+        let state = usageCoordinator.state(for: selectedInstance.usageSource)
+        subscriptionUsage = state?.usage ?? SubscriptionUsage()
+        usageLoading = state?.limits.loading ?? false
+        fulfillHistoryDemand(state)
     }
 
-    func receiveUsage(source: SubscriptionSource, value: SubscriptionUsage?, loading: Bool) {
-        guard source == usageSource else { return }
-        if let value { subscriptionUsage = value }
-        usageLoading = isPresented && showingUsage && loading
-    }
-
-    func refreshUsage(force: Bool = false) {
-        let source = selectedInstance.usageSource
-        if usageSource != source {
-            usageSource = source
-            subscriptionUsage = SubscriptionUsage()
-            usageLoading = false
+    private func fulfillHistoryDemand(_ state: SubscriptionInstanceSnapshot?) {
+        guard isPresented && showingUsage, var demand = historyDemand else { return }
+        guard let state else {
+            // Keep the page-entry/source-change intent until the shared service
+            // has registered that exact source. This does not check cache age.
+            historyDemand?.pending = true
+            return
         }
-        if let usageCoordinator { usageCoordinator.refresh(source: source, owner: self, force: force) }
-        else { subscriptionMonitor.refresh(source: source, force: force) }
+        guard demand.pending || demand.source != state.source else { return }
+        demand.pending = false
+        demand.source = state.source
+        historyDemand = demand
+        // Store the fulfilled source first: the returned snapshot may notify
+        // observers synchronously, including this same model.
+        usageCoordinator.loadHistory(instanceID: state.source.instanceID)
+    }
+
+    func refreshUsage() {
+        usageCoordinator.refreshQuota(instanceID: selectedInstance.id)
+        receiveUsageSnapshot()
+    }
+
+    func refreshUsageSnapshot() {
+        usageCoordinator.refreshSnapshot()
+        receiveUsageSnapshot()
+    }
+
+    func panelOpenedForUpdates() {
+        updateBridge.panelOpened()
+        refreshUpdateSnapshot()
+    }
+
+    func refreshUpdateSnapshot() {
+        guard isPresented, let value = updateBridge.snapshot(), value != appUpdate else { return }
+        appUpdate = value
+    }
+
+    func viewRelease() {
+        guard let release = appUpdate.release else { return }
+        openReleaseURL(release.url)
     }
 
     func refresh() {
-        guard let pointer = readSnapshot() else { return }
-        defer { releaseSnapshot(pointer) }
-        do {
-            snapshot = try JSONDecoder().decode(CodexSnapshot.self, from: Data(String(cString: pointer).utf8))
-            dashboardError = nil
-        } catch {
-            dashboardError = "Could not read the local Codex dashboard. Try reopening Agent Companion."
-            snapshot.loading = false
+        if let pointer = readSnapshot() {
+            defer { releaseSnapshot(pointer) }
+            do {
+                snapshot = try JSONDecoder().decode(CodexSnapshot.self, from: Data(String(cString: pointer).utf8))
+                dashboardError = nil
+            } catch {
+                dashboardError = "Could not read the local Codex dashboard. Try reopening Agent Companion."
+                snapshot.loading = false
+            }
         }
-        subscriptionMonitor.retainSources(Set(instances.map(\.usageSource)))
         if !instances.contains(where: { $0.id == selectedInstanceID }) {
             selectedInstanceID = instances[0].id
-            subscriptionUsage = SubscriptionUsage()
         }
-        if let usageSource, usageSource != selectedInstance.usageSource {
-            self.usageSource = nil
-            subscriptionUsage = SubscriptionUsage()
-            usageLoading = false
-        }
-        if isPresented && showingUsage { refreshUsage() }
+        // Polling never refreshes quota or ages a history cache. It can fulfill
+        // a pending page-entry/source-change intent once registration arrives.
+        refreshUsageSnapshot()
+        // Poll only the already published release state while the panel is open.
+        // Eligibility and network requests belong to the explicit opening event.
+        refreshUpdateSnapshot()
     }
 
     func openSettings() {

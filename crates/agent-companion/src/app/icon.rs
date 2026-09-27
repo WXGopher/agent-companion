@@ -31,9 +31,9 @@ type Rgba = [u8; 4];
 /// Resting: a dark disc that disappears into either taskbar theme.
 const IDLE_FILL: Rgba = [0x24, 0x24, 0x30, 0xff];
 const IDLE_TEXT: Rgba = [0xea, 0xea, 0xf2, 0xff];
-/// Waiting: Claude's orange, brightened and dimmed by the caller's pulse so the
-/// icon breathes in step with the card.
-const WAIT_FILL_LOW: Rgba = [0xc9, 0x66, 0x33, 0xff];
+/// Waiting: opaque gray to bright orange, matching the colour-to-gray breath
+/// used by the other task indicators rather than fading into the taskbar.
+const WAIT_FILL_LOW: Rgba = [0x92, 0x97, 0x9f, 0xff];
 const WAIT_FILL_HIGH: Rgba = [0xf5, 0x9b, 0x60, 0xff];
 /// Dark text on the orange disc: white on that fill is unreadable at 16 px.
 const WAIT_TEXT: Rgba = [0x1c, 0x11, 0x06, 0xff];
@@ -227,7 +227,18 @@ mod tests {
     fn waiting_turns_the_disc_orange() {
         let size = 16;
         let idle = pixel(&render(state(2, 0), size), size, 3, 8);
-        let waiting = pixel(&render(state(2, 1), size), size, 3, 8);
+        let waiting = pixel(
+            &render(
+                IconState {
+                    pulse: 1.0,
+                    ..state(2, 1)
+                },
+                size,
+            ),
+            size,
+            3,
+            8,
+        );
         assert!(
             waiting[0] > idle[0] + 60,
             "the waiting disc must be visibly warmer: {waiting:?} vs {idle:?}"
@@ -235,7 +246,7 @@ mod tests {
     }
 
     #[test]
-    fn the_pulse_moves_the_fill() {
+    fn the_pulse_moves_between_opaque_gray_and_bright_orange() {
         let size = 16;
         let low = pixel(
             &render(
@@ -263,7 +274,34 @@ mod tests {
             3,
             8,
         );
-        assert!(high[0] > low[0], "the pulse must brighten the disc");
+        assert_eq!(low, [0x92, 0x97, 0x9f, 0xff]);
+        assert_eq!(high, [0xf5, 0x9b, 0x60, 0xff]);
+        let middle = pixel(
+            &render(
+                IconState {
+                    pulse: 0.5,
+                    ..state(1, 1)
+                },
+                size,
+            ),
+            size,
+            3,
+            8,
+        );
+        assert!(middle[0] > low[0] && middle[0] < high[0]);
+        assert!(middle[2] < low[2] && middle[2] > high[2]);
+        assert_eq!(middle[3], 0xff, "every phase remains opaque");
+        assert_eq!(
+            render(state(1, 0), size),
+            render(
+                IconState {
+                    pulse: 1.0,
+                    ..state(1, 0)
+                },
+                size,
+            ),
+            "non-waiting icons do not breathe"
+        );
     }
 
     #[test]

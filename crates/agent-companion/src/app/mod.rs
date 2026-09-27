@@ -87,7 +87,7 @@ const TRAY_POLL: Duration = Duration::from_millis(100);
 /// How often a new window is looked for so it can be taken out of the taskbar.
 const ADOPT_POLL: Duration = Duration::from_millis(150);
 /// One full breath of the waiting animation.
-const PULSE_PERIOD_MS: u128 = 1_400;
+const PULSE_PERIOD_MS: u128 = 2_000;
 
 /// Every agent the panel has a row for, in the order the rows appear.
 ///
@@ -146,6 +146,7 @@ pub fn run() -> io::Result<()> {
     // tray-only Agent Companion has no windows open at all.
     let result = slint::run_event_loop_until_quit().map_err(io::Error::other);
 
+    app.subscription.borrow_mut().stop();
     app.remember_display();
     app.display.borrow_mut().save(true);
     APP.with(|slot| slot.borrow_mut().take());
@@ -202,9 +203,10 @@ struct App {
     scanning: Cell<bool>,
 
     usage: RefCell<UsageSnapshot>,
-    subscription: RefCell<subscription::Monitor>,
+    subscription: RefCell<crate::usage_service::UsageService>,
+    updates: crate::update_service::UpdateService,
+    usage_navigation: RefCell<subscription::Navigation>,
     secondary: RefCell<Option<instances::Secondary>>,
-    selected_subscription: Cell<bool>,
     launching_dodex: Cell<bool>,
     display: RefCell<display::DisplayState>,
     /// Claude's usage arrives over the network, so it comes back on a channel
@@ -263,9 +265,10 @@ impl App {
             transcripts: Arc::new(Mutex::new(transcript::TranscriptCache::new())),
             scanning: Cell::new(false),
             usage: RefCell::new(display.usage()),
-            subscription: RefCell::new(subscription::Monitor::default()),
+            subscription: RefCell::new(crate::usage_service::UsageService::new()),
+            updates: crate::update_service::UpdateService::new(),
+            usage_navigation: RefCell::new(subscription::Navigation::default()),
             secondary: RefCell::new(None),
-            selected_subscription: Cell::new(false),
             launching_dodex: Cell::new(false),
             display: RefCell::new(display),
             limits_tx,
@@ -296,6 +299,8 @@ impl App {
                 self.bar.show();
             }
         }
+        self.poll_secondary();
+        self.sync_subscription_sources();
         self.refresh();
         self.migrate_login_launch();
 
@@ -737,22 +742,24 @@ impl App {
                 if secondary && app.secondary.borrow().is_none() {
                     return;
                 }
-                app.selected_subscription.set(secondary);
+                let entered = app.usage_navigation.borrow_mut().select_instance(secondary);
                 app.flyout.set_secondary_selected(secondary);
                 app.flyout.set_usage_page(true);
                 app.flyout.set_usage_scroll_y(0.0);
-                app.refresh_subscription(false);
+                if entered {
+                    app.load_subscription_history();
+                }
+                app.render_subscription();
             }
         });
         let app = Rc::downgrade(self);
         self.flyout.on_select_page(move |usage| {
             if let Some(app) = app.upgrade() {
-                if usage {
-                    app.refresh_subscription(false);
-                } else {
-                    app.stop_subscriptions();
-                    app.render_subscription();
+                let entered = app.usage_navigation.borrow_mut().select_page(usage);
+                if entered {
+                    app.load_subscription_history();
                 }
+                app.render_subscription();
             }
         });
         let app = Rc::downgrade(self);
@@ -764,13 +771,19 @@ impl App {
         let app = Rc::downgrade(self);
         self.flyout.on_refresh_usage(move || {
             if let Some(app) = app.upgrade() {
-                app.refresh_subscription(true);
+                app.refresh_subscription();
             }
         });
         let app = Rc::downgrade(self);
         self.flyout.on_settings(move || {
             if let Some(app) = app.upgrade() {
                 app.open_settings();
+            }
+        });
+        let app = Rc::downgrade(self);
+        self.flyout.on_view_update(move || {
+            if let Some(app) = app.upgrade() {
+                app.open_release();
             }
         });
         let app = Rc::downgrade(self);
@@ -1080,6 +1093,7 @@ impl App {
         let mut chips = taskbar::chips(&self.usage.borrow(), &lines[..1], good_at, warn_at);
         self.append_instance_chips(&mut chips, lines[1], good_at, warn_at);
         self.bar.set_chips(&chips, along);
+        self.bar.set_usage_tooltip(&self.instance_quota_tooltip());
     }
 
     fn agent_tasks(&self, source: HookSource) -> AgentTasks {
@@ -1167,12 +1181,11 @@ impl App {
     fn housekeeping(self: &Rc<Self>) {
         let now = now_unix_secs();
         self.poll_secondary();
-        self.subscription.borrow_mut().poll();
-        if let Some(secondary) = self.secondary.borrow_mut().as_mut() {
-            secondary.subscription.poll();
-        }
-        if self.flyout_open.get() && !self.flyout_peek.get() && self.flyout.get_usage_page() {
-            self.refresh_subscription(false);
+        self.sync_subscription_sources();
+        self.subscription.borrow_mut().tick(now);
+        self.sync_visible_history_source();
+        if self.flyout_open.get() && !self.flyout_peek.get() {
+            self.render_subscription();
         }
         self.refresh_bar();
         if self.flyout_open.get() {
@@ -1228,15 +1241,6 @@ impl App {
 
     fn poll_codex_sessions(&self) -> bool {
         let update = self.codex_sessions.poll(&mut self.table.borrow_mut());
-        let mut usage_changed = false;
-        if let Some(codex) = update.usage {
-            let mut usage = self.usage.borrow_mut();
-            usage_changed = usage.codex.as_ref() != Some(&codex);
-            usage.codex = Some(codex);
-            usage.refreshed_at = Some(now_unix_secs());
-            // Fresh quota is not session activity, including at startup.
-            self.display.borrow_mut().remember_usage(usage.clone());
-        }
         if update.changed {
             self.notify_completions(now_unix_secs());
         }
@@ -1257,9 +1261,7 @@ impl App {
                 .borrow_mut()
                 .activate(HookSource::Codex, now, now);
         }
-        usage_changed
-            || (self.display.borrow().is_live()
-                && (update.changed || update.new_activity || update.alive))
+        self.display.borrow().is_live() && (update.changed || update.new_activity || update.alive)
     }
 
     fn notify_completions(&self, now: u64) {
@@ -1281,8 +1283,8 @@ impl App {
         }
     }
 
-    /// Claude network requests require its own activity. Codex's local logs
-    /// are polled independently by the session worker, including while idle.
+    /// Claude network requests require its own activity. Codex account queries
+    /// are scheduled by the shared service, independently of task activity.
     fn refresh_usage_after_activity(&self, source: HookSource, now: u64) {
         if !self.display.borrow().visible(source) {
             return;
@@ -1372,9 +1374,9 @@ impl App {
 
     /// 0 → 1 → 0 over [`PULSE_PERIOD_MS`].
     fn pulse(&self) -> f32 {
-        let phase = (self.started.elapsed().as_millis() % PULSE_PERIOD_MS) as f32
-            / (PULSE_PERIOD_MS / 2) as f32;
-        if phase <= 1.0 { phase } else { 2.0 - phase }
+        let phase =
+            (self.started.elapsed().as_millis() % PULSE_PERIOD_MS) as f32 / PULSE_PERIOD_MS as f32;
+        (1.0 - (phase * std::f32::consts::TAU).cos()) / 2.0
     }
 
     // ----------------------------------------------------------------- tray
@@ -1532,6 +1534,8 @@ impl App {
     }
 
     fn show_flyout(self: &Rc<Self>, anchor: Rect, from: Anchor, peek: bool) {
+        let opened =
+            subscription::opens_full_panel(self.flyout_open.get(), self.flyout_peek.get(), peek);
         self.flyout_peek.set(peek);
         self.flyout.set_compact(peek);
         if let Some(handle) = self.flyout_handle.get()
@@ -1556,8 +1560,15 @@ impl App {
             Ok(()) => {
                 self.flyout.window().request_redraw();
                 self.flyout_open.set(true);
-                if !peek && self.flyout.get_usage_page() {
-                    self.refresh_subscription(false);
+                if opened {
+                    self.updates.panel_open(now_unix_secs());
+                    self.poll_secondary();
+                    self.sync_subscription_sources();
+                    self.subscription.borrow_mut().panel_open(now_unix_secs());
+                    if self.flyout.get_usage_page() {
+                        self.load_subscription_history();
+                    }
+                    self.render_subscription();
                 }
                 self.flyout_anchor.set(Some((anchor, from)));
                 self.adopt_flyout();
@@ -1581,7 +1592,6 @@ impl App {
     }
 
     fn close_flyout(&self) {
-        self.stop_subscriptions();
         self.hover.borrow_mut().reset();
         self.flyout_peek.set(false);
         self.flyout_anchor.set(None);
@@ -1649,38 +1659,84 @@ impl App {
         });
     }
 
-    fn refresh_subscription(&self, force: bool) {
-        if self.selected_subscription.get() {
-            if let Some(secondary) = self.secondary.borrow_mut().as_mut() {
-                secondary
-                    .subscription
-                    .refresh(secondary.instance.codex_home.clone(), force);
-            }
-            self.render_subscription();
-            return;
+    fn sync_subscription_sources(&self) {
+        use crate::usage_service::Source;
+        let mut sources = Vec::new();
+        if let Ok(home) = crate::windows_deployment::primary_home() {
+            sources.push(Source {
+                instance_id: "codex".into(),
+                database_path: agent_companion_core::dashboard::database_home(&home),
+                codex_home: home,
+                executable_path: None,
+            });
         }
-        match crate::windows_deployment::primary_home() {
-            Ok(home) => self.subscription.borrow_mut().refresh(home, force),
-            Err(_) => {
-                self.subscription.borrow_mut().snapshot.error =
-                    "Could not locate the Codex configuration directory.".into()
-            }
+        if let Some(secondary) = self.secondary.borrow().as_ref() {
+            sources.push(Source {
+                instance_id: "dodex".into(),
+                codex_home: secondary.instance.codex_home.clone(),
+                database_path: secondary.instance.database_dir.clone(),
+                executable_path: Some(secondary.instance.cli_path.clone()),
+            });
         }
+        self.subscription
+            .borrow_mut()
+            .sync_sources(sources, now_unix_secs());
+    }
+
+    fn selected_subscription_id(&self) -> &'static str {
+        if self.usage_navigation.borrow().secondary() {
+            "dodex"
+        } else {
+            "codex"
+        }
+    }
+
+    fn subscription_snapshot(&self, id: &str) -> subscription::Snapshot {
+        subscription::Snapshot::from_shared(self.subscription.borrow().snapshot(id))
+    }
+
+    fn refresh_subscription(&self) {
+        self.subscription
+            .borrow_mut()
+            .refresh(self.selected_subscription_id(), now_unix_secs());
         self.render_subscription();
     }
 
+    fn load_subscription_history(&self) {
+        let id = self.selected_subscription_id();
+        let source = self
+            .subscription
+            .borrow()
+            .snapshot(id)
+            .map(|snapshot| snapshot.source);
+        self.usage_navigation.borrow_mut().history_entered(source);
+        self.subscription
+            .borrow_mut()
+            .load_history(id, now_unix_secs());
+    }
+
+    fn sync_visible_history_source(&self) {
+        let visible =
+            self.flyout_open.get() && !self.flyout_peek.get() && self.flyout.get_usage_page();
+        if !visible {
+            return;
+        }
+        let source = self
+            .subscription
+            .borrow()
+            .snapshot(self.selected_subscription_id())
+            .map(|snapshot| snapshot.source);
+        let changed = self
+            .usage_navigation
+            .borrow_mut()
+            .visible_history_source_changed(source, visible);
+        if changed {
+            self.load_subscription_history();
+        }
+    }
+
     fn render_subscription(&self) {
-        let primary = self.subscription.borrow();
-        let secondary = self.secondary.borrow();
-        let monitor = if self.selected_subscription.get() {
-            secondary
-                .as_ref()
-                .map(|s| &s.subscription)
-                .unwrap_or(&primary)
-        } else {
-            &primary
-        };
-        let snapshot = &monitor.snapshot;
+        let snapshot = self.subscription_snapshot(self.selected_subscription_id());
         let summary = snapshot.tokens.as_ref().map(|tokens| &tokens.summary);
         let total = summary.and_then(|summary| summary.lifetime_tokens);
         let peak = summary.and_then(|summary| summary.peak_daily_tokens);
@@ -1693,31 +1749,21 @@ impl App {
         let now = now_unix_secs();
         let offset = win::local_offset_secs();
         self.flyout.set_subscription(ui::SubscriptionView {
-            loading: monitor.loading(),
+            loading: snapshot.loading,
+            history_loading: snapshot.history_loading,
             updated: snapshot
                 .read_at
-                .map(|at| format!("Updated {}", crate::usage_cache::local_clock(at, offset)))
-                .unwrap_or_else(|| "Subscription account".into())
+                .map(|at| subscription::last_success_label(at, now, offset))
+                .unwrap_or_else(|| "No successful query yet".into())
                 .into(),
-            message: if !snapshot.error.is_empty() {
-                snapshot.error.clone()
-            } else if snapshot.read_at.is_none() {
-                if monitor.loading() {
-                    if self.selected_subscription.get() {
-                        "Reading your Dodex subscription…"
-                    } else {
-                        "Reading your Codex subscription…"
-                    }
+            message: if snapshot.read_at.is_none() && snapshot.limits_error.is_empty() {
+                if snapshot.loading {
+                    "Reading subscription allowance…"
                 } else {
-                    if self.selected_subscription.get() {
-                        "Refresh to read your Dodex subscription."
-                    } else {
-                        "Refresh to read your Codex subscription."
-                    }
+                    "Refresh to read subscription allowance."
                 }
-                .into()
             } else {
-                String::new()
+                ""
             }
             .into(),
             has_reading: snapshot.read_at.is_some(),
@@ -1745,7 +1791,7 @@ impl App {
         let limits = snapshot
             .limits
             .as_ref()
-            .map(|limits| limits.rows(now, offset, good, warn))
+            .map(|limits| limits.rows(now, offset, good, warn, snapshot.failed()))
             .unwrap_or_default();
         if self
             .flyout
@@ -1781,6 +1827,9 @@ impl App {
     }
 
     fn refresh_flyout(&self) {
+        if !self.flyout_peek.get() {
+            self.render_update();
+        }
         let previous_count = self.flyout.get_sessions().row_count();
         let mut rows = self.session_rows(usize::MAX, true);
         self.append_secondary_rows(&mut rows);
@@ -1836,6 +1885,50 @@ impl App {
             && let Some((anchor, from)) = self.flyout_anchor.get()
         {
             self.place_flyout(anchor, from);
+        }
+    }
+
+    /// Painting reads the cached result; only a full panel opening can check
+    /// GitHub. The previous version remains visible during a later refresh.
+    fn render_update(&self) {
+        let update = self.updates.snapshot();
+        let version = if update.release_url.is_some() {
+            update.latest_version.as_deref().unwrap_or_default()
+        } else {
+            ""
+        };
+        self.flyout
+            .set_update_version(version.trim_start_matches('v').into());
+    }
+
+    fn open_release(&self) {
+        use windows::Win32::UI::Shell::ShellExecuteW;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        use windows::core::{PCWSTR, w};
+
+        if self.flyout_peek.get() {
+            return;
+        }
+        // The shared service supplies only a validated release URL for this
+        // repository. UI text and quota data never become a shell target.
+        let Some(url) = self.updates.snapshot().release_url else {
+            return;
+        };
+        let url: Vec<u16> = url.encode_utf16().chain(Some(0)).collect();
+        let result = unsafe {
+            ShellExecuteW(
+                None,
+                w!("open"),
+                PCWSTR(url.as_ptr()),
+                None,
+                None,
+                SW_SHOWNORMAL,
+            )
+        };
+        if result.0 as isize > 32 {
+            self.close_flyout();
+        } else {
+            crate::util::debug_log("could not open the Agent Companion release page");
         }
     }
 
@@ -2004,6 +2097,24 @@ impl App {
             }
         });
 
+        let app = Rc::downgrade(self);
+        window.on_set_usage_refresh_minutes(move |minutes| {
+            if let Some(app) = app.upgrade() {
+                let result = agent_companion_core::usage_service::parse_interval(minutes.as_str())
+                    .and_then(|value| {
+                        app.subscription
+                            .borrow_mut()
+                            .set_interval(value, now_unix_secs())
+                    });
+                if let Err(error) = result {
+                    app.note_settings(&error.to_string());
+                } else {
+                    app.note_settings("Allowance refresh interval saved.");
+                }
+                app.refresh_app_preferences();
+            }
+        });
+
         // Closing the window with its own titlebar button unmaps it behind the
         // app's back, which is one of the moments the readout needs a repaint.
         let app = Rc::downgrade(self);
@@ -2034,6 +2145,7 @@ impl App {
         window.set_taskbar_enabled(self.bar.is_shown());
         window.set_taskbar_status(self.taskbar_status().into());
         window.set_run_at_login(win::runs_at_login());
+        window.set_usage_refresh_minutes(self.subscription.borrow().interval_minutes() as i32);
         {
             let config = self.config.borrow();
             window.set_show_claude(config.taskbar.claude);

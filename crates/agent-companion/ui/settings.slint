@@ -1,5 +1,5 @@
-import { Button, Switch, SpinBox, ScrollView } from "std-widgets.slint";
-import { SettingsColors, SettingsCard } from "settings-common.slint";
+import { Switch, SpinBox, ScrollView } from "std-widgets.slint";
+import { SettingsTextField, SettingsButton, SettingsColors, SettingsCard } from "settings-common.slint";
 
 component SettingToggle inherits Rectangle {
     in property <string> label;
@@ -75,12 +75,15 @@ export component AppSettings inherits Rectangle {
     in property <int> warn-at: 20;
     callback set-thresholds(int, int);
 
+    in property <int> usage-refresh-minutes: 5;
+    callback set-usage-refresh-minutes(string);
+
 
     VerticalLayout {
         spacing: 14px;
         Text { text: root.integrations ? "Integrations" : "Taskbar & app"; font-size: 16px; font-weight: 600; color: SettingsColors.text; }
         Text {
-            text: root.integrations ? "Connect approvals and questions to your companion." : "Choose how your companion works. Changes save automatically.";
+            text: root.integrations ? "Connect approvals and questions to your companion." : "Save the allowance interval below. Other changes save automatically.";
             color: SettingsColors.secondary;
             font-size: 11px;
             wrap: word-wrap;
@@ -140,6 +143,25 @@ export component AppSettings inherits Rectangle {
                     VerticalLayout {
                         padding: 18px;
                         spacing: 12px;
+                        Text { text: "Allowance auto-refresh interval (minutes)"; font-size: 12px; font-weight: 600; color: SettingsColors.text; }
+                        Text { text: "Shared by Codex and Dodex. Save a whole number from 1 to 60; the new interval starts from now."; font-size: 11px; color: SettingsColors.secondary; wrap: word-wrap; }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            interval := SettingsTextField {
+                                text: "\{root.usage-refresh-minutes}";
+                                accessible-label: "Allowance auto-refresh interval in minutes";
+                                accepted => { root.set-usage-refresh-minutes(self.text); }
+                            }
+                            Text { text: "minutes"; font-size: 11px; color: SettingsColors.secondary; vertical-alignment: center; }
+                            SettingsButton { text: "Save"; clicked => { root.set-usage-refresh-minutes(interval.text); } }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                    }
+                }
+                if !root.integrations: SettingsCard {
+                    VerticalLayout {
+                        padding: 18px;
+                        spacing: 12px;
                         Text { text: "Remaining allowance colors"; font-size: 12px; font-weight: 600; color: SettingsColors.text; }
                         HorizontalLayout {
                             spacing: 10px;
@@ -169,7 +191,7 @@ export component AppSettings inherits Rectangle {
                                 Text { text: "Codex"; font-size: 13px; font-weight: 600; color: SettingsColors.text; }
                                 Text { text: root.codex-status; font-size: 11px; color: SettingsColors.secondary; wrap: word-wrap; }
                             }
-                            Button {
+                            SettingsButton {
                                 horizontal-stretch: 0;
                                 min-width: 132px;
                                 text: root.codex-installed ? "Uninstall hooks" : "Install hooks";
@@ -191,7 +213,7 @@ export component AppSettings inherits Rectangle {
                                 Text { text: "Claude Code · experimental"; font-size: 13px; font-weight: 600; color: SettingsColors.text; }
                                 Text { text: root.claude-status; font-size: 11px; color: SettingsColors.secondary; wrap: word-wrap; }
                             }
-                            Button {
+                            SettingsButton {
                                 horizontal-stretch: 0;
                                 min-width: 132px;
                                 text: root.claude-installed ? "Uninstall hooks" : "Install hooks";
@@ -212,7 +234,7 @@ export component AppSettings inherits Rectangle {
                 spacing: 12px;
                 Text { text: "You have unapplied Codex CLI changes."; font-size: 11px; color: SettingsColors.accent; vertical-alignment: center; }
                 Rectangle { horizontal-stretch: 1; }
-                Button { text: "Review changes"; clicked => { root.review(); } }
+                SettingsButton { text: "Review changes"; clicked => { root.review(); } }
             }
         }
     }

@@ -87,10 +87,17 @@ export global Theme {
     out property <color> codex: #4a9de8;
 
     // Task status uses the same palette for every agent and instance.
-    out property <color> status-running: #4a9de8;
+    out property <color> status-running: #32b8ff;
     out property <color> status-completed: #55c98d;
     out property <color> status-waiting: #e3bf52;
     out property <color> status-idle: #6a6a80;
+    // A breath changes colour at full opacity, so its low point remains
+    // visible even over a similarly coloured desktop or taskbar.
+    out property <color> pulse-gray: #92979f;
+
+    public pure function pulse-color(active-color: color, phase: float) -> color {
+        active-color.mix(self.pulse-gray, clamp(phase, 0.0, 1.0));
+    }
 
     public pure function task-color(pending: int, running: int, done: int, failed: int, stopped: int) -> color {
         pending > 0 ? self.status-waiting
@@ -255,12 +262,15 @@ export component SessionBlock inherits Rectangle {
     // step rather than each starting from whenever it appeared.
     in property <bool> pulse;
     in property <length> size: 18px;
+    property <bool> active: Theme.session-active(root.phase);
+    property <color> status-color: Theme.session-color(root.phase);
 
     width: root.size;
     height: root.size;
     border-radius: root.size / 3;
-    background: Theme.session-color(root.phase);
-    opacity: Theme.session-active(root.phase) ? (root.pulse ? 1.0 : 0.35) : 1.0;
+    background: root.active
+        ? Theme.pulse-color(root.status-color, root.pulse ? 1.0 : 0.0)
+        : root.status-color;
 
-    animate opacity { duration: 700ms; easing: ease-in-out; }
+    animate background { duration: 1000ms; easing: ease-in-out; }
 }

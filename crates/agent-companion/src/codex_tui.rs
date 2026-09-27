@@ -397,6 +397,50 @@ impl Editor {
                 .window
                 .set_window_title("Agent Companion · Settings".into());
             editor.window.set_macos_preferences(true);
+            let usage_settings_path = if _live_deployment {
+                agent_companion_core::usage_service::settings_path().ok()
+            } else {
+                editor
+                    .drafts
+                    .borrow()
+                    .active()
+                    .path
+                    .parent()
+                    .map(|path| path.join("usage.json"))
+            };
+            let usage_settings = usage_settings_path
+                .as_deref()
+                .map(agent_companion_core::usage_service::UsageSettings::load)
+                .unwrap_or_default();
+            editor
+                .window
+                .set_usage_refresh_minutes(i32::from(usage_settings.refresh_interval_minutes));
+            let weak = Rc::downgrade(&editor);
+            editor.window.on_set_usage_refresh_minutes(move |minutes| {
+                let Some(editor) = weak.upgrade() else { return };
+                let parsed = agent_companion_core::usage_service::parse_interval(minutes.as_str());
+                let result = parsed.and_then(|minutes| {
+                    let path = usage_settings_path.as_deref().ok_or_else(|| {
+                        std::io::Error::other("Application configuration directory is unavailable")
+                    })?;
+                    agent_companion_core::usage_service::UsageSettings {
+                        refresh_interval_minutes: minutes,
+                    }
+                    .save(path)
+                    .map(|()| minutes)
+                });
+                match result {
+                    Ok(minutes) => {
+                        editor.window.set_usage_refresh_minutes(i32::from(minutes));
+                        editor.window.set_usage_settings_message(
+                            "已保存；所有实例从现在起重新计时。".into(),
+                        );
+                    }
+                    Err(error) => editor
+                        .window
+                        .set_usage_settings_message(format!("无法保存：{error}").into()),
+                }
+            });
             editor.refresh_deployment();
             let weak = Rc::downgrade(&editor);
             editor.window.on_deploy_dual(move || {

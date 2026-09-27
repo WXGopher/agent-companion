@@ -18,21 +18,24 @@ Codex 在上、Dodex 在下，每个已启用实例各有一行。圆点表示�
 
 悬停说明会区分失败与等待输入。Windows 任务栏使用相同的颜色语义，保留问号、对勾等原有图标形状。
 
-尚无额度读数时显示 `—`。已有读数在闲置时继续显示；缓存过期、读取失败或额度重置后，用 `*` 标记最后已知数值。例如 `69%*` 表示上次有效读数为剩余 69%，正在等待新的有效结果。取得有效更新后，显示最新百分比并去掉星号；如果更新仍失败，保留星号。重置后不会推算为 100%。悬停说明包含实例、任务状态和读数状态。
+尚无额度读数时显示 `—`。已有读数在闲置、缓存年龄增长、跨过重置时间或再次查询中均继续显示。只有最近一次额度查询失败后旧值才加 `*`，成功后清除；成功但未报告对应窗口时清除旧值并显示 `—`。重置后不推算为 100%，详情显示“已到重置时间，等待下次查询”。悬停说明包含实例、任务状态、最后成功查询时间及失败原因。
 
-账号用量按实例每五分钟刷新，后台与 Usage 页面共享请求和缓存。菜单栏动画只刷新绘制，不发起账号查询；非运行状态停止动画，并遵守 macOS 的“减少动态效果”设置。百分比使用系统模板绘制，彩色圆点单独绘制，保留系统背景适配、点击和 Command 拖动。
+两端共用 Rust 调度和 app-server 查询器。启动、定时到期、用户主动打开面板查询所有已启用实例；手动刷新仅查询当前实例。默认间隔五分钟，设置支持 1–60 分钟整数并在 `usage.json` 保存；修改后从生效时重新等待。成功和失败都从完成时重新计时，无额外重试；查询中触发合并，休眠恢复只补查一次。额度仅调用一次 `account/rateLimits/read`，20 秒超时，完成即结束子进程，不等待历史、不创建模型任务。CLI 内部的 HTTP 请求次数不作保证。
 
-菜单栏圆点使用高饱和度蓝、绿、黄和较亮的中性灰，双行直径为 7 pt、单行为 8 pt，并加深浅双层细边以适应彩色壁纸。运行呼吸保持 80%–100% 不透明度，避免暗相位融进背景；弹窗和 Windows 的配色不受影响。
+历史 Token 统计在进入 Usage 页或切换该页实例时独立加载，成功和失败均缓存五分钟。切页、切实例、任务活动、重置和绘制不触发额度请求；关闭面板不取消额度查询。GUI 不再从会话日志获取额度，任务扫描继续运行。菜单栏动画只刷新绘制；非运行状态停止动画，并遵守 macOS 的“减少动态效果”设置。百分比使用系统模板绘制，彩色圆点单独绘制，保留系统背景适配、点击和 Command 拖动。
+
+菜单栏圆点使用高饱和度蓝、绿、黄和较亮的中性灰，双行直径为 7 pt、单行为 8 pt，并加深浅双层细边以适应彩色壁纸。运行呼吸以两秒为一周期，在不透明亮蓝色（`#32B8FF`）与灰色（`#92979F`）之间往复渐变，不再使用小幅透明度变化。弹窗和 Windows 已有的呼吸动画也采用各自高亮色与灰色之间的渐变；减少动态效果时显示固定状态色。
 
 ## 弹出面板
 
 - 顶部显示 Agent Companion、构建版本和实际运行中的任务数；等待任务另有提示。
+- 主动打开面板后在后台检查应用更新，每 24 小时最多一次，重启后复用本地记录。发现更高正式版本时显示“新版本 v… 可用”和“查看更新”，点击打开该版本的 GitHub Release 页面；检查不阻塞面板，也不自动下载或安装。
 - Tasks 显示活动与已结束任务、各实例额度和会话跳转入口。
 - Usage 显示订阅额度、重置时间、累计 Token 和最近七个有记录日期的用量。
 - 底部太阳／月亮按钮切换亮色与暗色。主题会保存，切换保留页面、实例选择及滚动位置，不触发额外额度查询。
 - Tasks、Usage 和两种主题使用固定弹窗尺寸，避免切换时跳动。
 
-设置包含 Codex CLI 状态栏编辑和 Codex 双开。双开页提供两边 `config.toml` 与全局 `CODEX_HOME/AGENTS.md` 的路径和手动双向覆盖，覆盖前备份目标。配置中的内嵌密钥会复制，`auth.json` 不会复制，目标的登录存储、数据库与日志设置继续独立。存在 `AGENTS.override.md` 时会提示它可能优先生效，同步不会覆盖该文件。没有自动同步；详情见[同步说明](macos-dual-instance.md#manual-configuration-and-instruction-sync)。
+设置包含所有实例共用的额度自动刷新间隔、Codex CLI 状态栏编辑和 Codex 双开。双开页提供两边 `config.toml` 与全局 `CODEX_HOME/AGENTS.md` 的路径和手动双向覆盖，覆盖前备份目标。配置中的内嵌密钥会复制，`auth.json` 不会复制，目标的登录存储、数据库与日志设置继续独立。存在 `AGENTS.override.md` 时会提示它可能优先生效，同步不会覆盖该文件。没有自动同步；详情见[同步说明](macos-dual-instance.md#manual-configuration-and-instruction-sync)。
 
 ## 验证
 
@@ -42,7 +45,7 @@ Codex 在上、Dodex 在下，每个已启用实例各有一行。圆点表示�
 
 v0.3.20 的菜单栏专项检查通过，已查看浅色、深色、蓝色背景和呼吸暗相位的原生绘制预览。截图使用合成任务与额度，公开 PNG 只保留必要图像数据。调整后的本机 App 已通过签名与启动检查；该记录不等于完整实机弹窗或 Windows 人工桌面验收。
 
-本次本地完整原生检查、29 阶段真实编辑器检查及核心同步测试均通过。已安装的 Settings 窗口已实机检查，确认只保留两个页签，并显示双方文件路径、覆盖方向及内嵌密钥提示；未对真实配置执行同步。已安装弹窗的实际交互仍未完成验收：电脑操作工具 CUA 获取该弹窗时超时，AppKit 日志确认弹窗曾打开并可重新打开，进程采样显示主事件循环正常。自动检查已覆盖主题按钮和页面交互，但不能替代这项安装后的实机验收。
+v0.3.22 verification: the full native suite, 29-phase isolated Settings editor and core synchronization tests passed locally. The optimized app was installed with an old-version backup; packaged and installed bundles passed signature and version checks. The installed Tasks / Usage navigation, instance quota reads and Settings process startup were confirmed, and the release query successfully persisted its daily cache. No real configuration files were synchronized. Full Settings layout and controls were checked with isolated fixtures; exhaustive manual interaction with the installed Settings window and native Windows desktop verification remain unperformed.
 
 安装包由 `scripts/package-macos.py` 生成，校验完整应用签名、解压后签名及程序版本；更新前退出旧应用和设置窗口。包使用本地完整性签名，没有 Apple 公证。
 

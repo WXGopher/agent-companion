@@ -55,8 +55,26 @@ enum TaskActivity: Equatable {
         return Color(nsColor: color)
     }
 
-    static func runningOpacity(at time: TimeInterval) -> Double {
-        0.45 + 0.55 * (1 + cos(time * .pi)) / 2
+    /// High-visibility colors shared by menu dots and breathing task marks.
+    var indicatorColor: NSColor {
+        let rgb: (CGFloat, CGFloat, CGFloat)
+        switch self {
+        case .running: rgb = (0x32, 0xb8, 0xff)
+        case .completed: rgb = (0x25, 0xd7, 0x7a)
+        case .waiting, .failed: rgb = (0xff, 0xc5, 0x2f)
+        case .idle: rgb = (0xa2, 0xad, 0xbd)
+        }
+        return NSColor(srgbRed: rgb.0 / 255, green: rgb.1 / 255, blue: rgb.2 / 255, alpha: 1)
+    }
+
+    static let breathingGray = NSColor(srgbRed: 0x92 / 255.0, green: 0x97 / 255.0,
+                                       blue: 0x9f / 255.0, alpha: 1)
+
+    /// A full, opaque color change keeps both ends visible on any wallpaper.
+    /// Every breathing hue shares the same two-second bright → gray → bright cycle.
+    static func breathingColor(_ bright: NSColor, at time: TimeInterval) -> NSColor {
+        let grayFraction = (1 - cos(time * .pi)) / 2
+        return bright.blended(withFraction: grayFraction, of: breathingGray) ?? bright
     }
 }
 
@@ -73,8 +91,10 @@ struct TaskActivityMark: View {
         TimelineView(.animation(minimumInterval: 0.1, paused: !breathing)) { context in
             Image(systemName: symbol)
                 .font(.system(size: size, weight: .semibold))
-                .foregroundStyle(activity.color(in: theme))
-                .opacity(breathing ? TaskActivity.runningOpacity(at: context.date.timeIntervalSinceReferenceDate) : 1)
+                .foregroundStyle(breathing
+                    ? Color(nsColor: TaskActivity.breathingColor(activity.indicatorColor,
+                                at: context.date.timeIntervalSinceReferenceDate))
+                    : activity.color(in: theme))
         }
         .accessibilityHidden(true)
     }

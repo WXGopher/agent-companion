@@ -1,5 +1,5 @@
 //! Native menu bar shell; the independent Slint editor uses its own process.
-use std::ffi::{CString, c_char};
+use std::ffi::{CStr, CString, c_char};
 use std::fs::OpenOptions;
 use std::io;
 use std::sync::{Mutex, OnceLock, mpsc};
@@ -7,6 +7,9 @@ use std::time::Duration;
 
 use crate::macos_deployment::InstanceConfig;
 use agent_companion_core::dashboard::{Dashboard, Instance, Snapshot};
+
+static USAGE: OnceLock<Mutex<crate::usage_service::UsageService>> = OnceLock::new();
+static UPDATE: OnceLock<crate::update_service::UpdateService> = OnceLock::new();
 
 static SNAPSHOT: OnceLock<Mutex<Snapshot>> = OnceLock::new();
 
@@ -70,6 +73,93 @@ unsafe extern "C" fn agent_companion_release_json(pointer: *mut c_char) {
     }
 }
 
+fn update_service() -> &'static crate::update_service::UpdateService {
+    UPDATE.get_or_init(crate::update_service::UpdateService::new)
+}
+
+/// Called only after an intentional closed-to-open native popup transition.
+/// The service starts any eligible request in the background.
+#[unsafe(no_mangle)]
+extern "C" fn agent_companion_update_panel_open() {
+    update_service().panel_open(agent_companion_core::now_unix_secs());
+}
+
+/// Read-only polling; ownership matches the shared JSON release function.
+#[unsafe(no_mangle)]
+extern "C" fn agent_companion_update_snapshot_json() -> *mut c_char {
+    CString::new(serde_json::to_vec(&update_service().snapshot()).unwrap_or_default())
+        .unwrap_or_default()
+        .into_raw()
+}
+
+fn usage_service() -> &'static Mutex<crate::usage_service::UsageService> {
+    USAGE.get_or_init(|| Mutex::new(crate::usage_service::UsageService::new()))
+}
+
+fn usage_json(service: &crate::usage_service::UsageService) -> *mut c_char {
+    let value = serde_json::json!({
+        "intervalMinutes": service.interval_minutes(),
+        "instances": service.snapshots(),
+    });
+    CString::new(value.to_string())
+        .unwrap_or_default()
+        .into_raw()
+}
+
+/// Snapshot reads never schedule requests or decide whether a cache is fresh.
+#[unsafe(no_mangle)]
+extern "C" fn agent_companion_usage_snapshot_json() -> *mut c_char {
+    let service = usage_service()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    usage_json(&service)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(tag = "event")]
+enum UsageEvent {
+    #[serde(rename = "panelOpen")]
+    PanelOpen,
+    #[serde(rename = "refresh")]
+    Refresh {
+        #[serde(rename = "instanceId")]
+        instance_id: String,
+    },
+    #[serde(rename = "history")]
+    History {
+        #[serde(rename = "instanceId")]
+        instance_id: String,
+    },
+}
+
+fn apply_usage_event(
+    service: &mut crate::usage_service::UsageService,
+    event: UsageEvent,
+    now: u64,
+) {
+    match event {
+        UsageEvent::PanelOpen => service.panel_open(now),
+        UsageEvent::Refresh { instance_id } => service.refresh(&instance_id, now),
+        UsageEvent::History { instance_id } => service.load_history(&instance_id, now),
+    }
+}
+
+/// Explicit UI boundaries only: opening a panel, quota refresh, or history entry.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn agent_companion_usage_event(pointer: *const c_char) -> *mut c_char {
+    let mut service = usage_service()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if !pointer.is_null() {
+        // SAFETY: Swift borrows a NUL-terminated UTF-8 string for this call.
+        let bytes = unsafe { CStr::from_ptr(pointer) }.to_bytes();
+        if let Ok(event) = serde_json::from_slice::<UsageEvent>(bytes) {
+            apply_usage_event(&mut service, event, agent_companion_core::now_unix_secs());
+        }
+    }
+    usage_json(&service)
+}
+
 pub fn run_menu_bar() -> io::Result<()> {
     let home = primary_home()?;
     let user_home = std::env::var_os("HOME").ok_or_else(|| {
@@ -109,6 +199,10 @@ pub fn run_menu_bar() -> io::Result<()> {
         .name("codex-monitor".into())
         .spawn(move || {
             let mut dashboard = InstanceDashboards::new(home);
+            // Publish routing before scanning session history so account queries
+            // can start independently, including on a large first task scan.
+            *state.lock().unwrap_or_else(|error| error.into_inner()) =
+                dashboard.routing_snapshot(crate::macos_deployment::active_instance().as_ref());
             loop {
                 let snapshot = dashboard.poll(
                     crate::macos_deployment::active_instance(),
@@ -122,10 +216,56 @@ pub fn run_menu_bar() -> io::Result<()> {
                 }
             }
         })?;
+    let (stop_usage, usage_stopped) = mpsc::channel();
+    let usage_worker = std::thread::Builder::new()
+        .name("account-usage-monitor".into())
+        .spawn(move || {
+            loop {
+                let sources = {
+                    let snapshot = state.lock().unwrap_or_else(|error| error.into_inner());
+                    snapshot
+                        .instances
+                        .iter()
+                        .map(|snapshot| {
+                            let instance = &snapshot.instance;
+                            crate::usage_service::Source {
+                                instance_id: instance.instance_id.clone(),
+                                codex_home: instance.codex_home.clone().into(),
+                                executable_path: instance.executable_path.clone().map(Into::into),
+                                database_path: instance
+                                    .database_path
+                                    .clone()
+                                    .unwrap_or_else(|| instance.codex_home.clone())
+                                    .into(),
+                            }
+                        })
+                        .collect()
+                };
+                {
+                    let now = agent_companion_core::now_unix_secs();
+                    let mut usage = usage_service()
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    usage.sync_sources(sources, now);
+                    usage.tick(now);
+                }
+                if usage_stopped.recv_timeout(Duration::from_millis(100))
+                    != Err(mpsc::RecvTimeoutError::Timeout)
+                {
+                    break;
+                }
+            }
+        })?;
     // SAFETY: main calls this on the process main thread; AppKit owns the UI loop.
     let result = unsafe { agent_companion_run_menu_bar() };
     let _ = stop.send(());
+    let _ = stop_usage.send(());
+    let _ = usage_worker.join();
     let _ = worker.join();
+    usage_service()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .stop();
     drop(instance);
     if result == 0 {
         Ok(())
@@ -181,6 +321,33 @@ impl InstanceDashboards {
         )
     }
 
+    fn routing_snapshot(&self, enabled: Option<&InstanceConfig>) -> Snapshot {
+        let pending = |instance: Instance| {
+            Snapshot {
+                codex_home: instance.codex_home.clone(),
+                loading: true,
+                ..Snapshot::default()
+            }
+            .with_instance(instance)
+        };
+        let mut instances = vec![pending(self.primary_instance.clone())];
+        if let Some(config) = enabled {
+            instances.push(pending(Self::secondary_descriptor(config)));
+        }
+        Snapshot::merge(instances)
+    }
+
+    fn secondary_descriptor(config: &InstanceConfig) -> Instance {
+        Instance {
+            instance_id: config.id.clone(),
+            label: config.label.clone(),
+            codex_home: config.codex_home.to_string_lossy().into_owned(),
+            app_path: Some(config.runtime_app.to_string_lossy().into_owned()),
+            executable_path: Some(config.cli_path.to_string_lossy().into_owned()),
+            database_path: Some(config.database_dir.to_string_lossy().into_owned()),
+        }
+    }
+
     fn poll(&mut self, enabled: Option<InstanceConfig>, now: u64) -> Snapshot {
         // Installing Codex or changing its database location should recover
         // while Companion stays open, including after a failed deployment retry.
@@ -200,18 +367,15 @@ impl InstanceDashboards {
         }
         let mut snapshots = vec![
             self.primary
-                .poll(now)
+                .poll_tasks(now)
                 .with_instance(self.primary_instance.clone()),
         ];
         if let Some((config, dashboard)) = &mut self.secondary {
-            snapshots.push(dashboard.poll(now).with_instance(Instance {
-                instance_id: config.id.clone(),
-                label: config.label.clone(),
-                codex_home: config.codex_home.to_string_lossy().into_owned(),
-                app_path: Some(config.runtime_app.to_string_lossy().into_owned()),
-                executable_path: Some(config.cli_path.to_string_lossy().into_owned()),
-                database_path: Some(config.database_dir.to_string_lossy().into_owned()),
-            }));
+            snapshots.push(
+                dashboard
+                    .poll_tasks(now)
+                    .with_instance(Self::secondary_descriptor(config)),
+            );
         }
         Snapshot::merge(snapshots)
     }
@@ -220,6 +384,43 @@ impl InstanceDashboards {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usage_ffi_accepts_only_explicit_query_events() {
+        for event in [
+            r#"{"event":"panelOpen"}"#,
+            r#"{"event":"refresh","instanceId":"dodex"}"#,
+            r#"{"event":"history","instanceId":"codex"}"#,
+        ] {
+            assert!(serde_json::from_str::<UsageEvent>(event).is_ok());
+        }
+        for event in [
+            "render",
+            "taskActivity",
+            "hover",
+            "close",
+            "reset",
+            "switchInstance",
+        ] {
+            assert!(
+                serde_json::from_value::<UsageEvent>(serde_json::json!({"event":event})).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn usage_ffi_snapshot_serializes_without_starting_a_query() {
+        let root = tempfile::tempdir().unwrap();
+        let service =
+            crate::usage_service::UsageService::with_settings_path(root.path().join("usage.json"));
+        let pointer = usage_json(&service);
+        let value: serde_json::Value =
+            unsafe { serde_json::from_slice(CStr::from_ptr(pointer).to_bytes()).unwrap() };
+        unsafe { agent_companion_release_json(pointer) };
+        assert_eq!(value["intervalMinutes"], 5);
+        assert_eq!(value["instances"], serde_json::json!([]));
+        assert!(!root.path().join("usage.json").exists());
+    }
 
     #[test]
     fn renamed_primary_descriptor_routes_app_and_cli_to_the_same_primary_bundle() {
@@ -287,6 +488,17 @@ mod tests {
             cli_path: second.join("Runtime.app/Contents/Resources/codex"),
         };
         let mut monitor = InstanceDashboards::new(home);
+        let routing = monitor.routing_snapshot(Some(&config));
+        assert!(routing.loading && routing.tasks.is_empty());
+        assert_eq!(routing.instances.len(), 2);
+        assert_eq!(
+            routing.instances[1].instance.executable_path.as_deref(),
+            config.cli_path.to_str()
+        );
+        assert!(
+            monitor.secondary.is_none(),
+            "routing does not require a task scan"
+        );
         assert_eq!(monitor.poll(None, 1000).instances.len(), 1);
         assert!(monitor.secondary.is_none() && !second.exists());
         let enabled = monitor.poll(Some(config), 1001);

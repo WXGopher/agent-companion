@@ -26,7 +26,7 @@ enum PrimaryCodexAppTests {
         }
         func find() -> URL? { PrimaryCodexApp.find(systemApplications: system, userApplications: user) }
         func fallback() -> URL? {
-            CodexSubscriptionReader.findExecutable(home: home, searchPath: "", systemApplications: system, systemCLIPaths: [])
+            PrimaryCodexApp.findCLIExecutable(home: home, searchPath: "", systemApplications: system, systemCLIPaths: [])
         }
         for binary in [false, true] {
             for app in candidates {

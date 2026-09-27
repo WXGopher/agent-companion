@@ -17,6 +17,14 @@ mod macos_deployment;
 #[path = "../src/macos_primary_app.rs"]
 mod macos_primary_app;
 #[cfg(target_os = "macos")]
+#[allow(dead_code, unused_imports)]
+#[path = "../src/update_service.rs"]
+mod update_service;
+#[cfg(target_os = "macos")]
+#[allow(dead_code, unused_imports)]
+#[path = "../src/usage_service.rs"]
+mod usage_service;
+#[cfg(target_os = "macos")]
 pub mod ui {
     slint::include_modules!();
 }
@@ -85,6 +93,22 @@ fn check_editor_startup() {
         "[editor-fixture] editor constructed at {:?}",
         started.elapsed()
     );
+    let usage_path = config_path.parent().unwrap().join("usage.json");
+    for invalid in ["", "0", "61", "1.5", "1e1", "abc"] {
+        editor
+            .window
+            .invoke_set_usage_refresh_minutes(invalid.into());
+        assert_eq!(editor.window.get_usage_refresh_minutes(), 5);
+        assert!(!usage_path.exists(), "Invalid interval must not be saved");
+    }
+    editor.window.invoke_set_usage_refresh_minutes("12".into());
+    assert_eq!(editor.window.get_usage_refresh_minutes(), 12);
+    assert_eq!(
+        agent_companion_core::usage_service::UsageSettings::load(&usage_path)
+            .refresh_interval_minutes,
+        12
+    );
+    editor.window.invoke_set_usage_refresh_minutes("5".into());
     // Freeze deployment polling while rendering synthetic UI states; all
     // configuration and sync actions remain inside the temporary profiles.
     editor.deployment_timer.stop();
@@ -202,7 +226,7 @@ fn check_editor_startup() {
                 window.global::<ui::Palette>().set_color_scheme(ColorScheme::Dark);
             }
             2 => {
-                window.window().set_size(slint::LogicalSize::new(820.0, 660.0));
+                window.window().set_size(slint::LogicalSize::new(820.0, 720.0));
                 window.invoke_toggle("git-branch".into(), true);
                 assert!(window.get_dirty());
                 assert!(window.get_preview().contains("main"));

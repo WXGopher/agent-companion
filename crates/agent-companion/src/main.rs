@@ -29,6 +29,10 @@ mod macos_deployment;
 #[cfg(target_os = "macos")]
 mod macos_primary_app;
 mod out;
+#[cfg(any(target_os = "macos", windows))]
+mod update_service;
+#[cfg(any(target_os = "macos", windows))]
+mod usage_service;
 #[cfg(windows)]
 mod windows_deployment;
 

@@ -3,16 +3,6 @@ import AppKit
 import Combine
 
 @MainActor enum PageSwitchTests {
-    private final class Reader: SubscriptionReading {
-        var requests = 0
-        var completion: ((SubscriptionUsage) -> Void)?
-        func read(codexHome: String, completion: @escaping (SubscriptionUsage) -> Void) {
-            requests += 1
-            self.completion = completion
-        }
-        func cancel() { completion = nil }
-    }
-
     static func run(output: URL) throws {
         for (count, longError) in [(8, true), (0, false), (8, false)] {
             try verify(count: count, longError: longError, output: output)
@@ -21,8 +11,8 @@ import Combine
     }
 
     private static func verify(count: Int, longError: Bool, output: URL) throws {
-        let reader = Reader()
-        let model = CompanionModel(usageReader: reader)
+        let bridge = FixtureUsageBridge()
+        let model = CompanionModel(usageBridge: bridge)
         model.snapshot = CodexSnapshot(completedCount: count, tasks: (0..<count).map { index in
             CodexTask(id: "page-fixture-\(index)", title: "Synthetic task \(index)", project: "workspace", cwd: nil,
                       client: "cli", state: "completed", updatedAt: 0, transcriptPath: nil)
@@ -47,7 +37,7 @@ import Combine
         for step in 0..<12 {
             if step % 2 == 0 { model.showUsage() } else { model.showTasks() }
             for tick in 0..<12 {
-                if step == 0 && tick == 4 { reader.completion?(SubscriptionUsageTests.fixture) }
+                if step == 0 && tick == 4 { bridge.set(SubscriptionUsageTests.fixture); model.refreshUsageSnapshot() }
                 if step == 10 && tick == 4 { model.subscriptionUsage = .failure("Sign in to Codex, then refresh.") }
                 RunLoop.main.run(until: Date().addingTimeInterval(1.0 / 120))
                 precondition(panel.frame == frame,
@@ -64,7 +54,7 @@ import Combine
                     output.appendingPathComponent("pages-popup-\(count)-\(longError)-\(step).png"))
             }
         }
-        precondition(reader.requests == 1, "Page switches bypassed the subscription cache")
+        precondition(bridge.count("refresh") == 0 && bridge.count("panelOpen") == 0, "Page switches requested quota")
 
         // Hidden pages keep their scroll state, including an outer overflow
         // viewport on a short display. No frame may be recreated to restore it.

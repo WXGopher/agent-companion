@@ -35,14 +35,14 @@ struct SubscriptionUsageView: View {
                 .accessibilityIdentifier("usage-instance-picker")
             }
             HStack {
-                Text(loading ? "Refreshing…" : updatedText)
+                Text(updatedText)
                     .font(.system(size: f(10))).foregroundStyle(palette.secondaryText).lineLimit(1)
                 Spacer(minLength: s(4))
                 Button(action: refresh) {
                     Image(systemName: "arrow.clockwise").frame(width: s(26), height: s(24))
                 }
-                .buttonStyle(.plain).disabled(loading).help("Refresh subscription usage")
-                .accessibilityLabel("Refresh subscription usage").accessibilityIdentifier("refresh-subscription-usage")
+                .buttonStyle(.plain).disabled(loading).help("Refresh quota only")
+                .accessibilityLabel("Refresh quota").accessibilityIdentifier("refresh-subscription-usage")
             }
             ScrollViewReader { proxy in
                 ScrollView {
@@ -66,31 +66,30 @@ struct SubscriptionUsageView: View {
 
     private var content: some View {
         VStack(alignment: .leading, spacing: s(14)) {
-            if let error = usage.error {
-                guidance(error, symbol: "person.crop.circle.badge.exclamationmark")
-            } else if usage.readAt == nil {
-                guidance(loading ? "Reading your Codex subscription…" : "Refresh to read your Codex subscription.", symbol: "chart.bar.xaxis")
-            } else {
-                limits
-                tokens
-                Text("Codex account activity may be delayed. Token totals do not measure remaining allowance.")
-                    .font(.system(size: f(10))).foregroundStyle(palette.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            limits
+            tokens
+            Text("Codex account activity may be delayed. Token totals do not measure remaining allowance.")
+                .font(.system(size: f(10))).foregroundStyle(palette.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.trailing, s(2))
     }
 
     private var updatedText: String {
-        guard let date = usage.readAt else { return "Subscription account" }
-        return "Updated \(date.formatted(date: .omitted, time: .shortened))"
+        guard let date = usage.readAt else { return loading ? "Querying quota… · no successful query" : "No successful quota query" }
+        return "\(loading ? "Querying… · " : "")Last success \(date.formatted(date: .abbreviated, time: .shortened))"
     }
 
     private var limits: some View {
         VStack(alignment: .leading, spacing: s(8)) {
             sectionTitle("SUBSCRIPTION LIMITS")
-            if let error = usage.limitsError { guidance(error, symbol: "wifi.exclamationmark") }
+            if let error = usage.limitsError ?? usage.error { guidance(error, symbol: "wifi.exclamationmark") }
+            if usage.limits == nil {
+                Text("—").font(.system(size: f(15), weight: .medium)).foregroundStyle(palette.secondaryText)
+                Text(loading ? "Reading subscription limits…" : "No allowance window reported.")
+                    .font(.system(size: f(10))).foregroundStyle(palette.secondaryText)
+            }
             if let limits = usage.limits {
                 ForEach(limits.buckets, id: \.id) { bucket in
                     VStack(alignment: .leading, spacing: s(10)) {
@@ -100,7 +99,7 @@ struct SubscriptionUsageView: View {
                         if let primary = bucket.value.primary { quota(primary, fallback: "Primary") }
                         if let secondary = bucket.value.secondary { quota(secondary, fallback: "Secondary") }
                         if bucket.value.primary == nil && bucket.value.secondary == nil {
-                            Text("No allowance window reported.").font(.system(size: f(11))).foregroundStyle(palette.secondaryText)
+                            Text("— · No allowance window reported.").font(.system(size: f(11))).foregroundStyle(palette.secondaryText)
                         }
                     }
                     .padding(s(11)).background(palette.surface, in: RoundedRectangle(cornerRadius: s(12)))
@@ -121,7 +120,7 @@ struct SubscriptionUsageView: View {
             HStack(spacing: s(5)) {
                 Text(window.title(fallback: fallback)).foregroundStyle(palette.secondaryText)
                 Spacer(minLength: 0)
-                Text(remaining.map { "\($0)% left" } ?? "—").monospacedDigit()
+                Text(remaining.map { "\($0)%\((usage.limitsError ?? usage.error) == nil ? "" : "*") left" } ?? "—").monospacedDigit()
                     .foregroundStyle(remaining.map { $0 <= 10 } == true ? palette.warning : palette.accent)
             }
             .font(.system(size: f(11), weight: .medium))
@@ -132,8 +131,8 @@ struct SubscriptionUsageView: View {
                         .frame(width: geometry.size.width * CGFloat(remaining ?? 0) / 100)
                 }
             }.frame(height: s(3)).accessibilityHidden(true)
-            if remaining == nil {
-                Text("Reset passed · refresh for a new reading")
+            if let resets = window.resetsAt, resets <= Date().timeIntervalSince1970 {
+                Text("Reset time passed · waiting for the next query")
                     .font(.system(size: f(9))).foregroundStyle(palette.secondaryText)
             } else if let resets = window.resetsAt {
                 Text("Resets \(Date(timeIntervalSince1970: resets).formatted(date: .abbreviated, time: .shortened))")
@@ -146,6 +145,11 @@ struct SubscriptionUsageView: View {
     private var tokens: some View {
         VStack(alignment: .leading, spacing: s(8)) {
             sectionTitle("TOKEN ACTIVITY")
+            if usage.tokensLoading {
+                Text("Loading token history…").font(.system(size: f(10))).foregroundStyle(palette.secondaryText)
+            } else if usage.tokens == nil && usage.tokenError == nil {
+                Text("Token history is not available.").font(.system(size: f(10))).foregroundStyle(palette.secondaryText)
+            }
             if let error = usage.tokenError { guidance(error, symbol: "exclamationmark.circle") }
             if let tokens = usage.tokens {
                 HStack(spacing: s(7)) {

@@ -1,144 +1,111 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import Foundation
 
-/// The menu and both Usage surfaces share one read per exact source. Background
-/// demand cannot switch or cancel a foreground reader, and closing a surface
-/// does not stop a read still needed by the visible menu.
+@_silgen_name("agent_companion_usage_snapshot_json")
+private func readUsageSnapshot() -> UnsafeMutablePointer<CChar>?
+@_silgen_name("agent_companion_usage_event")
+private func sendUsageEvent(_ json: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("agent_companion_release_json")
+private func releaseUsageSnapshot(_ pointer: UnsafeMutablePointer<CChar>?)
+
+struct SubscriptionQuery<Value: Codable & Equatable>: Codable, Equatable {
+    var value: Value?
+    var lastSuccessAt: TimeInterval?
+    var completedAt: TimeInterval?
+    var loading = false
+    var error: String?
+    var nextQueryAt: TimeInterval?
+    var elapsedMs: UInt64?
+}
+
+struct SubscriptionInstanceSnapshot: Codable, Equatable {
+    var source: SubscriptionSource
+    var limits = SubscriptionQuery<SubscriptionLimits>()
+    var history = SubscriptionQuery<SubscriptionTokens>()
+
+    var usage: SubscriptionUsage {
+        SubscriptionUsage(tokens: history.value, limits: limits.value,
+                          tokenError: history.error, limitsError: limits.error,
+                          readAt: limits.lastSuccessAt.map(Date.init(timeIntervalSince1970:)),
+                          tokensReadAt: history.lastSuccessAt.map(Date.init(timeIntervalSince1970:)),
+                          tokensLoading: history.loading)
+    }
+}
+
+struct SubscriptionSnapshot: Codable, Equatable {
+    var intervalMinutes = 5
+    var instances: [SubscriptionInstanceSnapshot] = []
+}
+
+struct SubscriptionEvent: Codable, Equatable {
+    let event: String
+    var instanceId: String?
+
+    static let panelOpen = Self(event: "panelOpen")
+    static func refresh(_ id: String) -> Self { Self(event: "refresh", instanceId: id) }
+    static func history(_ id: String) -> Self { Self(event: "history", instanceId: id) }
+}
+
+protocol SubscriptionUsageBridging: AnyObject {
+    func snapshot() -> SubscriptionSnapshot?
+    func send(_ event: SubscriptionEvent) -> SubscriptionSnapshot?
+}
+
+final class RustSubscriptionUsageBridge: SubscriptionUsageBridging {
+    func snapshot() -> SubscriptionSnapshot? { decode(readUsageSnapshot()) }
+
+    func send(_ event: SubscriptionEvent) -> SubscriptionSnapshot? {
+        guard let bytes = try? JSONEncoder().encode(event), let json = String(data: bytes, encoding: .utf8) else { return nil }
+        return json.withCString { decode(sendUsageEvent($0)) }
+    }
+
+    private func decode(_ pointer: UnsafeMutablePointer<CChar>?) -> SubscriptionSnapshot? {
+        guard let pointer else { return nil }
+        defer { releaseUsageSnapshot(pointer) }
+        return try? JSONDecoder().decode(SubscriptionSnapshot.self, from: Data(String(cString: pointer).utf8))
+    }
+}
+
+/// A presentation adapter only. Rust owns source synchronization, scheduling,
+/// concurrent requests, cancellation, caching and all account subprocesses.
 final class SubscriptionUsageCoordinator {
-    private final class Entry {
-        let monitor: SubscriptionMonitor
-        var weekly: (usage: WeeklyUsage, readAt: Date)?
-        var local: WeeklyUsage?
-        var displayed: WeeklyUsage?
-        var failed = false
-        var loading = false
-        init(monitor: SubscriptionMonitor) { self.monitor = monitor }
-    }
-    private let makeReader: (SubscriptionSource) -> SubscriptionReading
-    private let clock: () -> Date
-    private var entries: [SubscriptionSource: Entry] = [:]
-    private var foreground: [ObjectIdentifier: SubscriptionSource] = [:]
-    private var backgroundSources: Set<SubscriptionSource> = []
-    var onChange: ((SubscriptionSource, SubscriptionUsage?, Bool) -> Void)?
+    private let bridge: SubscriptionUsageBridging
+    private(set) var snapshot = SubscriptionSnapshot()
+    var onChange: (() -> Void)?
 
-    init(makeReader: @escaping (SubscriptionSource) -> SubscriptionReading = { _ in CodexSubscriptionReader() },
-         clock: @escaping () -> Date = Date.init) {
-        self.makeReader = makeReader
-        self.clock = clock
+    init(bridge: SubscriptionUsageBridging = RustSubscriptionUsageBridge()) { self.bridge = bridge }
+
+    func refreshSnapshot() { receive(bridge.snapshot()) }
+    func panelOpened() { receive(bridge.send(.panelOpen)) }
+    func refreshQuota(instanceID: String) { receive(bridge.send(.refresh(instanceID))) }
+    func loadHistory(instanceID: String) { receive(bridge.send(.history(instanceID))) }
+
+    private func receive(_ value: SubscriptionSnapshot?) {
+        guard let value, value != snapshot else { return }
+        snapshot = value
+        onChange?()
     }
 
-    private func entry(for source: SubscriptionSource) -> Entry {
-        if let entry = entries[source] { return entry }
-        let entry = Entry(monitor: SubscriptionMonitor(reader: makeReader(source), clock: clock))
-        entries[source] = entry
-        entry.monitor.onChange = { [weak self, weak entry] value, loading in
-            guard let self, let entry else { return }
-            entry.loading = loading
-            if let value, value.readAt != nil || value.error != nil || value.limitsError != nil {
-                if let weekly = Self.weekly(value) {
-                    entry.weekly = weekly
-                    entry.failed = false
-                } else {
-                    // Retain the last success for an explicitly stale menu
-                    // value; a failure must never renew its timestamp.
-                    entry.failed = true
-                }
-            }
-            self.onChange?(source, value, loading)
-        }
-        return entry
+    func state(for source: SubscriptionSource) -> SubscriptionInstanceSnapshot? {
+        snapshot.instances.first { $0.source.matches(source) }
     }
 
     static func weekly(_ value: SubscriptionUsage) -> (usage: WeeklyUsage, readAt: Date)? {
-        guard value.error == nil, value.limitsError == nil, let readAt = value.readAt,
-              let bucket = value.limits?.buckets.first(where: { $0.id == "codex" }),
-              let window = [bucket.value.primary, bucket.value.secondary].compactMap({ $0 })
-                .first(where: { $0.windowDurationMins == 10080 }) else { return nil }
-        return (WeeklyUsage(usedPercent: window.usedPercent, resetsAt: window.resetsAt, expired: false), readAt)
-    }
-
-    func synchronize(instances: [CodexInstance], backgroundEnabled: Bool) {
-        let sources = Set(instances.map(\.usageSource))
-        foreground = foreground.filter { sources.contains($0.value) }
-        // Empty/loading snapshots may still support an explicit foreground
-        // read, but must not silently discover a CLI in the background.
-        backgroundSources = backgroundEnabled
-            ? Set(sources.filter { !$0.codexHome.isEmpty }) : []
-        let demanded = backgroundSources.union(foreground.values)
-        for source in Array(entries.keys) {
-            if !sources.contains(source) {
-                entries.removeValue(forKey: source)?.monitor.stop()
-            } else if !demanded.contains(source) {
-                stopReading(source)
-            }
-        }
-        for instance in instances where demanded.contains(instance.usageSource) {
-            if let local = instance.weekly { entry(for: instance.usageSource).local = local }
-        }
-    }
-
-    func refreshBackground() {
-        for source in backgroundSources {
-            let entry = entry(for: source)
-            if entry.monitor.needsRefresh(for: source) { entry.monitor.refresh(source: source) }
-        }
-    }
-
-    func refresh(source: SubscriptionSource, owner: AnyObject, force: Bool = false) {
-        let id = ObjectIdentifier(owner)
-        if let previous = foreground[id], previous != source { release(owner: owner) }
-        foreground[id] = source
-        let entry = entry(for: source)
-        if entry.loading {
-            onChange?(source, entry.monitor.cachedUsage(for: source), true)
-        } else {
-            entry.monitor.refresh(source: source, force: force)
-        }
-    }
-
-    func release(owner: AnyObject) {
-        guard let source = foreground.removeValue(forKey: ObjectIdentifier(owner)),
-              !backgroundSources.contains(source), !foreground.values.contains(source) else { return }
-        stopReading(source)
-    }
-
-    private func stopReading(_ source: SubscriptionSource) {
-        guard let entry = entries[source], entry.loading else { return }
-        entry.monitor.stop()
-        entry.loading = false
+        guard let readAt = value.readAt,
+              let bucket = value.limits?.buckets.first(where: { $0.id == "codex" })?.value else { return nil }
+        let explicit = [bucket.secondary, bucket.primary].compactMap { $0 }.first { $0.windowDurationMins == 10080 }
+        let legacy = bucket.secondary.flatMap { $0.windowDurationMins == nil ? $0 : nil }
+        guard let window = explicit ?? legacy else { return nil }
+        return (WeeklyUsage(usedPercent: Int(min(100, max(0, window.usedPercent)).rounded()), resetsAt: window.resetsAt, expired: false), readAt)
     }
 
     func cachedWeeklyUsage(for source: SubscriptionSource) -> (usage: WeeklyUsage, readAt: Date)? {
-        guard let entry = entries[source], !entry.failed else { return nil }
-        return entry.weekly
+        state(for: source).flatMap { Self.weekly($0.usage) }
     }
 
     func reading(for instance: CodexInstance) -> MenuBarUsage.Reading? {
-        let now = clock()
-        let entry = entries[instance.usageSource]
-        if let account = entry?.weekly {
-            let age = now.timeIntervalSince(account.readAt)
-            if entry?.failed == false, age >= 0, age < SubscriptionMonitor.refreshInterval,
-               MenuBarUsage.remaining(account.usage, at: now) != nil {
-                entry?.displayed = account.usage
-                return .init(usage: account.usage)
-            }
-        }
-        if let local = instance.weekly, MenuBarUsage.remaining(local, at: now) != nil {
-            entry?.displayed = local
-            return .init(usage: local, stale: entry?.failed == true)
-        }
-        if let known = entry?.displayed ?? entry?.weekly?.usage ?? instance.weekly ?? entry?.local {
-            return .init(usage: known, stale: true)
-        }
-        return nil
-    }
-
-    func stop() {
-        foreground.removeAll()
-        backgroundSources.removeAll()
-        let previous = entries
-        entries.removeAll()
-        for entry in previous.values { entry.monitor.stop() }
+        guard let state = state(for: instance.usageSource) else { return nil }
+        return .init(usage: Self.weekly(state.usage)?.usage, stale: state.limits.error != nil,
+                     readAt: state.usage.readAt, error: state.limits.error)
     }
 }
