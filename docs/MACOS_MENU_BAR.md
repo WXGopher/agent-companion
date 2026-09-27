@@ -45,7 +45,7 @@ Codex 在上、Dodex 在下，每个已启用实例各有一行。圆点表示�
 
 v0.3.20 的菜单栏专项检查通过，已查看浅色、深色、蓝色背景和呼吸暗相位的原生绘制预览。截图使用合成任务与额度，公开 PNG 只保留必要图像数据。调整后的本机 App 已通过签名与启动检查；该记录不等于完整实机弹窗或 Windows 人工桌面验收。
 
-本次本地完整原生检查、29 阶段真实编辑器检查及核心同步测试均通过。已安装的 Settings 窗口已实机检查，确认只保留两个页签，并显示双方文件路径、覆盖方向及内嵌密钥提示；未对真实配置执行同步。已安装弹窗的实际交互仍未完成验收：电脑操作工具 CUA 获取该弹窗时超时，AppKit 日志确认弹窗曾打开并可重新打开，进程采样显示主事件循环正常。自动检查已覆盖主题按钮和页面交互，但不能替代这项安装后的实机验收。
+v0.3.22 verification: the full native suite, 29-phase isolated Settings editor and core synchronization tests passed locally. The optimized app was installed with an old-version backup; packaged and installed bundles passed signature and version checks. The installed Tasks / Usage navigation, instance quota reads and Settings process startup were confirmed, and the release query successfully persisted its daily cache. No real configuration files were synchronized. Full Settings layout and controls were checked with isolated fixtures; exhaustive manual interaction with the installed Settings window and native Windows desktop verification remain unperformed.
 
 安装包由 `scripts/package-macos.py` 生成，校验完整应用签名、解压后签名及程序版本；更新前退出旧应用和设置窗口。包使用本地完整性签名，没有 Apple 公证。
 
