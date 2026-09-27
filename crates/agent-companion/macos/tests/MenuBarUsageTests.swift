@@ -232,6 +232,14 @@ import AppKit
         let running = value([instance("codex", used: 43)], tasks: [task("running")])
         running.apply(to: item, indicator: indicator)
         func settle(_ duration: TimeInterval = 0.12) { RunLoop.main.run(until: Date().addingTimeInterval(duration)) }
+        func eventually(_ message: String, timeout: TimeInterval = 2, _ condition: () -> Bool) {
+            let start = ProcessInfo.processInfo.systemUptime
+            while !condition() && ProcessInfo.processInfo.systemUptime - start < timeout {
+                RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01))
+            }
+            let elapsed = ProcessInfo.processInfo.systemUptime - start
+            precondition(condition(), "\(message); elapsed=\(elapsed)s, ticks=\(indicator.animationTicks), animating=\(indicator.isAnimating)")
+        }
         settle()
         precondition(indicator.isAnimating)
         let image = item.button!.image
@@ -250,8 +258,17 @@ import AppKit
             .representation(using: .png, properties: [:])!.write(
                 to: output.appendingPathComponent("menu-bar-running-dim-preview-blue.png"))
         let before = indicator.animationTicks
+        let started = ProcessInfo.processInfo.systemUptime
         settle(0.35)
-        precondition((1...4).contains(indicator.animationTicks - before), "The running dot exceeded its 10 Hz repaint budget")
+        // Native callbacks may delay or extend this run-loop interval on CI.
+        // Require real progress, then measure the rate against actual elapsed
+        // time, with one tick of allowance at the observation boundaries.
+        eventually("The running dot's timer did not fire") { indicator.animationTicks > before }
+        let elapsed = ProcessInfo.processInfo.systemUptime - started
+        let ticks = indicator.animationTicks - before
+        let maximumTicks = Int(ceil(elapsed / 0.1)) + 1
+        precondition(ticks <= maximumTicks,
+                     "The running dot exceeded its 10 Hz repaint budget; ticks=\(ticks), elapsed=\(elapsed)s, maximum=\(maximumTicks)")
         reduced = true
         indicator.refreshAnimation()
         precondition(!indicator.isAnimating)
@@ -262,8 +279,10 @@ import AppKit
         indicator.refreshAnimation()
         precondition(indicator.isAnimating)
         visible = false
-        settle()
-        precondition(!indicator.isAnimating, "A hidden native menu window kept animating")
+        let hiddenTicks = indicator.animationTicks
+        eventually("A hidden native menu window kept its animation timer") { !indicator.isAnimating }
+        precondition(indicator.animationTicks == hiddenTicks,
+                     "A hidden native menu window repainted; ticks before=\(hiddenTicks), after=\(indicator.animationTicks)")
         visible = true
         indicator.refreshAnimation()
         precondition(indicator.isAnimating, "A visible unchanged row did not resume breathing")
