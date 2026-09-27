@@ -2,52 +2,23 @@
 //! is dropped immediately on disable, including pending reads and task caches.
 use super::*;
 use crate::windows_deployment::{self, InstanceConfig};
-use agent_companion_core::usage::CodexUsage;
 
 pub struct Secondary {
     pub instance: InstanceConfig,
-    pub subscription: subscription::Monitor,
     watcher: sessions::CodexWatcher,
     table: SessionTable,
-    usage: Option<CodexUsage>,
     completions: notifications::Tracker,
 }
 
 impl Secondary {
     fn new(instance: InstanceConfig) -> Self {
-        let mut subscription = subscription::Monitor::default();
-        subscription.set_executable(Some(instance.cli_path.clone()));
         Self {
             watcher: sessions::CodexWatcher::with_home(Some(instance.codex_home.clone())),
             instance,
-            subscription,
             table: SessionTable::new(),
-            usage: None,
             completions: notifications::Tracker::default(),
         }
     }
-}
-
-pub fn weekly(
-    local: Option<&CodexUsage>,
-    monitor: &subscription::Monitor,
-    now: u64,
-) -> Option<(i64, Option<u64>)> {
-    monitor.weekly(now).or_else(|| {
-        let usage = local?;
-        let window = [usage.secondary, usage.primary]
-            .into_iter()
-            .flatten()
-            .find(|w| w.window_minutes == Some(10_080))
-            .or_else(|| usage.secondary.filter(|w| w.window_minutes.is_none()))?;
-        if !window.used_percent.is_finite() || window.resets_at.is_some_and(|at| at <= now) {
-            return None;
-        }
-        Some((
-            crate::usage_cache::remaining(window.used_percent),
-            window.resets_at,
-        ))
-    })
 }
 
 impl App {
@@ -55,8 +26,7 @@ impl App {
         let mut items: Vec<String> = self
             .instance_quotas()
             .into_iter()
-            .filter(|row| !row.tier.is_empty())
-            .map(|row| format!("{} week {}", row.label, row.value))
+            .map(|row| format!("{} week {} · {}", row.label, row.value, row.resets))
             .collect();
         if self.display.borrow().visible(HookSource::Claude) {
             let claude = self.usage.borrow().compact(&[HookSource::Claude]);
@@ -64,7 +34,7 @@ impl App {
                 items.push(claude);
             }
         }
-        items.join(" · ")
+        items.join("\n")
     }
     pub(super) fn secondary_tasks(&self) -> Option<AgentTasks> {
         self.secondary
@@ -78,7 +48,7 @@ impl App {
         if secondary.as_ref().map(|s| &s.instance) != active.as_ref() {
             *secondary = active.map(Secondary::new);
             if secondary.is_none() {
-                self.selected_subscription.set(false);
+                self.usage_navigation.borrow_mut().remove_secondary();
                 self.flyout.set_secondary_selected(false);
             }
             self.flyout.set_dual_enabled(secondary.is_some());
@@ -86,10 +56,7 @@ impl App {
         let Some(secondary) = secondary.as_mut() else {
             return;
         };
-        let update = secondary.watcher.poll(&mut secondary.table);
-        if let Some(usage) = update.usage {
-            secondary.usage = Some(usage);
-        }
+        secondary.watcher.poll(&mut secondary.table);
         let now = now_unix_secs();
         secondary.table.sweep(now);
         let notices = secondary.completions.observe(
@@ -102,13 +69,6 @@ impl App {
             notice.session_id = format!("dodex:{}", notice.session_id);
             notice.title = notice.title.replacen("Codex", "Dodex", 1);
             self.notifier.send(notice);
-        }
-    }
-
-    pub(super) fn stop_subscriptions(&self) {
-        self.subscription.borrow_mut().stop();
-        if let Some(secondary) = self.secondary.borrow_mut().as_mut() {
-            secondary.subscription.stop();
         }
     }
 
@@ -141,40 +101,41 @@ impl App {
     pub(super) fn instance_quotas(&self) -> Vec<ui::UsageRow> {
         let now = now_unix_secs();
         let (good, warn) = self.config.borrow().taskbar.thresholds();
-        let row = |id: &str, label: &str, quota: Option<(i64, Option<u64>)>| ui::UsageRow {
-            heading: true,
-            agent: id.into(),
-            label: label.into(),
-            value: quota
-                .map(|q| format!("{}%", q.0))
-                .unwrap_or_else(|| "—".into())
+        let row = |id: &str, label: &str| {
+            let snapshot = self.subscription_snapshot(id);
+            let quota = snapshot.weekly();
+            let reset = match quota.and_then(|q| q.1) {
+                Some(at) if at <= now => "Reset time reached · waiting for the next query".into(),
+                Some(at) => {
+                    crate::usage_cache::reset_label(Some(at), now, win::local_offset_secs())
+                        .map(|s| format!("Week · resets {s}"))
+                        .unwrap_or_default()
+                }
+                None => "Weekly remaining".into(),
+            };
+            ui::UsageRow {
+                heading: true,
+                agent: id.into(),
+                label: label.into(),
+                value: quota
+                    .map(|q| subscription::quota_value(q.0, snapshot.failed()))
+                    .unwrap_or_else(|| "—".into())
+                    .into(),
+                tier: quota
+                    .map(|q| crate::usage_cache::left_tier(q.0, good, warn))
+                    .unwrap_or("")
+                    .into(),
+                fill: quota.map(|q| q.0 as f32 / 100.0).unwrap_or(0.0),
+                resets: format!(
+                    "{reset} · {}",
+                    snapshot.status(now, win::local_offset_secs())
+                )
                 .into(),
-            tier: quota
-                .map(|q| crate::usage_cache::left_tier(q.0, good, warn))
-                .unwrap_or("")
-                .into(),
-            fill: quota.map(|q| q.0 as f32 / 100.0).unwrap_or(0.0),
-            resets: quota
-                .and_then(|q| crate::usage_cache::reset_label(q.1, now, win::local_offset_secs()))
-                .map(|s| format!("Week · resets {s}"))
-                .unwrap_or_else(|| "Weekly remaining".into())
-                .into(),
+            }
         };
-        let mut rows = vec![row(
-            "codex",
-            "Codex",
-            weekly(
-                self.usage.borrow().codex.as_ref(),
-                &self.subscription.borrow(),
-                now,
-            ),
-        )];
-        if let Some(secondary) = self.secondary.borrow().as_ref() {
-            rows.push(row(
-                "dodex",
-                "Dodex",
-                weekly(secondary.usage.as_ref(), &secondary.subscription, now),
-            ));
+        let mut rows = vec![row("codex", "Codex")];
+        if self.secondary.borrow().is_some() {
+            rows.push(row("dodex", "Dodex"));
         }
         rows
     }
@@ -212,16 +173,13 @@ impl App {
             } else {
                 primary.outcomes
             };
-            if row.tier.is_empty() && tasks.total() == 0 {
-                continue;
-            }
             chips.push(taskbar::Chip {
                 agent: Some(HookSource::Codex),
                 value: format!(
                     "{} {}",
                     if is_secondary { "D" } else { "C" },
                     if row.tier.is_empty() {
-                        "--"
+                        "—"
                     } else {
                         row.value.as_str()
                     }
@@ -281,23 +239,5 @@ impl App {
                 }
             });
         });
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn weekly_local_quota_expires_and_other_windows_do_not_replace_it() {
-        let mut usage = agent_companion_core::usage::parse_codex_rate_limits(&serde_json::json!({
-            "primary":{"used_percent":95,"window_minutes":300,"resets_at":2000},
-            "secondary":{"used_percent":25,"window_minutes":10080,"resets_at":2000}
-        }));
-        let monitor = subscription::Monitor::default();
-        assert_eq!(weekly(Some(&usage), &monitor, 1000), Some((75, Some(2000))));
-        assert!(weekly(Some(&usage), &monitor, 2000).is_none());
-        usage.secondary = None;
-        assert!(weekly(Some(&usage), &monitor, 1000).is_none());
     }
 }

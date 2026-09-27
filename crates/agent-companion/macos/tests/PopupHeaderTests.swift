@@ -3,12 +3,6 @@ import AppKit
 import SwiftUI
 
 @MainActor enum PopupHeaderTests {
-    private final class Reader: SubscriptionReading {
-        var requests = 0
-        func read(codexHome: String, completion: @escaping (SubscriptionUsage) -> Void) { requests += 1 }
-        func cancel() {}
-    }
-
     static func run(output: URL) throws {
         let expectedVersion = ProcessInfo.processInfo.environment["AGENT_COMPANION_TEST_VERSION"] ?? "0.0.0-test"
         precondition(CompanionAppInfo.version == expectedVersion,
@@ -42,8 +36,8 @@ import SwiftUI
             CFPreferencesSetAppValue(ThemePreferenceStore.key, nil, store.domain as CFString)
             CFPreferencesAppSynchronize(store.domain as CFString)
         }
-        let reader = Reader()
-        let model = CompanionModel(usageReader: reader)
+        let bridge = FixtureUsageBridge()
+        let model = CompanionModel(usageBridge: bridge)
         model.isPresented = true
         model.subscriptionUsage = SubscriptionUsageTests.fixture
         let panel = NSPanel(contentRect: CGRect(x: -10000, y: -10000, width: 356, height: 560),
@@ -98,7 +92,7 @@ import SwiftUI
                          && scrolls.map { $0.contentView.bounds.origin } == offsets,
                          "Updating the header replaced a scroll view or changed a saved offset")
         }
-        precondition(reader.requests == 0, "Rendering or updating the app header requested subscription usage")
+        precondition(bridge.events.isEmpty, "Rendering or updating the app header requested subscription usage")
     }
 
     private static func verifyHeader(in host: NSView, version: String, count: Int, waiting: Bool) {

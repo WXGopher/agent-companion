@@ -150,6 +150,16 @@ impl Dashboard {
 
     /// Called off the GUI thread. A missing home is a normal empty state.
     pub fn poll(&mut self, now: u64) -> Snapshot {
+        self.poll_inner(now, true)
+    }
+
+    /// GUI task scans never read local quota logs. Account query state is owned
+    /// by the shared usage service, independently of task activity.
+    pub fn poll_tasks(&mut self, now: u64) -> Snapshot {
+        self.poll_inner(now, false)
+    }
+
+    fn poll_inner(&mut self, now: u64, include_local_usage: bool) -> Snapshot {
         let error =
             match self
                 .sessions
@@ -177,9 +187,10 @@ impl Dashboard {
             };
         self.last_sessions
             .retain(|session| !session.is_stale(now, STALE_AFTER_SECS));
-        if self
-            .usage_scanned_at
-            .is_none_or(|at| now.saturating_sub(at) >= USAGE_REFRESH_SECS)
+        if include_local_usage
+            && self
+                .usage_scanned_at
+                .is_none_or(|at| now.saturating_sub(at) >= USAGE_REFRESH_SECS)
         {
             match usage::scan_codex_usage_at(&self.home) {
                 Ok(usage) => {
@@ -207,8 +218,12 @@ impl Dashboard {
             Weekly::from_window(window, now)
         });
         let mut snapshot = project(&self.last_sessions, &self.home, now);
-        snapshot.weekly = weekly;
-        snapshot.error = error.or_else(|| self.usage_error.clone());
+        snapshot.weekly = if include_local_usage { weekly } else { None };
+        snapshot.error = error.or_else(|| {
+            include_local_usage
+                .then(|| self.usage_error.clone())
+                .flatten()
+        });
         snapshot
     }
 }
@@ -328,6 +343,13 @@ mod tests {
             writeln!(file, "{row}").unwrap();
         }
         let mut dashboard = Dashboard::new(dir.path().to_owned());
+        let task_only = dashboard.poll_tasks(start + 3);
+        assert_eq!((task_only.active_count, task_only.completed_count), (1, 0));
+        assert!(task_only.weekly.is_none());
+        assert!(
+            dashboard.usage_scanned_at.is_none(),
+            "GUI task scans must not scan local quota logs"
+        );
         let active = dashboard.poll(start + 3);
         assert_eq!((active.active_count, active.completed_count), (1, 0));
         assert_eq!(active.tasks[0].title, "Implement the narrow notch");

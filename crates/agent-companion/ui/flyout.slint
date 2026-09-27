@@ -135,6 +135,7 @@ export component FlyoutWindow inherits Window {
     in property <[UsageRow]> instance-quotas;
     in property <bool> dual-enabled;
     in property <bool> secondary-selected;
+    in property <string> update-version;
     callback select-instance(bool);
     callback expand();
     callback jump(string);
@@ -142,8 +143,9 @@ export component FlyoutWindow inherits Window {
     callback select-tasks(bool);
     callback refresh-usage();
     callback settings();
+    callback view-update();
     property <bool> pulse;
-    Timer { interval: 700ms; running: true; triggered => { root.pulse = !root.pulse; } }
+    Timer { interval: 1000ms; running: true; triggered => { root.pulse = !root.pulse; } }
     Rectangle {
         border-radius: 14px;
         background: Theme.card-bg;
@@ -197,6 +199,7 @@ export component FlyoutWindow inherits Window {
                             padding-right: 4px;
                             for quota in root.instance-quotas: Rectangle {
                                 height: 58px;
+                                Tooltip { text: @markdown("\{quota.resets}"); }
                                 border-radius: 8px;
                                 background: quota-touch.has-hover ? Theme.soft-hot : Theme.soft;
                                 HorizontalLayout {
@@ -227,7 +230,7 @@ export component FlyoutWindow inherits Window {
                     }
                     HorizontalLayout {
                         height: 28px;
-                        Text { text: root.subscription.loading ? "Refreshing…" : root.subscription.updated; color: Theme.dim; font-size: 10px; vertical-alignment: center; }
+                        Text { text: root.subscription.loading ? "Refreshing… · " + root.subscription.updated : root.subscription.updated; color: Theme.dim; font-size: 10px; vertical-alignment: center; overflow: elide; Tooltip { text: @markdown("\{root.subscription.updated}"); } }
                         PanelButton { label: "Refresh"; available: !root.subscription.loading; horizontal-stretch: 0; clicked => { root.refresh-usage(); } }
                     }
                     ScrollView {
@@ -244,7 +247,16 @@ export component FlyoutWindow inherits Window {
             Rectangle { height: 1px; background: Theme.hairline; }
             HorizontalLayout {
                 height: 28px;
-                Text { text: root.usage-page ? (root.secondary-selected ? "Dodex subscription" : "Codex subscription") : "Click a task to return to it"; color: Theme.faint; font-size: 10px; vertical-alignment: center; }
+                spacing: 6px;
+                Text {
+                    text: root.update-version != "" ? "新版本 v" + root.update-version + " 可用" : root.usage-page ? (root.secondary-selected ? "Dodex subscription" : "Codex subscription") : "Click a task to return to it";
+                    color: root.update-version != "" ? Theme.text : Theme.faint;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+                if root.update-version != "": PanelButton { label: "查看更新"; selected: true; horizontal-stretch: 0; clicked => { root.view-update(); } }
                 PanelButton { label: "Settings"; horizontal-stretch: 0; clicked => { root.settings(); } }
             }
         }

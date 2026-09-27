@@ -3,14 +3,174 @@ import { StatusComponent } from "status-component.slint";
 
 export global SettingsColors {
     out property <bool> dark: Palette.color-scheme == ColorScheme.dark;
-    out property <color> background: dark ? #1d201f : #f4f6f5;
-    out property <color> card: dark ? #272b29 : #ffffff;
-    out property <color> text: dark ? #f0f3f1 : #202925;
-    out property <color> secondary: dark ? #a6b1ab : #65736b;
-    out property <color> border: dark ? #3a413d : #e0e7e2;
-    out property <color> selected: dark ? #293b33 : #edf7f0;
-    out property <color> accent: dark ? #7adab0 : #27734e;
+    out property <color> background: dark ? #1c1c1f : #f5f5f7;
+    out property <color> card: dark ? #262629 : #ffffff;
+    out property <color> text: dark ? #f0f0f2 : #252528;
+    out property <color> secondary: dark ? #aaaab1 : #6b6b73;
+    out property <color> border: dark ? #3c3c42 : #e2e2e7;
+    out property <color> selected: dark ? #2b3831 : #edf4ef;
+    out property <color> accent: dark ? #84c4a0 : #3d7657;
+    out property <color> accent-hover: dark ? #97d1b0 : #326448;
+    out property <color> accent-pressed: dark ? #6bad87 : #29543d;
+    out property <color> accent-text: dark ? #162d20 : #ffffff;
+    out property <color> control: dark ? #343438 : #ffffff;
+    out property <color> control-hover: dark ? #3e3e43 : #f6f6f8;
+    out property <color> control-pressed: dark ? #48484e : #ededf1;
+    out property <color> control-border: dark ? #53535b : #d0d0d7;
+    out property <color> control-disabled: dark ? #2e2e32 : #f2f2f5;
+    out property <color> disabled-text: dark ? #797982 : #94949d;
     out property <color> error: dark ? #ffb2a8 : #ad342b;
+}
+
+export component SettingsButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    in property <bool> primary: false;
+    callback clicked;
+
+    private property <string> held-key;
+    private property <bool> pressed: root.enabled && ((touch.pressed && touch.has-hover) || root.held-key != "");
+
+    min-width: max(64px, label.preferred-width + 24px);
+    preferred-width: max(self.min-width, label.preferred-width + 24px);
+    height: 32px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    border-radius: 7px;
+    border-width: 1px;
+    border-color: !root.enabled ? SettingsColors.border
+        : root.primary ? self.background : SettingsColors.control-border;
+    background: !root.enabled ? SettingsColors.control-disabled
+        : root.primary ? (root.pressed ? SettingsColors.accent-pressed : touch.has-hover ? SettingsColors.accent-hover : SettingsColors.accent)
+        : root.pressed ? SettingsColors.control-pressed : touch.has-hover ? SettingsColors.control-hover : SettingsColors.control;
+    animate background, border-color { duration: 90ms; }
+    forward-focus: focus-scope;
+
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    changed enabled => { if !root.enabled { root.held-key = ""; } }
+
+    Rectangle {
+        x: -3px;
+        y: -3px;
+        width: parent.width + 6px;
+        height: parent.height + 6px;
+        border-radius: 10px;
+        border-width: 2px;
+        border-color: SettingsColors.accent.with-alpha(0.55);
+        visible: root.enabled && focus-scope.has-focus;
+    }
+
+    label := Text {
+        x: 12px;
+        width: parent.width - 24px;
+        height: parent.height;
+        text: root.text;
+        font-size: 13px;
+        font-weight: 500;
+        color: !root.enabled ? SettingsColors.disabled-text : root.primary ? SettingsColors.accent-text : SettingsColors.text;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { focus-scope.focus(); root.clicked(); }
+    }
+
+    focus-scope := FocusScope {
+        width: 0px;
+        height: 0px;
+        enabled: root.enabled;
+        changed has-focus => { if !self.has-focus { root.held-key = ""; } }
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                if !event.repeat && root.held-key == "" {
+                    root.held-key = event.text;
+                    if event.text == Key.Return { root.clicked(); }
+                }
+                return accept;
+            }
+            return reject;
+        }
+        key-released(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                if root.held-key == event.text {
+                    root.held-key = "";
+                    if event.text == Key.Space { root.clicked(); }
+                }
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+export component SettingsTextField inherits Rectangle {
+    in-out property <string> text <=> input.text;
+    in property <bool> enabled: true;
+    callback accepted;
+    public function select-all() { input.select-all(); }
+
+    height: 32px;
+    min-width: 64px;
+    preferred-width: 96px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    border-radius: 7px;
+    border-width: 1px;
+    border-color: input.has-focus ? SettingsColors.accent : SettingsColors.border;
+    background: SettingsColors.background;
+    forward-focus: input;
+    accessible-role: none;
+
+    TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: MouseCursor.text;
+        clicked => { input.focus(); }
+    }
+
+    ContextMenuArea {
+        enabled: root.enabled;
+        Menu {
+            MenuItem { title: @tr("Cut"); activated => { input.cut(); } }
+            MenuItem { title: @tr("Copy"); enabled: root.text != ""; activated => { input.copy(); } }
+            MenuItem { title: @tr("Paste"); activated => { input.paste(); } }
+            MenuItem { title: @tr("Select All"); enabled: root.text != ""; activated => { input.select-all(); } }
+        }
+        Rectangle {
+            x: 10px;
+            width: parent.width - 20px;
+            height: parent.height;
+            clip: true;
+            input := TextInput {
+                private property <length> content-x;
+                x: min(0px, max(parent.width - self.width - self.text-cursor-width, self.content-x));
+                width: max(parent.width - self.text-cursor-width, self.preferred-width);
+                height: parent.height;
+                enabled: root.enabled;
+                single-line: true;
+                font-size: 13px;
+                color: root.enabled ? SettingsColors.text : SettingsColors.disabled-text;
+                selection-background-color: SettingsColors.accent;
+                selection-foreground-color: SettingsColors.accent-text;
+                vertical-alignment: center;
+                accessible-label: root.accessible-label;
+                accepted => { root.accepted(); }
+                cursor-position-changed(position) => {
+                    if position.x + self.content-x < 0px {
+                        self.content-x = -position.x;
+                    } else if position.x + self.content-x > parent.width - self.text-cursor-width {
+                        self.content-x = parent.width - position.x - self.text-cursor-width;
+                    }
+                }
+            }
+        }
+    }
 }
 
 export component SettingsCard inherits Rectangle {
@@ -48,7 +208,7 @@ export component ComponentChoice inherits Rectangle {
                 height: parent.height;
                 text: root.item.label;
                 color: root.available ? SettingsColors.text : SettingsColors.secondary;
-                font-size: 11px;
+                font-size: 12px;
                 horizontal-alignment: left;
                 vertical-alignment: center;
                 overflow: elide;

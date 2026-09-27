@@ -86,7 +86,7 @@ enum TerminalJump {
     }
 
     static func resumeCommand(_ task: CodexTask, instance: CodexInstance) -> String? {
-        let runtime = instance.executablePath ?? (instance.id == "codex" ? CodexSubscriptionReader.findExecutable()?.path : nil)
+        let runtime = instance.executablePath ?? (instance.id == "codex" ? PrimaryCodexApp.findCLIExecutable()?.path : nil)
         guard task.sourceID == instance.id, UUID(uuidString: task.conversationID) != nil,
               instance.codexHome.hasPrefix("/"),
               let executable = runtime, executable.hasPrefix("/"),

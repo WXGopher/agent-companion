@@ -24,17 +24,6 @@ import SwiftUI
         }
     }
 
-    private final class Reader: SubscriptionReading {
-        var requests = 0
-        var cancellations = 0
-        var completion: ((SubscriptionUsage) -> Void)?
-        func read(codexHome: String, completion: @escaping (SubscriptionUsage) -> Void) {
-            requests += 1
-            self.completion = completion
-        }
-        func cancel() { cancellations += 1 }
-    }
-
     // isShown becomes true before AppKit finishes opening. Ordinary dismissal
     // tests must observe completion instead of racing a fixed animation delay.
     static func openMenuPanel(_ controller: MenuBarController, open: (() -> Void)? = nil) {
@@ -142,8 +131,8 @@ import SwiftUI
     private static func verifyPopupLayouts(output: URL) throws {
         let preferences = Preferences()
         defer { preferences.remove() }
-        let reader = Reader()
-        let model = CompanionModel(usageReader: reader)
+        let bridge = FixtureUsageBridge()
+        let model = CompanionModel(usageBridge: bridge)
         model.isPresented = true
         model.snapshot = snapshot()
         let (panel, host) = popup(model: model, preferences: preferences.value)
@@ -166,6 +155,12 @@ import SwiftUI
                     model.snapshot.instances?[0].weekly = WeeklyUsage(usedPercent: 97, resetsAt: 4_000_000_000, expired: false)
                     model.snapshot.instances?[1].weekly = nil
                 }
+                bridge.value.instances = []
+                for instance in model.instances {
+                    if let quota = instance.weekly { bridge.set(FixtureUsageBridge.quota(quota.usedPercent), for: instance.usageSource) }
+                }
+                model.usageCoordinator.refreshSnapshot()
+                model.subscriptionUsage = SubscriptionUsageTests.fixture
                 settle()
                 let pixels = capture(host)
                 precondition(panel.frame == frame && host.bounds.size == CGSize(width: 356, height: 560),
@@ -182,21 +177,22 @@ import SwiftUI
                 }
             }
         }
-        precondition(reader.requests == 0, "Rendering a theme requested subscription data")
+        precondition(bridge.events.isEmpty, "Rendering a theme requested subscription data")
     }
 
     private static func verifyLiveSwitching(output: URL) throws {
         let preferences = Preferences()
         defer { preferences.remove() }
-        let reader = Reader()
-        let model = CompanionModel(usageReader: reader)
+        let bridge = FixtureUsageBridge()
+        let model = CompanionModel(usageBridge: bridge)
         model.snapshot = snapshot(taskCount: 18, completed: true)
         model.dashboardError = String(repeating: "Synthetic local sessions could not be read. ", count: 16)
         model.isPresented = true
         model.showingCompleted = true
         model.showUsage(for: "dodex")
-        reader.completion?(SubscriptionUsageTests.fixture)
-        precondition(reader.requests == 1)
+        bridge.set(SubscriptionUsageTests.fixture, for: model.selectedInstance.usageSource)
+        model.refreshUsageSnapshot()
+        precondition(bridge.events == [.history("dodex")])
         let (panel, host) = popup(model: model, preferences: preferences.value)
         defer { model.stop(); panel.close() }
         let frame = panel.frame
@@ -214,7 +210,7 @@ import SwiftUI
             settle()
             let offsets = scrolls.map { $0.contentView.bounds.origin }
             precondition(offsets.contains { $0.y > 20 }, "The fixture did not exercise saved scroll positions")
-            let requests = reader.requests, cancellations = reader.cancellations
+            let events = bridge.events
             for _ in 0..<2 {
                 pressToggle(in: host, preferences: preferences.value)
                 for _ in 0..<6 {
@@ -227,7 +223,7 @@ import SwiftUI
                                  "Changing theme reset a page's saved scroll position")
                     precondition(model.isPresented && model.showingUsage == usage && model.showingCompleted
                                  && model.selectedInstanceID == "dodex", "Changing theme lost navigation state or closed the popup")
-                    precondition(reader.requests == requests && reader.cancellations == cancellations,
+                    precondition(bridge.events == events,
                                  "Changing theme restarted or cancelled a usage query")
                 }
                 verifyBackground(capture(host), theme: preferences.value.theme, size: host.bounds.size)
@@ -239,13 +235,10 @@ import SwiftUI
         let preferences = Preferences()
         defer { preferences.remove() }
         NSApp.appearance = NSAppearance(named: .aqua)
-        let model = CompanionModel(usageReader: Reader()), menu = CompanionModel(usageReader: Reader())
-        var readers: [String: Reader] = [:]
+        let bridge = FixtureUsageBridge()
+        let model = CompanionModel(usageBridge: bridge), menu = CompanionModel(usageBridge: bridge)
         let controller = MenuBarController(model: model, menuModel: menu,
-            themePreferences: preferences.value, settingsOverride: {}, usageReader: { source in
-                if let reader = readers[source.instanceID] { return reader }
-                let reader = Reader(); readers[source.instanceID] = reader; return reader
-            })
+            themePreferences: preferences.value, settingsOverride: {}, usageBridge: bridge)
         controller.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
         model.stop()
         defer { controller.quit() }
@@ -258,7 +251,8 @@ import SwiftUI
         menu.showingCompleted = true
         menu.showUsage(for: "dodex")
         settle()
-        for reader in readers.values { reader.completion?(SubscriptionUsageTests.fixture) }
+        for instance in model.instances { bridge.set(SubscriptionUsageTests.fixture, for: instance.usageSource) }
+        model.refreshUsageSnapshot()
         settle()
         guard let host = controller.menuPanelContentView, let window = host.window,
               let statusButton = controller.menuBarButton, let image = statusButton.image else {
@@ -266,7 +260,7 @@ import SwiftUI
         }
         precondition(controller.menuPanelIsVisible && image.isTemplate)
         let frame = window.frame
-        let requests = readers.values.map(\.requests).reduce(0, +)
+        let events = bridge.events
         for theme in [CompanionTheme.light, .dark] {
             NSApp.appearance = theme.toggled.appearance
             pressToggle(in: host, preferences: preferences.value)
@@ -279,7 +273,7 @@ import SwiftUI
                          "The popover's native chrome retained the opposite appearance")
             precondition(statusButton.image === image && image.isTemplate,
                          "An app theme replaced or recolored the system menu-bar template image")
-            precondition(readers.values.map(\.requests).reduce(0, +) == requests,
+            precondition(bridge.events == events,
                          "A native popup theme action requested subscription data")
             if let chrome = window.contentView {
                 try write(capture(chrome), name: "theme-popup-native-\(theme.rawValue)", output: output)

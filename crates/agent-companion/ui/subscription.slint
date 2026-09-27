@@ -2,6 +2,7 @@ import { Theme, UsageRow, UsageBar } from "common.slint";
 
 export struct SubscriptionView {
     loading: bool,
+    history-loading: bool,
     updated: string,
     message: string,
     limits-error: string,
@@ -74,7 +75,7 @@ export component SubscriptionContent inherits VerticalLayout {
         font-size: 12px;
         wrap: word-wrap;
     }
-    if root.data.has-reading: VerticalLayout {
+    VerticalLayout {
         spacing: 10px;
         Text { text: "SUBSCRIPTION LIMITS"; color: Theme.dim; font-size: 10px; font-weight: 600; }
         if root.data.limits-error != "": Text { text: root.data.limits-error; color: Theme.thin; font-size: 11px; wrap: word-wrap; }
@@ -86,7 +87,10 @@ export component SubscriptionContent inherits VerticalLayout {
                 QuotaRows { rows: root.limits; }
             }
         }
+        if !root.data.has-reading: Text { text: "—"; color: Theme.dim; font-size: 16px; }
+        Text { text: "* = last query failed; showing the last successful value."; color: Theme.faint; font-size: 10px; wrap: word-wrap; }
         Text { text: "TOKEN ACTIVITY"; color: Theme.dim; font-size: 10px; font-weight: 600; }
+        if root.data.history-loading: Text { text: "Loading token history…"; color: Theme.dim; font-size: 11px; }
         if root.data.token-error != "": Text { text: root.data.token-error; color: Theme.thin; font-size: 11px; wrap: word-wrap; }
         if root.data.has-tokens: VerticalLayout {
             spacing: 10px;
@@ -165,6 +169,6 @@ export component SubscriptionContent inherits VerticalLayout {
             }
             Text { text: "— = not reported. Account input/output breakdown unavailable."; color: Theme.faint; font-size: 10px; wrap: word-wrap; }
         }
-        Text { text: "Codex account activity may be delayed. Token totals do not measure remaining allowance."; color: Theme.faint; font-size: 10px; wrap: word-wrap; }
+        Text { text: "History is checked when entering Usage or switching accounts and cached for 5 minutes. Refresh updates allowance only. Token totals do not measure remaining allowance."; color: Theme.faint; font-size: 10px; wrap: word-wrap; }
     }
 }

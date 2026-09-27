@@ -27,13 +27,14 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSPopoverDelegat
     private var menuChanges: AnyCancellable?
     private var themeChanges: AnyCancellable?
     private var quitting = false
+    private var pendingUpdateCheck = false
 
     init(model: CompanionModel = CompanionModel(), menuModel: CompanionModel = CompanionModel(),
          themePreferences: ThemePreferences = .shared,
          menuBarPlacement: MenuBarPlacement = MenuBarPlacement(), settingsOverride: (() -> Void)? = nil,
          clock: @escaping () -> Date = Date.init,
          menuBarReducedMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion },
-         usageReader: @escaping (SubscriptionSource) -> SubscriptionReading = { _ in CodexSubscriptionReader() }) {
+         usageBridge: SubscriptionUsageBridging = RustSubscriptionUsageBridge()) {
         self.model = model
         self.menuModel = menuModel
         self.themePreferences = themePreferences
@@ -41,14 +42,14 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSPopoverDelegat
         self.settingsOverride = settingsOverride
         self.clock = clock
         menuBarActivity = MenuBarActivityView(reduceMotion: menuBarReducedMotion)
-        usageCoordinator = SubscriptionUsageCoordinator(makeReader: usageReader, clock: clock)
+        usageCoordinator = SubscriptionUsageCoordinator(bridge: usageBridge)
         super.init()
         model.usageCoordinator = usageCoordinator
         menuModel.usageCoordinator = usageCoordinator
-        usageCoordinator.onChange = { [weak self] source, value, loading in
+        usageCoordinator.onChange = { [weak self] in
             guard let self else { return }
-            model.receiveUsage(source: source, value: value, loading: loading)
-            menuModel.receiveUsage(source: source, value: value, loading: loading)
+            self.model.receiveUsageSnapshot()
+            self.menuModel.receiveUsageSnapshot()
             RunLoop.main.perform(inModes: [.common]) { [weak self] in self?.updateMenuBarUsage() }
         }
     }
@@ -105,9 +106,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSPopoverDelegat
 
     private func updateMenuBarUsage() {
         guard !quitting, let statusItem else { return }
-        // The background snapshot owns membership even while the popup is closed.
-        usageCoordinator.synchronize(instances: model.instances, backgroundEnabled: !model.snapshot.loading)
-        usageCoordinator.refreshBackground()
+        // Rendering reads the shared state without scheduling any requests.
         let value = MenuBarUsage(instances: model.instances, tasks: model.snapshot.tasks,
                                  now: clock(), reading: { usageCoordinator.reading(for: $0) })
         menuBarActivity.refreshAnimation()
@@ -119,15 +118,23 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSPopoverDelegat
     @objc func toggleMenuPanel() {
         if popover.isShown { popover.performClose(nil); return }
         guard !quitting, let button = statusItem?.button else { return }
+        usageCoordinator.panelOpened()
         menuModel.showTasks()
         menuModel.isPresented = true
         menuModel.start()
+        pendingUpdateCheck = true
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
     }
 
-    func popoverDidShow(_ notification: Notification) { menuModel.animatesTaskActivity = true }
+    func popoverDidShow(_ notification: Notification) {
+        menuModel.animatesTaskActivity = true
+        guard pendingUpdateCheck, popover.isShown, menuModel.isPresented, !quitting else { return }
+        pendingUpdateCheck = false
+        menuModel.panelOpenedForUpdates()
+    }
 
     func popoverDidClose(_ notification: Notification) {
+        pendingUpdateCheck = false
         menuModel.animatesTaskActivity = false
         menuModel.isPresented = false
         menuModel.message = nil
@@ -164,7 +171,6 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSPopoverDelegat
         menuModel.animatesTaskActivity = false
         model.stop()
         menuModel.stop()
-        usageCoordinator.stop()
         popover.performClose(nil)
         if let statusItem { menuBarPlacement.remove(statusItem) }
         statusItem = nil

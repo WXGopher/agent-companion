@@ -62,7 +62,7 @@ export component CardWindow inherits Window {
     property <color> card-accent: root.card-source == "codex" ? Theme.codex : Theme.claude;
 
     Timer {
-        interval: 700ms;
+        interval: 1000ms;
         running: true;
         triggered => {
             root.pulse = !root.pulse;
@@ -110,9 +110,8 @@ export component CardWindow inherits Window {
                     height: 8px;
                     border-radius: 4px;
                     y: 4px;
-                    background: root.card-accent;
-                    opacity: root.pulse ? 1.0 : 0.4;
-                    animate opacity { duration: 700ms; easing: ease-in-out; }
+                    background: Theme.pulse-color(root.card-accent, root.pulse ? 1.0 : 0.0);
+                    animate background { duration: 1000ms; easing: ease-in-out; }
                 }
                 Text {
                     text: root.card-title;

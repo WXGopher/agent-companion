@@ -42,8 +42,9 @@ component AgentBlock {
                     width: root.dot;
                     height: root.dot;
                     border-radius: root.dot / 2;
-                    background: Theme.task-color(chip.pending, chip.running, chip.done, chip.failed, chip.stopped);
-                    opacity: chip.pending > 0 || chip.running > 0 ? 0.25 + 0.75 * root.pulse : 1.0;
+                    background: chip.pending > 0 || chip.running > 0
+                        ? Theme.pulse-color(Theme.task-color(chip.pending, chip.running, chip.done, chip.failed, chip.stopped), root.pulse)
+                        : Theme.task-color(chip.pending, chip.running, chip.done, chip.failed, chip.stopped);
                 }
             }
             Text {
@@ -71,8 +72,7 @@ component AgentBlock {
                 spacing: 2px;
                 Text {
                     text: "?";
-                    color: Theme.status-waiting;
-                    opacity: 0.25 + 0.75 * root.pulse;
+                    color: Theme.pulse-color(Theme.status-waiting, root.pulse);
                     font-size: 11px;
                     font-weight: 700;
                     vertical-alignment: center;
@@ -97,8 +97,7 @@ component AgentBlock {
                         width: root.dot;
                         height: root.dot;
                         border-radius: root.dot / 2;
-                        background: Theme.status-running;
-                        opacity: 0.25 + 0.75 * root.pulse;
+                        background: Theme.pulse-color(Theme.status-running, root.pulse);
                     }
                 }
                 Text {
@@ -141,9 +140,11 @@ export component TaskbarBar inherits Window {
     background: transparent;
 
     in property <[UsageChip]> chips;
+    in property <string> usage-tooltip;
+    Tooltip { text: @markdown("\{root.usage-tooltip}"); }
     // Set from the taskbar's own shape, not from a docking constant.
     in property <bool> vertical: true;
-    // The breathing dot's brightness, 0..1; see `TaskbarView::breathe`.
+    // Gray-to-status-colour blend, 0..1; see `TaskbarView::breathe`.
     in property <float> pulse: 1.0;
 
     // Mirrors `taskbar::PADDING` and `taskbar::BLOCK_GAP`.

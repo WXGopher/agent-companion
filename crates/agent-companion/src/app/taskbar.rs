@@ -437,6 +437,10 @@ impl TaskbarView {
         self.pressed_right.set(false);
     }
 
+    pub fn set_usage_tooltip(&self, text: &str) {
+        self.ui.set_usage_tooltip(text.into());
+    }
+
     /// Put `chips` in the window and resize it to fit them.
     pub fn set_chips(&self, chips: &[Chip], along: Along) {
         use slint::{Model, ModelRc, VecModel};

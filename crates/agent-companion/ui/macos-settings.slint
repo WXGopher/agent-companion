@@ -1,11 +1,14 @@
-import { Button, ComboBox, ScrollView, Switch, TabWidget } from "std-widgets.slint";
+import { ComboBox, ScrollView, Switch } from "std-widgets.slint";
 import { StatusComponent } from "status-component.slint";
 
-import { SettingsColors, SettingsCard } from "settings-common.slint";
+import { SettingsColors, SettingsCard, SettingsButton, SettingsTextField } from "settings-common.slint";
 import { StatusBarSettings } from "statusbar-settings.slint";
 import { ProfileSyncFile, ProfileSyncSettings } from "profile-sync.slint";
 
 export component MacSettings inherits Rectangle {
+    in property <int> usage-refresh-minutes: 5;
+    in property <string> usage-settings-message;
+    callback set-usage-refresh-minutes(string);
     in-out property <int> current-page: 0;
     in property <[StatusComponent]> left-components;
     in property <[StatusComponent]> right-components;
@@ -44,7 +47,7 @@ export component MacSettings inherits Rectangle {
 
     background: SettingsColors.background;
     VerticalLayout {
-        padding: 20px;
+        padding: 24px;
         spacing: 16px;
         HorizontalLayout {
             height: 44px;
@@ -67,29 +70,64 @@ export component MacSettings inherits Rectangle {
             VerticalLayout {
                 alignment: center;
                 spacing: 4px;
-                Text { text: "Settings"; font-size: 20px; font-weight: 700; color: SettingsColors.text; }
-                Text { text: "Make your workspace feel right."; font-size: 11px; color: SettingsColors.secondary; }
+                Text { text: "设置"; font-size: 24px; font-weight: 600; color: SettingsColors.text; }
+                Text { text: "管理实例与工作偏好"; font-size: 12px; color: SettingsColors.secondary; }
             }
             Text {
                 text: "Agent Companion";
-                font-size: 11px;
+                font-size: 12px;
                 color: SettingsColors.secondary;
                 horizontal-alignment: right;
                 vertical-alignment: center;
             }
         }
 
-        TabWidget {
-            current-index <=> root.current-page;
-            Tab {
-                title: "Codex CLI";
+        SettingsCard {
+            vertical-stretch: 0;
+            HorizontalLayout {
+                padding: 16px;
+                spacing: 16px;
                 VerticalLayout {
-                    padding-top: 20px;
+                    spacing: 4px;
+                    Text { text: "额度自动刷新间隔（分钟）"; font-size: 12px; color: SettingsColors.text; }
+                    Text {
+                        text: root.usage-settings-message == "" ? "所有实例共用，1–60 分钟；保存后重新计时。" : root.usage-settings-message;
+                        wrap: word-wrap;
+                        font-size: 12px;
+                        color: SettingsColors.secondary;
+                    }
+                }
+                usage-interval := SettingsTextField {
+                    width: 72px;
+                    height: 32px;
+                    text: root.usage-refresh-minutes;
+                    accessible-label: "额度自动刷新间隔（分钟）";
+                    accepted => { root.set-usage-refresh-minutes(self.text); }
+                }
+                SettingsButton {
+                    width: 80px;
+                    text: "保存";
+                    clicked => { root.set-usage-refresh-minutes(usage-interval.text); }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            height: 32px;
+            spacing: 8px;
+            SettingsButton { text: "Codex CLI"; width: 132px; primary: root.current-page == 0; clicked => { root.current-page = 0; } }
+            SettingsButton { text: "Codex 双开"; width: 132px; primary: root.current-page == 1; clicked => { root.current-page = 1; } }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        Rectangle {
+            vertical-stretch: 1;
+            if root.current-page == 0: VerticalLayout {
+                    padding-top: 4px;
                     spacing: 10px;
                     if root.dual-enabled: HorizontalLayout {
                         height: 30px;
                         spacing: 12px;
-                        Text { text: "Instance"; font-size: 11px; color: SettingsColors.secondary; vertical-alignment: center; }
+                        Text { text: "Instance"; font-size: 12px; color: SettingsColors.secondary; vertical-alignment: center; }
                         ComboBox {
                             width: 180px;
                             model: root.instance-options;
@@ -97,7 +135,7 @@ export component MacSettings inherits Rectangle {
                             accessible-label: "Status bar configuration instance";
                             selected(label) => { root.select-instance(label); }
                         }
-                        Text { text: "Each instance keeps its own draft and saved settings."; font-size: 10px; color: SettingsColors.secondary; vertical-alignment: center; }
+                        Text { text: "Each instance keeps its own draft and saved settings."; font-size: 12px; color: SettingsColors.secondary; vertical-alignment: center; }
                     }
                     StatusBarSettings {
                         left-components: root.left-components;
@@ -116,11 +154,8 @@ export component MacSettings inherits Rectangle {
                         apply => { root.apply(); }
                         restore-defaults => { root.restore-defaults(); }
                     }
-                }
             }
-            Tab {
-                title: "Codex 双开";
-                ScrollView {
+            if root.current-page == 1: ScrollView {
                     viewport-width: self.visible-width;
                     viewport-y <=> root.dual-scroll-y;
                     horizontal-scrollbar-policy: always-off;
@@ -131,8 +166,10 @@ export component MacSettings inherits Rectangle {
                         self.viewport-y = max(min(self.viewport-y, 0px), min(0px, self.visible-height - self.viewport-height));
                     }
                 VerticalLayout {
-                    padding-top: 20px;
-                    spacing: 18px;
+                    padding-top: 4px;
+                    padding-right: 12px;
+                    padding-bottom: 8px;
+                    spacing: 20px;
                     VerticalLayout {
                         spacing: 8px;
                         Text { text: "Codex 双开"; font-size: 16px; font-weight: 600; color: SettingsColors.text; }
@@ -156,11 +193,11 @@ export component MacSettings inherits Rectangle {
                             }
                             Text {
                                 text: root.dual-message;
-                                font-size: 11px;
+                                font-size: 12px;
                                 color: root.dual-error ? SettingsColors.error : SettingsColors.secondary;
                                 wrap: word-wrap;
                             }
-                            if !root.dual-deployed: Button {
+                            if !root.dual-deployed: SettingsButton {
                                 text: root.dual-busy ? "正在检查与部署…" : root.dual-error ? "重试部署" : "部署双开环境";
                                 enabled: !root.dual-busy;
                                 primary: true;
@@ -172,7 +209,7 @@ export component MacSettings inherits Rectangle {
                                 VerticalLayout {
                                     spacing: 5px;
                                     Text { text: "在 Companion 中启用双实例支持"; font-size: 12px; color: SettingsColors.text; }
-                                    Text { text: "停用不会退出 Dodex，也不会删除环境。重新启用时会先验证部署。"; font-size: 10.5px; color: SettingsColors.secondary; wrap: word-wrap; }
+                                    Text { text: "停用不会退出 Dodex，也不会删除环境。重新启用时会先验证部署。"; font-size: 12px; color: SettingsColors.secondary; wrap: word-wrap; }
                                 }
                                 Switch {
                                     checked: root.dual-enabled;
@@ -189,12 +226,12 @@ export component MacSettings inherits Rectangle {
                             padding: 18px;
                             spacing: 8px;
                             Text { text: "使用 Dodex"; font-size: 12px; font-weight: 600; color: SettingsColors.text; }
-                            Text { text: "在应用程序中打开 Dodex，首次使用请登录。部署完成不会自动启动 Dodex。"; font-size: 11px; color: SettingsColors.secondary; wrap: word-wrap; }
+                            Text { text: "在应用程序中打开 Dodex，首次使用请登录。部署完成不会自动启动 Dodex。"; font-size: 12px; color: SettingsColors.secondary; wrap: word-wrap; }
                         }
                     }
                     Text {
                         text: "部署使用本机已安装且签名有效的官方 Codex 应用。已有 Dodex 环境会先验证，程序、配置和数据不会被覆盖。全新环境不复制主实例的凭证、历史或个人配置。";
-                        font-size: 11px;
+                        font-size: 12px;
                         color: SettingsColors.secondary;
                         wrap: word-wrap;
                     }
@@ -207,7 +244,6 @@ export component MacSettings inherits Rectangle {
                         open-file(file, secondary, edit) => { root.open-sync-file(file, secondary, edit); }
                         refresh => { root.refresh-sync(); }
                     }
-                }
                 }
             }
         }

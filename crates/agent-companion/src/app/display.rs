@@ -84,11 +84,14 @@ impl DisplayState {
         Self::restore(snapshot)
     }
 
-    fn restore(snapshot: Snapshot) -> Self {
+    fn restore(mut snapshot: Snapshot) -> Self {
+        // Earlier versions persisted local Codex log readings. Account query
+        // results are memory-only, so neither restore nor save those readings.
+        let removed_codex = snapshot.usage.codex.take().is_some();
         Self {
             snapshot,
             live: false,
-            dirty: false,
+            dirty: removed_codex,
             last_save: None,
         }
     }
@@ -206,22 +209,15 @@ impl DisplayState {
         self.dirty = true;
     }
 
-    pub fn remember(&mut self, usage: UsageSnapshot, sessions: Vec<ui::SessionRow>, now: u64) {
+    pub fn remember(&mut self, mut usage: UsageSnapshot, sessions: Vec<ui::SessionRow>, now: u64) {
         if !self.live {
             return;
         }
+        usage.codex = None;
         self.snapshot.usage = usage;
         self.snapshot.sessions = sessions.into_iter().map(SavedSession::from).collect();
         self.snapshot.updated_at = now;
         self.dirty = true;
-    }
-
-    /// Update local quota without reviving saved sessions or changing visibility.
-    pub fn remember_usage(&mut self, usage: UsageSnapshot) {
-        if self.snapshot.usage != usage {
-            self.snapshot.usage = usage;
-            self.dirty = true;
-        }
     }
 
     /// Coalesce rapid hooks; a clean shutdown always flushes the final state.
@@ -267,21 +263,20 @@ mod tests {
     use agent_companion_core::usage::{ClaudeLimits, UsageLimit};
 
     #[test]
-    fn fresh_quota_does_not_revive_a_saved_session() {
-        let snapshot = previous_display();
-        let mut display = DisplayState::restore(snapshot.clone());
-        let mut usage = snapshot.usage.clone();
-        usage.codex = Some(agent_companion_core::usage::parse_codex_rate_limits(
-            &serde_json::json!({
-                "primary": {"used_percent": 25, "window_minutes": 10080}
-            }),
+    fn old_codex_log_quota_is_not_restored_or_saved() {
+        let mut snapshot = previous_display();
+        snapshot.usage.codex = Some(agent_companion_core::usage::parse_codex_rate_limits(
+            &serde_json::json!({"primary": {"used_percent": 25, "window_minutes": 10080}}),
         ));
-        display.remember_usage(usage.clone());
-        assert_eq!(display.usage(), usage);
+        let mut display = DisplayState::restore(snapshot.clone());
+        assert!(display.usage().codex.is_none());
+        assert_eq!(display.usage().claude, snapshot.usage.claude);
+        assert!(display.dirty);
         assert!(!display.is_live());
         assert_eq!(display.snapshot.sessions, snapshot.sessions);
-        assert_eq!(display.snapshot.codex, snapshot.codex);
-        assert_eq!(display.snapshot.updated_at, snapshot.updated_at);
+        display.activate(CODEX, THEN, THEN);
+        display.remember(snapshot.usage, vec![], THEN);
+        assert!(display.snapshot.usage.codex.is_none());
     }
 
     const THEN: u64 = 1_787_000_000;

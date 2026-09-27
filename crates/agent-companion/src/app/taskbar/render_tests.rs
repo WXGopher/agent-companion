@@ -113,7 +113,7 @@ fn task_status_colours_prioritize_waiting_and_breathe_only_while_active() {
     let bar = TaskbarView::new(super::TaskbarBar::new().unwrap());
     bar.show();
     let rgb = |r, g, b| Rgb8Pixel { r, g, b };
-    let blue = rgb(0x4a, 0x9d, 0xe8);
+    let blue = rgb(0x32, 0xb8, 0xff);
     let green = rgb(0x55, 0xc9, 0x8d);
     let yellow = rgb(0xe3, 0xbf, 0x52);
     let gray = rgb(0x6a, 0x6a, 0x80);
@@ -196,8 +196,12 @@ fn task_status_colours_prioritize_waiting_and_breathe_only_while_active() {
             }
             bar.breathe(0.0);
             if tasks.active() > 0 {
-                let dim = draw(&window).expect("active status breathes");
-                assert!(dim[center].r < bright[center].r && dim[center].b < bright[center].b);
+                let low = draw(&window).expect("active status breathes");
+                assert_eq!(
+                    low[center],
+                    rgb(0x92, 0x97, 0x9f),
+                    "breaths reach opaque gray"
+                );
             } else {
                 assert!(
                     draw(&window).is_none(),
@@ -238,7 +242,7 @@ fn task_status_failed_and_stopped_outcomes_never_look_all_completed() {
     let bar = TaskbarView::new(super::TaskbarBar::new().unwrap());
     bar.show();
     let rgb = |r, g, b| Rgb8Pixel { r, g, b };
-    let blue = rgb(0x4a, 0x9d, 0xe8);
+    let blue = rgb(0x32, 0xb8, 0xff);
     let green = rgb(0x55, 0xc9, 0x8d);
     let yellow = rgb(0xe3, 0xbf, 0x52);
     let gray = rgb(0x6a, 0x6a, 0x80);

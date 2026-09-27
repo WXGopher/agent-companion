@@ -2,16 +2,6 @@
 import AppKit
 
 @MainActor enum MenuBarUsageTests {
-    private final class Reader: SubscriptionReading {
-        var reads: Int { completions.count }
-        var completions: [(SubscriptionUsage) -> Void] = []
-        var completion: ((SubscriptionUsage) -> Void)? { completions.last }
-        var cancelled = 0
-        func read(codexHome: String, completion: @escaping (SubscriptionUsage) -> Void) {
-            completions.append(completion)
-        }
-        func cancel() { cancelled += 1 }
-    }
     private static func instance(_ id: String, used: Int? = nil, expired: Bool = false,
                                  resetsAt: TimeInterval = 4_000_000_000) -> CodexInstance {
         CodexInstance(instanceId: id, label: id == "codex" ? "Codex" : "Dodex",
@@ -25,9 +15,14 @@ import AppKit
     private static func value(_ instances: [CodexInstance], tasks: [CodexTask] = []) -> MenuBarUsage {
         MenuBarUsage(instances: instances, tasks: tasks, usage: { $0.weekly })
     }
+    private static func failedValue(_ instances: [CodexInstance]) -> MenuBarUsage {
+        MenuBarUsage(instances: instances, reading: {
+            .init(usage: $0.weekly, stale: true, readAt: Date(timeIntervalSince1970: 2_000_000_000), error: "Synthetic network failure")
+        })
+    }
     private static func official(_ used: Int, at date: Date = Date(),
                                  resetsAt: TimeInterval = 4_000_000_000) -> SubscriptionUsage {
-        let window = SubscriptionLimits.Window(usedPercent: used, windowDurationMins: 10080, resetsAt: resetsAt)
+        let window = SubscriptionLimits.Window(usedPercent: Double(used), windowDurationMins: 10080, resetsAt: resetsAt)
         let bucket = SubscriptionLimits.Bucket(limitId: "codex", limitName: nil, planType: nil, primary: nil, secondary: window)
         return SubscriptionUsage(limits: SubscriptionLimits(rateLimits: bucket, rateLimitsByLimitId: nil), readAt: date)
     }
@@ -35,6 +30,7 @@ import AppKit
     static func run(output: URL) throws {
         verifyIdleExpiry()
         verifyActivitySemantics()
+        verifyBreathingColors()
         let primary = instance("codex", used: 43)
         let secondary = instance("dodex", used: 28)
         let dual = value([secondary, primary])
@@ -42,7 +38,7 @@ import AppKit
         precondition(dual.rows.map(\.text) == ["57%", "72%"])
         precondition(value([primary, instance("dodex")]).rows.map(\.text) == ["57%", "—"])
         for stale in [instance("dodex", used: 1, expired: true), instance("dodex", used: 1, resetsAt: 0)] {
-            precondition(value([primary, stale]).rows.map(\.text) == ["57%", "99%*"])
+            precondition(value([primary, stale]).rows.map(\.text) == ["57%", "99%"])
         }
         let onlyDodex = value([instance("codex"), secondary])
         precondition(onlyDodex.rows.map(\.id) == ["codex", "dodex"] && onlyDodex.rows.map(\.text) == ["—", "72%"])
@@ -60,9 +56,8 @@ import AppKit
         defer { indicator.stop(); NSStatusBar.system.removeStatusItem(item) }
         for (name, usage) in [("dual", dual), ("single", value([primary])),
                               ("dodex-only", onlyDodex), ("bounds", bounds), ("empty", empty),
-                              ("stale-single", value([instance("codex", used: 0, expired: true)])),
-                              ("stale", value([instance("codex", used: 0, expired: true),
-                                               instance("dodex", used: 100, resetsAt: 0)])),
+                              ("stale-single", failedValue([instance("codex", used: 0)])),
+                              ("stale", failedValue([instance("codex", used: 0), instance("dodex", used: 100)])),
                               ("running-waiting", value([primary, secondary], tasks: [task("running"), task("waiting", source: "dodex")])),
                               ("completed-idle", value([primary, secondary], tasks: [task("completed")])),
                               ("failed-paused", value([primary, secondary], tasks: [task("failed"), task("paused", source: "dodex")])),
@@ -129,7 +124,27 @@ import AppKit
         }
         try verifyAnimation(output: output)
         verifyUpdates()
-        print("Menu bar: per-instance activity colors/priority, missing quota, native highlight/template text, 10 Hz running breath/reduced motion, task-only updates, stale caches, source isolation and closed-popup/shutdown lifecycle passed")
+        print("Menu bar: activity colors, missing/failed quota, native rendering, running animation, read-only task updates, reset preservation, source isolation and closed-popup lifecycle passed")
+    }
+
+    private static func verifyBreathingColors() {
+        func channels(_ color: NSColor) -> [CGFloat] {
+            let color = color.usingColorSpace(.sRGB)!
+            return [color.redComponent, color.greenComponent, color.blueComponent, color.alphaComponent]
+        }
+        let gray = channels(TaskActivity.breathingGray)
+        for activity in [TaskActivity.running, .completed, .waiting, .failed] {
+            let bright = channels(activity.indicatorColor)
+            for (time, expected) in [(0.0, bright), (1.0, gray), (2.0, bright)] {
+                let actual = channels(TaskActivity.breathingColor(activity.indicatorColor, at: time))
+                precondition(zip(actual, expected).allSatisfy { abs($0 - $1) < 0.001 },
+                             "Breathing must reach the full bright color and the same opaque gray")
+            }
+            let middle = channels(TaskActivity.breathingColor(activity.indicatorColor, at: 0.5))
+            precondition(abs(middle[3] - 1) < 0.001, "Breathing faded into the wallpaper")
+            precondition(zip(bright.prefix(3), gray.prefix(3)).contains { abs($0 - $1) > 0.25 },
+                         "Bright and gray phases need a visible color difference")
+        }
     }
 
     private static func verifyActivitySemantics() {
@@ -229,7 +244,7 @@ import AppKit
         var reduced = false, visible = true
         let indicator = MenuBarActivityView(reduceMotion: { reduced }, clock: { now }, visible: { _ in visible })
         defer { indicator.stop(); NSStatusBar.system.removeStatusItem(item) }
-        let running = value([instance("codex", used: 43)], tasks: [task("running")])
+        let running = value([instance("codex", used: 9), instance("dodex", used: 26)], tasks: [task("running")])
         running.apply(to: item, indicator: indicator)
         func settle(_ duration: TimeInterval = 0.12) { RunLoop.main.run(until: Date().addingTimeInterval(duration)) }
         func eventually(_ message: String, timeout: TimeInterval = 2, _ condition: () -> Bool) {
@@ -244,6 +259,15 @@ import AppKit
         precondition(indicator.isAnimating)
         let image = item.button!.image
         let bright = capture(indicator).representation(using: .png, properties: [:])!
+        for dark in [false, true] {
+            try preview(item.button!, indicator: indicator, dark: dark)
+                .representation(using: .png, properties: [:])!.write(
+                    to: output.appendingPathComponent("menu-bar-running-bright-preview\(dark ? "-dark" : "").png"))
+        }
+        try preview(item.button!, indicator: indicator, dark: true,
+                    background: NSColor(srgbRed: 0.02, green: 0.46, blue: 0.63, alpha: 1))
+            .representation(using: .png, properties: [:])!.write(
+                to: output.appendingPathComponent("menu-bar-running-bright-preview-blue.png"))
         now = 1
         indicator.needsDisplay = true
         let dim = capture(indicator).representation(using: .png, properties: [:])!
@@ -304,176 +328,117 @@ import AppKit
 
     private static func verifyIdleExpiry() {
         var now = Date(timeIntervalSince1970: 2_000_000_000)
-        let reader = Reader(), secondaryReader = Reader()
-        let background = CompanionModel(usageReader: Reader(), clock: { now })
-        let menu = CompanionModel(usageReader: reader, clock: { now })
+        let bridge = FixtureUsageBridge()
+        let primary = instance("codex", used: 99)
+        let secondary = instance("dodex", used: 99)
+        let background = CompanionModel(usageBridge: bridge, clock: { now })
+        let menu = CompanionModel(usageBridge: bridge, clock: { now })
         let controller = MenuBarController(model: background, menuModel: menu, themePreferences: ThemeTests.darkPreferences,
-                                         settingsOverride: {}, clock: { now }, usageReader: {
-            $0.instanceID == "codex" ? reader : secondaryReader
-        })
+                                         settingsOverride: {}, clock: { now }, usageBridge: bridge)
         controller.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
         background.stop()
         defer { controller.quit() }
-        let snapshot = CodexSnapshot(loading: false, instances: [instance("codex"), instance("dodex", used: 28)])
-        background.snapshot = snapshot
-        menu.snapshot = snapshot
-        menu.showUsage(for: "codex")
-        reader.completion?(official(43, at: now))
-        menu.isPresented = false
-        menu.stop()
+        background.snapshot = CodexSnapshot(loading: false, instances: [primary, secondary])
+        menu.snapshot = background.snapshot
         func tick() {
+            background.refreshUsageSnapshot()
             background.snapshot.updatedAt = now.timeIntervalSince1970
             RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         }
-        now += 299
+        var quota = official(43, at: now, resetsAt: now.timeIntervalSince1970 + 50)
+        bridge.set(quota, for: primary.usageSource)
+        bridge.set(official(28, at: now), for: secondary.usageSource)
         tick()
-        precondition(controller.menuBarUsage?.rows.map(\.text) == ["57%", "72%"],
-                     "299-second account reading disappeared: \(String(describing: controller.menuBarUsage?.rows))")
-        precondition(reader.reads == 1 && secondaryReader.reads == 1, "Polling bypassed the cache or duplicated an active query")
-        now += 1
+        for advance in [49.0, 1, 250, 10000] {
+            now += advance
+            tick()
+            precondition(controller.menuBarUsage?.rows.map(\.text) == ["57%", "72%"], "Age or reset added a star")
+        }
+        bridge.set(quota, for: primary.usageSource, loading: true)
         tick()
-        precondition(controller.menuBarUsage?.rows.map(\.text) == ["57%*", "72%"],
-                     "Idle menu lost its last known quota at the refresh boundary: \(String(describing: controller.menuBarUsage?.rows))")
-        precondition(reader.reads == 2 && !menu.isPresented, "A closed popup prevented background refresh")
-        reader.completion?(.failure("Synthetic offline result"))
-        for _ in 0..<299 { now += 1; background.snapshot.updatedAt = now.timeIntervalSince1970 }
+        precondition(controller.menuBarUsage?.rows.first?.text == "57%")
+        quota.limitsError = "Synthetic offline result"
+        bridge.set(quota, for: primary.usageSource)
         tick()
-        precondition(reader.reads == 2 && controller.menuBarUsage?.rows.first?.text == "57%*",
-                     "A failed read renewed old data or retried before five minutes")
-        precondition(controller.menuBarUsage?.accessibilityDescription.contains("awaiting update") == true)
-        now += 1
+        precondition(controller.menuBarUsage?.rows.first?.text == "57%*")
+        let tooltip = controller.menuBarUsage!.accessibilityDescription
+        precondition(tooltip.contains("Synthetic offline result") && tooltip.contains("last successful query")
+                     && tooltip.contains("reset time passed"))
+        bridge.set(quota, for: primary.usageSource, loading: true)
         tick()
-        precondition(reader.reads == 3 && secondaryReader.reads == 1, "Retry was missing or duplicated another instance's query")
-        reader.completion?(official(19, at: now, resetsAt: now.timeIntervalSince1970 + 50))
-        secondaryReader.completion?(official(28, at: now))
+        precondition(controller.menuBarUsage?.rows.first?.text == "57%*", "Retry cleared the failure before success")
+        bridge.set(official(19, at: now), for: primary.usageSource)
         tick()
-        precondition(controller.menuBarUsage?.rows.map(\.text) == ["81%", "72%"])
-        now += 50
+        precondition(controller.menuBarUsage?.rows.first?.text == "81%")
+        bridge.set(SubscriptionUsage(readAt: now), for: primary.usageSource)
         tick()
-        precondition(controller.menuBarUsage?.rows.first?.text == "81%*", "Reset quota became current or disappeared")
-        background.snapshot.instances?[0].weekly = WeeklyUsage(usedPercent: 10, resetsAt: 4_000_000_000, expired: false)
-        tick()
-        precondition(controller.menuBarUsage?.rows.first?.text == "90%", "Expired account data hid a valid local reading")
-        background.snapshot.instances?[0].weekly = WeeklyUsage(usedPercent: 10, resetsAt: 0, expired: true)
-        tick()
-        precondition(controller.menuBarUsage?.rows.first?.text == "90%*", "Local expiry restored an older account value")
-        background.snapshot.instances?[0].weekly = WeeklyUsage(usedPercent: 10, resetsAt: 4_000_000_000, expired: false)
-        menu.refreshUsage(force: true)
-        reader.completion?(.failure("Synthetic second failure"))
-        tick()
-        precondition(controller.menuBarUsage?.rows.first?.text == "90%*", "Local fallback concealed the failed refresh")
+        precondition(controller.menuBarUsage?.rows.first?.text == "—", "A missing window retained the old value")
+        precondition(bridge.events.isEmpty, "Menu rendering or reset scheduled a query")
     }
 
     private static func verifyUpdates() {
-        let backgroundReader = Reader(), menuReader = Reader()
-        var readers: [SubscriptionSource: Reader] = [:]
-        func reader(for source: SubscriptionSource) -> Reader {
-            if let reader = readers[source] { return reader }
-            let reader = Reader()
-            readers[source] = reader
-            return reader
-        }
-        let background = CompanionModel(usageReader: backgroundReader)
-        let menu = CompanionModel(usageReader: menuReader)
-        let controller = MenuBarController(model: background, menuModel: menu, themePreferences: ThemeTests.darkPreferences, settingsOverride: {},
-                                         menuBarReducedMotion: { false },
-                                         usageReader: { reader(for: $0) })
+        let bridge = FixtureUsageBridge()
+        let background = CompanionModel(usageBridge: bridge)
+        let menu = CompanionModel(usageBridge: bridge)
+        let controller = MenuBarController(model: background, menuModel: menu, themePreferences: ThemeTests.darkPreferences,
+                                         settingsOverride: {}, menuBarReducedMotion: { false }, usageBridge: bridge)
         controller.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
         background.stop()
         defer { controller.quit() }
         func settle() { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
-        let primary = instance("codex", used: 43), secondary = instance("dodex", used: 28)
-        let snapshot = CodexSnapshot(loading: false, instances: [primary, secondary])
-        background.snapshot = snapshot
-        menu.snapshot = snapshot
+        let primary = instance("codex", used: 99), secondary = instance("dodex", used: 99)
+        background.snapshot = CodexSnapshot(loading: false, instances: [primary, secondary])
+        menu.snapshot = background.snapshot
+        bridge.set(official(43), for: primary.usageSource)
+        bridge.set(official(28), for: secondary.usageSource)
+        background.refreshUsageSnapshot()
         settle()
-        precondition(controller.menuBarUsage?.rows.map(\.text) == ["57%", "72%"],
-                     "Observed menu rows: \(String(describing: controller.menuBarUsage?.rows)); snapshot instances: \(background.instances.map(\.id))")
-        let primaryReader = reader(for: primary.usageSource), secondaryReader = reader(for: secondary.usageSource)
-        precondition(primaryReader.reads == 1 && secondaryReader.reads == 1, "The menu did not refresh each source once")
-        precondition(backgroundReader.reads == 0 && menuReader.reads == 0, "A surface bypassed the shared coordinator")
-
+        precondition(controller.menuBarUsage?.rows.map(\.text) == ["57%", "72%"])
         background.snapshot.tasks = [task("running"), task("completed", source: "dodex")]
         settle()
         precondition(controller.menuBarUsage?.rows.map(\.activity) == [.running, .completed])
-        precondition(controller.menuBarIsAnimating, "A task-only update did not start the running indicator")
+        precondition(controller.menuBarIsAnimating)
         let animatedImage = controller.menuBarButton?.image
-        let animationTicks = controller.menuBarActivityView.animationTicks
+        let ticks = controller.menuBarActivityView.animationTicks
         RunLoop.main.run(until: Date().addingTimeInterval(0.35))
-        precondition(controller.menuBarActivityView.animationTicks > animationTicks)
-        precondition(controller.menuBarButton?.image === animatedImage
-                     && controller.menuBarUsage?.rows.map(\.text) == ["57%", "72%"],
-                     "A breathing dot repainted or changed the independent quota text")
-        precondition(primaryReader.reads == 1 && secondaryReader.reads == 1,
-                     "An animation frame started an account request")
+        precondition(controller.menuBarActivityView.animationTicks > ticks && controller.menuBarButton?.image === animatedImage)
         background.snapshot.tasks = [task("running"), task("waiting"), task("completed", source: "dodex")]
         settle()
-        precondition(controller.menuBarUsage?.rows.map(\.activity) == [.waiting, .completed]
-                     && !controller.menuBarIsAnimating,
-                     "Waiting did not override running or stop its animation")
+        precondition(controller.menuBarUsage?.rows.map(\.activity) == [.waiting, .completed] && !controller.menuBarIsAnimating)
         background.snapshot.tasks = [task("failed"), task("stopped", source: "dodex")]
         settle()
         precondition(controller.menuBarUsage?.rows.map(\.activity) == [.failed, .idle])
-        precondition(controller.menuBarUsage?.accessibilityDescription.contains("failed") == true)
         background.snapshot.tasks = []
         settle()
-        precondition(controller.menuBarUsage?.rows.map(\.activity) == [.idle, .idle]
-                     && !controller.menuBarIsAnimating)
-        precondition(primaryReader.reads == 1 && secondaryReader.reads == 1,
-                     "Task-only transitions bypassed the quota cache")
-
+        precondition(controller.menuBarUsage?.rows.map(\.activity) == [.idle, .idle] && bridge.events.isEmpty,
+                     "Task updates or animation scheduled an account request")
         menu.showUsage(for: "dodex")
-        precondition(secondaryReader.reads == 1 && menu.usageLoading, "Opening Usage duplicated its background request")
-        secondaryReader.completion?(official(99, resetsAt: 0))
-        settle()
-        precondition(controller.menuBarUsage?.rows.map(\.text) == ["57%", "72%"],
-                     "A recently fetched but reset quota hid the valid new-period local snapshot")
-        menu.refreshUsage(force: true)
-        secondaryReader.completion?(official(31))
+        precondition(bridge.events == [.history("dodex")] && menu.subscriptionUsage.limits != nil)
+        menu.refreshUsage()
+        precondition(bridge.events == [.history("dodex"), .refresh("dodex")])
         menu.showTasks()
         menu.stop()
+        bridge.set(official(31), for: secondary.usageSource)
+        background.refreshUsageSnapshot()
         settle()
-        precondition(controller.menuBarUsage?.rows.map(\.text) == ["57%", "69%"], "Completed popup cache did not reach the menu bar")
+        precondition(controller.menuBarUsage?.rows.map(\.text) == ["57%", "69%"], "Closing discarded the result")
         for field in ["home", "runtime", "database"] {
             var replaced = secondary
-            if field == "home" { replaced.codexHome = "/synthetic/menu/replaced" }
-            if field == "runtime" { replaced.executablePath = "/synthetic/menu/replaced/codex" }
-            if field == "database" { replaced.databasePath = "/synthetic/menu/replaced/sqlite" }
+            if field == "home" { replaced.codexHome = "/replaced" }
+            if field == "runtime" { replaced.executablePath = "/replaced/codex" }
+            if field == "database" { replaced.databasePath = "/replaced/db" }
             background.snapshot.instances = [primary, replaced]
             settle()
-            precondition(controller.menuBarUsage?.rows.map(\.text) == ["57%", "72%"], "Replacement \(field) inherited another source's cache")
-            precondition(reader(for: replaced.usageSource).reads == 1)
+            precondition(controller.menuBarUsage?.rows.map(\.text) == ["57%", "—"], "Replacement source inherited a quota")
         }
         background.snapshot.instances = [primary]
         settle()
-        precondition(controller.menuBarUsage?.rows.map(\.id) == ["codex"], "Disabled Dodex remained in the menu bar")
-        background.snapshot.instances = [instance("codex")]
-        settle()
-        precondition(controller.menuBarUsage?.rows.map(\.text) == ["57%*"], "A temporarily missing local reading disappeared")
-        background.snapshot = snapshot
-        settle()
-        precondition(secondaryReader.reads == 3, "Re-enabling a removed source reused its old cache")
-        secondaryReader.completions[1](official(99))
-        settle()
-        precondition(controller.menuBarUsage?.rows.map(\.text) == ["57%", "72%"], "A late removed-source result was resurrected")
-        primaryReader.completion?(official(35))
-        settle()
-        menu.showUsage(for: "codex")
-        precondition(primaryReader.reads == 1 && menu.subscriptionUsage.limits != nil,
-                     "Opening Usage discarded the menu bar's fresh account cache")
-        menu.showTasks()
-        menu.isPresented = false
+        precondition(controller.menuBarUsage?.rows.map(\.id) == ["codex"])
         background.snapshot.tasks = [task("running")]
         settle()
-        precondition(controller.menuBarIsVisible && controller.menuBarIsAnimating,
-                     "Closing the popup hid or stopped the independent menu indicator")
-        precondition(controller.menuBarUsage?.rows.map(\.text) == ["65%", "72%"])
-        let secondaryCancels = secondaryReader.cancelled
+        precondition(controller.menuBarIsVisible && controller.menuBarIsAnimating)
         controller.quit()
-        precondition(!controller.menuBarIsVisible && !controller.menuBarIsAnimating,
-                     "Quitting left a status item or animation timer running")
-        precondition(secondaryReader.cancelled == secondaryCancels + 1,
-                     "Quitting left an account read active")
-
+        precondition(!controller.menuBarIsVisible && !controller.menuBarIsAnimating)
+        precondition(bridge.events.count == 2, "Closing or shutting down emitted a query")
     }
 }

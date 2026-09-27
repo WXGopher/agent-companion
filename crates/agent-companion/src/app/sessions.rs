@@ -10,7 +10,6 @@ use std::time::{Duration, Instant};
 use agent_companion_core::codex::SessionCache;
 use agent_companion_core::protocol::HookSource;
 use agent_companion_core::state::{AgentTasks, SessionState, SessionTable};
-use agent_companion_core::usage::{self, CodexUsage};
 
 const POLL: Duration = Duration::from_secs(2);
 
@@ -19,13 +18,11 @@ pub struct Update {
     pub changed: bool,
     pub last_seen: Option<u64>,
     pub new_activity: bool,
-    pub usage: Option<CodexUsage>,
     pub alive: bool,
 }
 
 struct Scan {
     sessions: io::Result<Vec<SessionState>>,
-    usage: Option<CodexUsage>,
 }
 
 pub struct CodexWatcher {
@@ -35,7 +32,6 @@ pub struct CodexWatcher {
     rx: mpsc::Receiver<Scan>,
     scanning: Cell<bool>,
     last_scan: Cell<Option<Instant>>,
-    last_usage_scan: Cell<Option<Instant>>,
     counts: Cell<Option<AgentTasks>>,
     /// Reading pre-existing logs establishes a baseline; only later events
     /// release the display restored at startup.
@@ -56,7 +52,6 @@ impl CodexWatcher {
             rx,
             scanning: Cell::new(false),
             last_scan: Cell::new(None),
-            last_usage_scan: Cell::new(None),
             counts: Cell::new(None),
             latest_event: Cell::new(agent_companion_core::now_unix_secs()),
         }
@@ -67,9 +62,6 @@ impl CodexWatcher {
         let mut update = Update::default();
         while let Ok(result) = self.rx.try_recv() {
             self.scanning.set(false);
-            if result.usage.is_some() {
-                update.usage = result.usage;
-            }
             if let Ok(sessions) = result.sessions {
                 update.alive |= sessions.iter().any(|session| session.observed_alive);
                 if let Some(at) = sessions.iter().map(|session| session.last_seen).max() {
@@ -97,10 +89,6 @@ impl CodexWatcher {
         };
         self.scanning.set(true);
         self.last_scan.set(Some(Instant::now()));
-        let read_usage = self
-            .last_usage_scan
-            .get()
-            .is_none_or(|at| at.elapsed() >= Duration::from_secs(crate::usage_cache::REFRESH_SECS));
         let cache = Arc::clone(&self.cache);
         let tx = self.tx.clone();
         let spawned = std::thread::Builder::new()
@@ -115,17 +103,12 @@ impl CodexWatcher {
                         &database,
                         agent_companion_core::now_unix_secs(),
                     );
-                let usage = read_usage
-                    .then(|| usage::scan_codex_usage_at(&home).ok().flatten())
-                    .flatten();
-                if tx.send(Scan { sessions, usage }).is_ok() {
+                if tx.send(Scan { sessions }).is_ok() {
                     let _ = slint::invoke_from_event_loop(super::pump);
                 }
             });
         if spawned.is_err() {
             self.scanning.set(false);
-        } else if read_usage {
-            self.last_usage_scan.set(Some(Instant::now()));
         }
         update
     }
@@ -139,7 +122,6 @@ mod tests {
         fn sessions(sessions: Vec<SessionState>) -> Self {
             Self {
                 sessions: Ok(sessions),
-                usage: None,
             }
         }
     }
@@ -186,29 +168,18 @@ mod tests {
     }
 
     #[test]
-    fn quota_arrives_without_session_activity_or_a_successful_session_scan() {
+    fn failed_task_scans_do_not_create_activity_or_remove_tasks() {
         let mut watcher = CodexWatcher::new();
         watcher.home = None;
         let mut table = SessionTable::new();
-        let usage = usage::parse_codex_rate_limits(&serde_json::json!({
-            "primary": {"used_percent": 25, "window_minutes": 10080}
-        }));
         watcher
             .tx
             .send(Scan {
                 sessions: Err(io::Error::other("session temporarily unreadable")),
-                usage: Some(usage.clone()),
             })
             .unwrap();
         let update = watcher.poll(&mut table);
-        assert_eq!(update.usage, Some(usage));
-        assert!(!update.new_activity);
+        assert!(!update.changed && !update.new_activity);
         assert!(update.last_seen.is_none());
-        assert_eq!(
-            table
-                .tasks(HookSource::Codex, agent_companion_core::now_unix_secs())
-                .total(),
-            0
-        );
     }
 }

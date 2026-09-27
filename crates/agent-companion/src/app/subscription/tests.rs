@@ -1,34 +1,127 @@
 use super::*;
+use agent_companion_core::usage_service::{Scheduler, Source};
+use serde_json::json;
+
+fn source(id: &str) -> Source {
+    Source {
+        instance_id: id.into(),
+        codex_home: format!("/{id}/home").into(),
+        database_path: format!("/{id}/database").into(),
+        executable_path: Some(format!("/{id}/codex.exe").into()),
+    }
+}
+
+fn allowance() -> serde_json::Value {
+    json!({"rateLimits":{"limitId":"codex","secondary":{"usedPercent":12,"windowDurationMins":10080,"resetsAt":2000}}})
+}
+
+fn snapshot(scheduler: &Scheduler) -> Snapshot {
+    Snapshot::from_shared(scheduler.snapshot("codex"))
+}
 
 #[test]
-fn slow_reads_start_cache_lifetime_at_completion_and_instances_stay_separate() {
-    let mut primary = Monitor::default();
-    let mut secondary = Monitor::default();
-    primary.completed_at = Some(Instant::now() - CACHE_TTL - Duration::from_secs(20));
-    let (tx, rx) = mpsc::channel();
-    primary.receiver = Some(rx);
-    let limits = serde_json::from_value(json!({"rateLimits":{"limitId":"codex","secondary":{"usedPercent":12,"windowDurationMins":10080,"resetsAt":2000}}})).unwrap();
-    tx.send(Snapshot {
-        limits: Some(limits),
-        ..Default::default()
-    })
-    .unwrap();
-    assert!(primary.poll());
-    assert_eq!(primary.weekly(1000), Some((88, Some(2000))));
-    assert!(primary.completed_at.unwrap().elapsed() < Duration::from_secs(2));
-    assert!(secondary.weekly(1000).is_none());
-    secondary.stop();
-    assert_eq!(primary.weekly(1000), Some((88, Some(2000))));
-    assert!(primary.weekly(2000).is_none());
-    let fresh_local = agent_companion_core::usage::parse_codex_rate_limits(&json!({
-        "secondary":{"used_percent":5,"window_minutes":10080,"resets_at":4000}
-    }));
+fn age_reset_and_in_flight_queries_preserve_values_and_only_failures_add_stars() {
+    let mut service = Scheduler::new(5);
+    let initial = service.sync_sources(vec![source("codex")], 1000).remove(0);
+    service.complete(&initial, Ok(allowance()), 1001, 120);
+    let first = snapshot(&service);
+    assert_eq!(first.weekly(), Some((88, Some(2000))));
     assert_eq!(
-        super::super::instances::weekly(Some(&fresh_local), &primary, 2001),
-        Some((95, Some(4000)))
+        first.limits.unwrap().rows(1002, 0, 50, 20, false)[1].value,
+        "88%"
     );
-    primary.completed_at = Some(Instant::now() - CACHE_TTL);
-    assert!(primary.weekly(1000).is_none());
+
+    // Advancing time, including past reset, neither changes the reading nor
+    // adds a star. The description explicitly waits for the next query.
+    let aged = snapshot(&service);
+    assert!(!aged.failed());
+    let rows = aged
+        .limits
+        .as_ref()
+        .unwrap()
+        .rows(2001, 0, 50, 20, aged.failed());
+    assert_eq!(rows[1].value, "88%");
+    assert_eq!(
+        rows[1].resets,
+        "Reset time reached · waiting for the next query"
+    );
+    let refresh = service.refresh("codex", 2001).remove(0);
+    let loading = snapshot(&service);
+    assert!(loading.loading);
+    assert_eq!(
+        quota_value(loading.weekly().unwrap().0, loading.failed()),
+        "88%"
+    );
+    assert_eq!(loading.read_at, Some(1001));
+
+    service.complete(&refresh, Err("connection unavailable".into()), 2002, 1000);
+    let failed = snapshot(&service);
+    assert_eq!(
+        quota_value(failed.weekly().unwrap().0, failed.failed()),
+        "88%*"
+    );
+    assert!(failed.status(2002, 0).contains("connection unavailable"));
+    assert!(failed.status(2002, 0).contains("Last success"));
+    let retry = service.refresh("codex", 2003).remove(0);
+    let loading = snapshot(&service);
+    assert!(loading.loading && loading.failed());
+    assert_eq!(
+        quota_value(loading.weekly().unwrap().0, loading.failed()),
+        "88%*"
+    );
+    service.complete(&retry, Ok(allowance()), 2004, 60);
+    let recovered = snapshot(&service);
+    assert_eq!(
+        quota_value(recovered.weekly().unwrap().0, recovered.failed()),
+        "88%"
+    );
+    assert_eq!(recovered.read_at, Some(2004));
+}
+
+#[test]
+fn first_failure_has_no_value_and_success_without_a_window_clears_old_allowance() {
+    let mut service = Scheduler::new(5);
+    let initial = service.sync_sources(vec![source("codex")], 1000).remove(0);
+    service.complete(&initial, Err("sign in required".into()), 1001, 20);
+    let failed = snapshot(&service);
+    assert!(failed.weekly().is_none());
+    assert!(failed.read_at.is_none());
+    assert_eq!(failed.limits_error, "sign in required");
+
+    let refresh = service.refresh("codex", 1002).remove(0);
+    service.complete(&refresh, Ok(allowance()), 1003, 30);
+    assert!(snapshot(&service).weekly().is_some());
+    let refresh = service.refresh("codex", 1004).remove(0);
+    service.complete(
+        &refresh,
+        Ok(json!({"rateLimits":{"limitId":"codex"}})),
+        1005,
+        30,
+    );
+    let empty = snapshot(&service);
+    assert!(empty.weekly().is_none());
+    assert!(!empty.failed());
+    assert_eq!(empty.read_at, Some(1005));
+    let rows = empty.limits.unwrap().rows(1005, 0, 50, 20, false);
+    assert_eq!(rows[1].value, "—");
+}
+
+#[test]
+fn history_loading_and_failure_are_independent_of_allowance() {
+    let mut service = Scheduler::new(5);
+    let allowance = service.sync_sources(vec![source("codex")], 1000).remove(0);
+    let history = service.load_history("codex", 1001).remove(0);
+    service.complete(&history, Err("history unavailable".into()), 1002, 10);
+    let reading = snapshot(&service);
+    assert!(reading.loading);
+    assert!(!reading.history_loading);
+    assert!(!reading.failed());
+    assert_eq!(reading.token_error, "history unavailable");
+    service.complete(&allowance, Ok(json!({"rateLimits":{}})), 1003, 30);
+    let reading = snapshot(&service);
+    assert!(!reading.loading);
+    assert!(!reading.failed());
+    assert_eq!(reading.token_error, "history unavailable");
 }
 
 #[test]
@@ -37,16 +130,19 @@ fn weekly_quota_does_not_borrow_other_buckets_or_short_windows() {
         "rateLimits":{"limitId":"other","secondary":{"usedPercent":10,"windowDurationMins":10080}},
         "rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":1,"windowDurationMins":300}},"other":{"secondary":{"usedPercent":10,"windowDurationMins":10080}}}
     })).unwrap();
-    assert!(limits.weekly(1000).is_none());
+    assert!(limits.weekly().is_none());
 }
 
-#[tokio::test]
-#[ignore = "reads the installed Codex subscription over the network"]
-async fn installed_codex_reports_subscription_usage() {
-    let snapshot = read(agent_companion_core::install::codex_home().unwrap()).await;
-    assert!(snapshot.error.is_empty(), "{}", snapshot.error);
-    assert!(snapshot.limits.is_some(), "{}", snapshot.limits_error);
-    assert!(snapshot.tokens.is_some(), "{}", snapshot.token_error);
+#[test]
+fn a_nonempty_named_map_does_not_leak_the_default_bucket() {
+    let limits: Limits = serde_json::from_value(json!({
+        "rateLimits": {"limitId":"codex", "secondary":{"usedPercent":12,"windowDurationMins":10080}},
+        "rateLimitsByLimitId": {"review":{"primary":{"usedPercent":8,"windowDurationMins":300}}}
+    })).unwrap();
+    assert!(limits.weekly().is_none());
+    let rows = limits.rows(1000, 0, 50, 20, false);
+    assert_eq!(rows[0].label, "review");
+    assert_eq!(rows[1].value, "92%");
 }
 
 #[test]
@@ -92,7 +188,7 @@ fn missing_values_and_reported_days_keep_their_meaning() {
 }
 
 #[test]
-fn multiple_limit_buckets_and_expired_windows_are_not_invented_allowance() {
+fn multiple_limit_buckets_preserve_expired_values() {
     let limits: Limits = serde_json::from_value(json!({
         "rateLimits": {"limitId":"codex"},
         "rateLimitsByLimitId": {
@@ -101,151 +197,90 @@ fn multiple_limit_buckets_and_expired_windows_are_not_invented_allowance() {
                 "secondary":{"usedPercent":130, "windowDurationMins":10080, "resetsAt":300}}
         }
     })).unwrap();
-    let rows = limits.rows(100, 0, 50, 20);
+    let rows = limits.rows(100, 0, 50, 20, false);
     assert_eq!(rows[0].label, "Codex · pro");
-    assert_eq!(rows[1].value, "—");
-    assert!(rows[1].resets.starts_with("Reset passed"));
+    assert_eq!(rows[1].value, "65%");
+    assert!(rows[1].resets.starts_with("Reset time reached"));
     assert_eq!(rows[2].value, "0%");
     assert_eq!(rows[4].value, "100%");
 }
 
-#[tokio::test]
-async fn account_reads_are_read_only_and_keep_partial_results() {
-    let (client, server) = tokio::io::duplex(16384);
-    let (read, write) = tokio::io::split(client);
-    let mut rpc = Rpc::new(read, write, Duration::from_secs(2));
-    let fixture = async {
-        let (read, mut write) = tokio::io::split(server);
-        let mut lines = BufReader::new(read).lines();
-        let initialize: Value =
-            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-        assert_eq!(initialize["method"], "initialize");
-        assert_eq!(
-            initialize["params"]["capabilities"]["experimentalApi"],
-            true
-        );
-        write
-            .write_all(b"{\"id\":1,\"result\":{}}\n")
-            .await
-            .unwrap();
-        assert_eq!(
-            serde_json::from_str::<Value>(&lines.next_line().await.unwrap().unwrap()).unwrap()["method"],
-            "initialized"
-        );
-        let account: Value =
-            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-        assert_eq!(
-            account,
-            json!({"id":2,"method":"account/read","params":{"refreshToken":false}})
-        );
-        write
-            .write_all(b"{\"id\":2,\"result\":{\"account\":{\"type\":\"chatgpt\"}}}\n")
-            .await
-            .unwrap();
-        for method in ["account/rateLimits/read", "account/usage/read"] {
-            let request: Value =
-                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-            assert_eq!(request["method"], method);
-        }
-        // Notifications and out-of-order responses are common app-server traffic.
-        write.write_all(b"{\"method\":\"notification\"}\n{\"id\":4,\"error\":{\"code\":-32601,\"message\":\"sensitive server detail\"}}\n{\"id\":3,\"result\":{\"rateLimits\":{\"planType\":\"plus\"}}}\n").await.unwrap();
-    };
-    let (snapshot, ()) = tokio::join!(exchange(&mut rpc), fixture);
-    let snapshot = snapshot.unwrap();
-    assert!(snapshot.limits.is_some());
-    assert!(snapshot.tokens.is_none());
-    assert!(snapshot.token_error.starts_with("Update Codex CLI"));
-    assert!(!snapshot.token_error.contains("sensitive"));
-    assert!(snapshot.read_at.is_some());
-}
-
-#[tokio::test]
-async fn signed_out_and_api_key_accounts_do_not_request_subscription_endpoints() {
-    for account in [Value::Null, json!({"type":"apiKey"})] {
-        let (client, mut server) = tokio::io::duplex(4096);
-        let (read, write) = tokio::io::split(client);
-        let mut rpc = Rpc::new(read, write, Duration::from_secs(1));
-        server
-            .write_all(
-                format!(
-                    "{{\"id\":1,\"result\":{{}}}}\n{}\n",
-                    json!({"id":2,"result":{"account":account}})
-                )
-                .as_bytes(),
-            )
-            .await
-            .unwrap();
-        let snapshot = exchange(&mut rpc).await.unwrap();
-        assert!(snapshot.error.starts_with("Sign in to Codex"));
-        assert!(snapshot.read_at.is_none());
-        drop(rpc);
-        let mut requests = String::new();
-        server.read_to_string(&mut requests).await.unwrap();
-        assert!(!requests.contains("account/usage/read"));
-        assert!(!requests.contains("account/rateLimits/read"));
-    }
-}
-
-#[tokio::test]
-async fn a_token_timeout_preserves_limits_and_reads_have_byte_limits() {
-    let (client, mut server) = tokio::io::duplex(4096);
-    let (read, write) = tokio::io::split(client);
-    let mut rpc = Rpc::new(read, write, Duration::from_millis(30));
-    server.write_all(b"{\"id\":1,\"result\":{}}\n{\"id\":2,\"result\":{\"account\":{\"type\":\"chatgpt\"}}}\n{\"id\":3,\"result\":{\"rateLimits\":{}}}\n").await.unwrap();
-    let snapshot = exchange(&mut rpc).await.unwrap();
-    assert!(snapshot.limits.is_some());
-    assert!(snapshot.token_error.contains("did not finish"));
-    let bytes = vec![b'x'; MAX_RESPONSE_BYTES + 1];
-    let mut rpc = Rpc::new(bytes.as_slice(), tokio::io::sink(), Duration::from_secs(1));
+#[test]
+fn history_navigation_only_enters_on_usage_entry_or_instance_change() {
+    let mut navigation = Navigation::default();
+    assert!(!navigation.select_page(false));
+    assert!(navigation.select_page(true));
+    assert!(!navigation.select_page(true));
+    assert!(!navigation.select_instance(false));
+    assert!(navigation.select_instance(true));
+    assert!(navigation.secondary());
+    assert!(!navigation.select_instance(true));
+    assert!(!navigation.select_page(false));
     assert!(
-        rpc.receive(1)
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("too large")
+        navigation.select_instance(true),
+        "a task-page quota card enters Usage"
     );
-    assert!(rpc.received <= MAX_RESPONSE_BYTES + 1);
+    navigation.remove_secondary();
+    assert!(!navigation.secondary());
 }
 
 #[test]
-fn completed_reads_are_cached_and_cancelled_results_cannot_replace_them() {
-    let home = PathBuf::from("usage-test-home");
-    let mut monitor = Monitor::default();
-    monitor.source_home = Some(home.clone());
-    monitor.completed_at = Some(Instant::now());
-    monitor.refresh(home.clone(), false);
+fn only_closed_to_open_and_preview_to_full_are_panel_query_events() {
+    assert!(opens_full_panel(false, false, false));
+    assert!(opens_full_panel(true, true, false));
+    assert!(!opens_full_panel(true, false, false));
+    assert!(!opens_full_panel(false, false, true));
+    assert!(!opens_full_panel(true, true, true));
+}
+
+#[test]
+fn visible_history_source_replacement_is_one_boundary_without_cache_polling() {
+    let mut navigation = Navigation::default();
+    navigation.select_page(true);
+    let mut current = source("codex");
+    navigation.history_entered(Some(current.clone()));
+    for _ in 0..100 {
+        assert!(
+            !navigation.visible_history_source_changed(Some(current.clone()), true),
+            "staying on Usage never rechecks the history cache"
+        );
+    }
+    current.database_path = "/replacement/database".into();
     assert!(
-        !monitor.loading(),
-        "completed reads are cached for five minutes"
+        !navigation.visible_history_source_changed(Some(current.clone()), false),
+        "a closed panel or preview does not enter history"
     );
-    monitor.stop();
-    monitor.refresh(home, false);
-    assert!(!monitor.loading(), "reopening uses a completed read");
-    let (tx, rx) = mpsc::channel();
-    let (cancel, mut cancelled) = oneshot::channel();
-    monitor.receiver = Some(rx);
-    monitor.cancel = Some(cancel);
-    monitor.stop();
+    assert!(navigation.visible_history_source_changed(Some(current.clone()), true));
+    assert!(!navigation.visible_history_source_changed(Some(current.clone()), true));
+    current.executable_path = Some("/replacement/codex.exe".into());
+    assert!(navigation.visible_history_source_changed(Some(current.clone()), true));
+    current.codex_home = "/replacement/home".into();
+    assert!(navigation.visible_history_source_changed(Some(current.clone()), true));
+    assert!(!navigation.visible_history_source_changed(Some(current), true));
+}
+
+#[test]
+fn disabling_the_selected_instance_loads_fallback_history_once() {
+    let mut navigation = Navigation::default();
+    navigation.select_instance(true);
+    navigation.history_entered(Some(source("dodex")));
+    navigation.remove_secondary();
+    assert!(!navigation.secondary());
+    assert!(navigation.visible_history_source_changed(Some(source("codex")), true));
+    assert!(!navigation.visible_history_source_changed(Some(source("codex")), true));
+}
+
+#[test]
+fn a_history_entry_before_source_registration_is_not_lost() {
+    let mut navigation = Navigation::default();
+    navigation.select_page(true);
+    navigation.history_entered(None);
+    assert!(!navigation.visible_history_source_changed(None, true));
+    assert!(navigation.visible_history_source_changed(Some(source("codex")), true));
+    assert!(!navigation.visible_history_source_changed(Some(source("codex")), true));
+    assert!(!navigation.visible_history_source_changed(None, true));
     assert!(
-        monitor.completed_at.is_some(),
-        "cancelling a refresh preserves the completed cache lifetime"
+        navigation.visible_history_source_changed(Some(source("codex")), true),
+        "removing and re-registering the same source starts a new state"
     );
-    assert!(cancelled.try_recv().is_ok());
-    assert!(
-        tx.send(Snapshot::default()).is_err(),
-        "late results have no receiver"
-    );
-    monitor.snapshot.tokens = Some(Tokens {
-        summary: Summary::default(),
-        daily_usage_buckets: None,
-    });
-    let (tx, rx) = mpsc::channel();
-    monitor.receiver = Some(rx);
-    tx.send(Snapshot::failure("signed out")).unwrap();
-    assert!(monitor.poll());
-    assert!(
-        monitor.snapshot.tokens.is_none(),
-        "failure clears account data"
-    );
-    assert!(!monitor.loading());
 }
