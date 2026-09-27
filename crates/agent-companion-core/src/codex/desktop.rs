@@ -3,14 +3,19 @@
 //! Missing or incompatible databases leave rollout observation in charge.
 
 use std::collections::HashSet;
-use std::fs::{File, TryLockError};
 use std::path::Path;
 use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 
+use super::{activity_order, same_turn, valid_thread_id, writer_alive};
+#[cfg(test)]
+use std::fs::File;
+
 use crate::protocol::HookSource;
-use crate::state::{CodexClient, Phase, STALE_AFTER_SECS, SessionState};
+#[cfg(test)]
+use crate::state::STALE_AFTER_SECS;
+use crate::state::{CodexActivity, CodexClient, Phase, SessionState};
 
 #[derive(Clone)]
 struct Snapshot {
@@ -21,6 +26,10 @@ struct Snapshot {
 #[derive(Default)]
 pub(super) struct Cache {
     last: Option<(u64, Snapshot)>,
+    // The query is a recent window, not an inventory. Falling out of it or a
+    // database outage must not erase a previously confirmed stopped turn.
+    // Retain IDs until explicit archive evidence or an instance/source change.
+    retained: HashSet<String>,
     source: Option<(std::path::PathBuf, std::path::PathBuf)>,
 }
 
@@ -37,6 +46,10 @@ fn read_only(path: &Path) -> rusqlite::Result<Connection> {
 /// Merge only a fully read snapshot. A busy or migrated database must not
 /// clear the last log observation or leave a partially applied archive list.
 impl Cache {
+    pub(super) fn retained_ids(&self) -> impl Iterator<Item = &str> {
+        self.retained.iter().map(String::as_str)
+    }
+
     #[cfg(test)]
     pub(super) fn merge(&mut self, home: &Path, now: u64, sessions: &mut Vec<SessionState>) {
         self.merge_with_database_home(home, home, now, sessions);
@@ -52,9 +65,17 @@ impl Cache {
         let source = (home.to_owned(), database_home.to_owned());
         if self.source.as_ref() != Some(&source) {
             self.last = None;
+            self.retained.clear();
             self.source = Some(source);
         }
         if let Ok(snapshot) = read_with_database_home(home, database_home, now) {
+            self.retained.extend(
+                snapshot
+                    .sessions
+                    .iter()
+                    .map(|session| session.session_id.clone()),
+            );
+            self.retained.retain(|id| !snapshot.archived.contains(id));
             self.last = Some((now, snapshot));
         }
         let Some((at, snapshot)) = &self.last else {
@@ -66,10 +87,16 @@ impl Cache {
         let mut snapshot = snapshot.clone();
         // A retained database result cannot retain proof that a process lives.
         for state in &mut snapshot.sessions {
-            if state.observed_alive && writer_alive(home, &state.session_id) != Some(true) {
-                state.observed_alive = false;
-                state.phase = Phase::Completed;
-                state.last_event = "session_disconnected".into();
+            if state.observed_alive {
+                match writer_alive(home, &state.session_id) {
+                    Some(true) => {}
+                    Some(false) => {
+                        state.observed_alive = false;
+                        state.phase = Phase::Completed;
+                        state.last_event = "session_disconnected".into();
+                    }
+                    None => state.observed_alive = false,
+                }
             }
         }
         merge_snapshot(snapshot, sessions);
@@ -91,7 +118,54 @@ fn merge_snapshot(snapshot: Snapshot, sessions: &mut Vec<SessionState>) {
                 incoming.codex_client = old.codex_client;
             }
             // The rollout and history projections can be a write apart.
-            if old.last_seen > incoming.last_seen && incoming.last_event != "session_disconnected" {
+            let mut order = activity_order(old, &incoming);
+            // Older rollout formats and DB terminal timestamps both use whole
+            // seconds. Different turns can share an activity timestamp while
+            // their explicit start times still establish which turn is newer.
+            if order.is_eq()
+                && !same_turn(old, &incoming)
+                && let (Some(old_start), Some(incoming_start)) = (
+                    old.codex_activity
+                        .as_ref()
+                        .and_then(|activity| activity.started_at),
+                    incoming
+                        .codex_activity
+                        .as_ref()
+                        .and_then(|activity| activity.started_at),
+                )
+            {
+                order = old_start.cmp(&incoming_start);
+            }
+            let known_same_turn = old
+                .codex_activity
+                .as_ref()
+                .and_then(|activity| activity.turn.as_ref())
+                .is_some()
+                && incoming
+                    .codex_activity
+                    .as_ref()
+                    .and_then(|activity| activity.turn.as_ref())
+                    .is_some()
+                && same_turn(old, &incoming);
+            let old_terminal =
+                old.phase == Phase::Completed && old.last_event != "session_disconnected";
+            let incoming_terminal =
+                incoming.phase == Phase::Completed && incoming.last_event != "session_disconnected";
+            // History completion timestamps have only second precision. For a
+            // known matching turn, an explicit finish outranks its activity,
+            // including rollout events later within that same timestamp second.
+            let prefer_rollout = match (known_same_turn, old_terminal, incoming_terminal) {
+                (true, true, false) => true,
+                (true, false, true) => false,
+                _ => {
+                    order.is_gt()
+                        || (order.is_eq()
+                            && same_turn(old, &incoming)
+                            && old.phase == Phase::Completed
+                            && incoming.phase != Phase::Completed)
+                }
+            };
+            if prefer_rollout {
                 sessions[index].observed_alive = incoming.observed_alive;
                 sessions[index].display_name = incoming.display_name;
                 continue;
@@ -99,6 +173,7 @@ fn merge_snapshot(snapshot: Snapshot, sessions: &mut Vec<SessionState>) {
             if incoming.phase == Phase::Running
                 && old.phase.is_waiting()
                 && old.last_seen >= incoming.first_seen
+                && same_turn(old, &incoming)
             {
                 incoming.phase = old.phase;
             }
@@ -132,7 +207,7 @@ fn read_with_database_home(
          FROM thread_turns WHERE thread_id = ?1 ORDER BY rollout_ordinal DESC LIMIT 1",
     )?;
     let mut items = history.prepare(
-        "SELECT MAX(created_at_ms) / 1000 FROM thread_items WHERE thread_id = ?1 AND turn_id = ?2",
+        "SELECT MAX(created_at_ms) FROM thread_items WHERE thread_id = ?1 AND turn_id = ?2",
     )?;
     let mut snapshot = Snapshot {
         sessions: Vec::new(),
@@ -171,20 +246,27 @@ fn read_with_database_home(
             "failed" => (Phase::Completed, "turn_failed"),
             _ => continue,
         };
-        let at = match completed {
-            Some(at) => at,
+        let activity_at = match completed {
+            Some(at) => u128::from(at) * 1_000_000_000,
             None => items
                 .query_row([&id, &turn], |row| row.get::<_, Option<i64>>(0))?
                 .and_then(|at| u64::try_from(at).ok())
-                .unwrap_or(started)
-                .max(started),
+                .map(|at| u128::from(at) * 1_000_000)
+                .unwrap_or(u128::from(started) * 1_000_000_000)
+                .max(u128::from(started) * 1_000_000_000),
         };
+        let at = (activity_at / 1_000_000_000) as u64;
         if at > now || started > now {
             continue;
         }
         let mut session = SessionState::new(&id, HookSource::Codex, started);
         session.codex_client = CodexClient::from_metadata(Some(&row.get::<_, String>(4)?), None);
         session.last_seen = at;
+        session.codex_activity = Some(CodexActivity {
+            turn: Some(turn),
+            at: activity_at,
+            started_at: Some(u128::from(started) * 1_000_000_000),
+        });
         session.phase = phase;
         session.last_event = event.into();
         session.cwd = row.get(1)?;
@@ -199,31 +281,10 @@ fn read_with_database_home(
                 None => {} // Older clients have no writer lock; use event age.
             }
         }
-        if !session.is_stale(now, STALE_AFTER_SECS) {
-            snapshot.sessions.push(session);
-        }
+        // SessionCache must see terminal evidence before applying the age filter.
+        snapshot.sessions.push(session);
     }
     Ok(snapshot)
-}
-
-fn valid_thread_id(id: &str) -> bool {
-    id.len() == 36
-        && id.bytes().enumerate().all(|(index, byte)| {
-            if matches!(index, 8 | 13 | 18 | 23) {
-                byte == b'-'
-            } else {
-                byte.is_ascii_hexdigit()
-            }
-        })
-}
-
-fn writer_alive(home: &Path, id: &str) -> Option<bool> {
-    let file = File::open(home.join("thread-writer-locks").join(format!("{id}.lock"))).ok()?;
-    match file.try_lock_shared() {
-        Ok(()) => Some(false), // Dropping the handle immediately releases our probe.
-        Err(TryLockError::WouldBlock) => Some(true),
-        Err(TryLockError::Error(_)) => None,
-    }
 }
 
 #[cfg(test)]

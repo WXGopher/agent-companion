@@ -642,15 +642,11 @@ fn deploy_under_lock(
         notify("verifying", "正在校验已有 Dodex；保留原有程序、配置和数据…");
         return validate_legacy(layout, ops);
     }
-    let sources = [
-        layout.system_applications.join("Codex.app"),
-        layout.applications.join("Codex.app"),
-    ];
-    let source = sources
-        .iter()
-        .find(|path| exists(path))
-        .ok_or("未找到官方 Codex 应用，请先将 Codex 安装到应用程序目录。")?;
-    ops.verify_runtime(source)?;
+    let source =
+        crate::macos_primary_app::discover(&layout.system_applications, &layout.applications)
+            .ok_or("未找到官方 Codex 应用，请先将 Codex 安装到应用程序目录。")?
+            .app;
+    ops.verify_runtime(&source)?;
     private_directory(&layout.applications)?;
     let suffix = transaction_id();
     let stage = layout.support.join(format!(".dodex-stage-{suffix}"));
@@ -663,7 +659,7 @@ fn deploy_under_lock(
     create_private(&launcher_stage)?;
     cleanup.paths.push(launcher_stage.clone());
     notify("copying", "正在复制官方运行程序并保留原始签名…");
-    ops.copy_runtime(source, &stage.join("Runtime.app"))?;
+    ops.copy_runtime(&source, &stage.join("Runtime.app"))?;
     notify("configuring", "正在创建独立配置、数据库与桌面缓存…");
     for relative in [
         "codex-home",

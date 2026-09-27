@@ -2,11 +2,12 @@
 //! hooks. No agent settings are changed and no approval replies are fabricated.
 //!
 //! Windows can leave directory metadata unchanged while a rollout is open, so
-//! the cache queries each file's current length too. Liveness comes from event
-//! timestamps, never from rescanning a file or copying an old file here.
+//! the cache queries each file's current length too. Activity comes from events;
+//! writer locks can preserve an already known active turn. Rescanning or copying
+//! an old rollout never makes it active by itself.
 
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, File};
+use std::fs::{self, File, TryLockError};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -14,11 +15,10 @@ use std::time::SystemTime;
 use serde_json::Value;
 
 use crate::protocol::HookSource;
-use crate::state::{CodexClient, Phase, STALE_AFTER_SECS, SessionState};
+use crate::state::{CodexActivity, CodexClient, Phase, STALE_AFTER_SECS, SessionState};
 use crate::usage::parse_iso8601;
 
 const READ_BUDGET: u64 = 4 * 1024 * 1024;
-const INITIAL_TAIL: u64 = 512 * 1024;
 const FILES_PER_SCAN: usize = 32;
 
 #[cfg(feature = "desktop-history")]
@@ -30,6 +30,8 @@ struct Events {
     turn: Option<String>,
     phase: Option<Phase>,
     last_seen: u64,
+    activity_at: u128,
+    started_at: Option<u128>,
     excluded: bool,
     questions: HashSet<String>,
 }
@@ -41,9 +43,31 @@ impl Events {
         };
         let payload = &record["payload"];
         let timestamp = record["timestamp"].as_str().and_then(parse_iso8601);
+        let activity_at = timestamp.map(|seconds| {
+            let fraction = record["timestamp"]
+                .as_str()
+                .unwrap_or_default()
+                .split_once('.')
+                .map(|(_, suffix)| {
+                    suffix
+                        .bytes()
+                        .take_while(u8::is_ascii_digit)
+                        .take(9)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let nanos = fraction
+                .iter()
+                .fold(0u128, |total, digit| total * 10 + u128::from(digit - b'0'))
+                * 10u128.pow(9 - fraction.len() as u32);
+            u128::from(seconds) * 1_000_000_000 + nanos
+        });
         match record["type"].as_str() {
             Some("response_item") => {
                 let Some(at) = timestamp else { return true };
+                if activity_at.unwrap() < self.activity_at || self.phase == Some(Phase::Completed) {
+                    return true;
+                }
                 let call = payload["call_id"].as_str();
                 let name = payload["name"].as_str();
                 if payload["type"].as_str() == Some("function_call")
@@ -56,6 +80,7 @@ impl Events {
                     self.questions.insert(call.to_string());
                     self.phase = Some(Phase::WaitingForAnswer);
                     self.last_seen = self.last_seen.max(at);
+                    self.activity_at = activity_at.unwrap();
                     if let Some(session) = &mut self.session {
                         session.last_event = "request_user_input".into();
                     }
@@ -67,6 +92,7 @@ impl Events {
                         self.phase = Some(Phase::Running);
                     }
                     self.last_seen = self.last_seen.max(at);
+                    self.activity_at = activity_at.unwrap();
                     if let Some(session) = &mut self.session {
                         session.last_event = "user_input_answered".into();
                     }
@@ -110,6 +136,9 @@ impl Events {
                 let Some(timestamp) = timestamp else {
                     return true;
                 };
+                if activity_at.unwrap() < self.activity_at {
+                    return true;
+                }
                 let kind = payload["type"].as_str().unwrap_or_default();
                 let turn = payload["turn_id"].as_str();
                 if kind != "task_started"
@@ -118,11 +147,21 @@ impl Events {
                 {
                     return true;
                 }
+                // Replayed starts for a finished turn cannot undo its terminal
+                // event. A genuinely new turn is allowed even in the same second.
+                if self.phase == Some(Phase::Completed)
+                    && !(matches!(kind, "task_started" | "user_message")
+                        && ((turn.is_some() && turn != self.turn.as_deref())
+                            || (turn.is_none() && activity_at.unwrap() > self.activity_at)))
+                {
+                    return true;
+                }
                 match kind {
                     "task_started" | "user_message" => {
                         self.questions.clear();
                         self.turn = turn.map(str::to_string);
                         self.phase = Some(Phase::Running);
+                        self.started_at = activity_at;
                         if kind == "user_message"
                             && let Some(message) = payload["message"].as_str()
                             && let Some(session) = &mut self.session
@@ -137,6 +176,9 @@ impl Events {
                         }
                     }
                     "task_complete" | "turn_aborted" => {
+                        if self.turn.is_none() {
+                            self.turn = turn.map(str::to_string);
+                        }
                         self.questions.clear();
                         self.phase = Some(Phase::Completed);
                     }
@@ -158,6 +200,7 @@ impl Events {
                     _ => return true,
                 }
                 self.last_seen = self.last_seen.max(timestamp);
+                self.activity_at = activity_at.unwrap();
                 if let Some(session) = &mut self.session {
                     session.last_event = kind.to_string();
                 }
@@ -174,6 +217,11 @@ impl Events {
         let mut session = self.session.clone()?;
         session.phase = self.phase?;
         session.last_seen = self.last_seen;
+        session.codex_activity = Some(CodexActivity {
+            turn: self.turn.clone(),
+            at: self.activity_at,
+            started_at: self.started_at,
+        });
         session.transcript_path = Some(path.to_string_lossy().into_owned());
         Some(session)
     }
@@ -190,25 +238,37 @@ struct Cursor {
 
 impl Cursor {
     fn read(&mut self, path: &Path, length: u64, modified: Option<SystemTime>) -> io::Result<()> {
+        self.read_from(&mut File::open(path)?, length, modified)
+    }
+
+    fn read_from(
+        &mut self,
+        file: &mut (impl Read + Seek),
+        length: u64,
+        modified: Option<SystemTime>,
+    ) -> io::Result<()> {
         if length < self.length
             || length < self.offset
             || (length == self.length && modified != self.modified)
         {
             *self = Self::default();
         }
-        let mut file = File::open(path)?;
+        let mut budget = READ_BUDGET;
         if self.offset == 0 && length > READ_BUDGET {
             // Metadata is the first record. For a large existing session, start
             // with its recent events instead of replaying hours of tool output.
-            let mut reader = BufReader::new((&mut file).take(READ_BUDGET));
+            // Spend the remaining budget on the tail: a tool result can easily
+            // exceed 512 KiB. Include BufReader's prefetch in the read allowance.
+            let mut reader = BufReader::new((&mut *file).take(budget));
             let mut line = Vec::new();
             reader.read_until(b'\n', &mut line)?;
             self.events.push(&line);
-            self.offset = length - INITIAL_TAIL;
+            budget = reader.get_ref().limit();
+            self.offset = length - budget;
             self.skipping_line = true;
         }
         file.seek(SeekFrom::Start(self.offset))?;
-        let mut reader = BufReader::new(file.take(READ_BUDGET.min(length - self.offset)));
+        let mut reader = BufReader::new(file.take(budget.min(length - self.offset)));
         let mut line = Vec::new();
         let start = self.offset;
         loop {
@@ -226,7 +286,7 @@ impl Cursor {
             if !terminated && !self.events.push(&line) {
                 // Retry a half-written JSON record on the next scan. A record
                 // larger than the read budget is skipped until its newline.
-                if self.offset + read as u64 - start >= READ_BUDGET {
+                if self.offset + read as u64 - start >= budget {
                     self.offset += read as u64;
                     self.skipping_line = true;
                 }
@@ -247,6 +307,8 @@ impl Cursor {
 #[derive(Default)]
 pub struct SessionCache {
     files: HashMap<PathBuf, Cursor>,
+    stopped: HashMap<String, Stopped>,
+    source: Option<(PathBuf, PathBuf)>,
     #[cfg(feature = "desktop-history")]
     desktop: desktop::Cache,
 }
@@ -265,8 +327,12 @@ impl SessionCache {
         database_home: &Path,
         now: u64,
     ) -> io::Result<Vec<SessionState>> {
-        #[cfg(not(feature = "desktop-history"))]
-        let _ = database_home;
+        let source = (codex_home.to_owned(), database_home.to_owned());
+        if self.source.as_ref() != Some(&source) {
+            self.files.clear();
+            self.stopped.clear();
+            self.source = Some(source);
+        }
         let mut files = Vec::new();
         collect(&codex_home.join("sessions"), &mut files)?;
         let seen: HashSet<_> = files.iter().map(|(path, _, _)| path.clone()).collect();
@@ -303,7 +369,7 @@ impl SessionCache {
         sessions.sort_unstable_by(|left, right| {
             left.session_id
                 .cmp(&right.session_id)
-                .then_with(|| right.last_seen.cmp(&left.last_seen))
+                .then_with(|| activity_order(right, left))
                 .then_with(|| {
                     rollout_phase_priority(right.phase).cmp(&rollout_phase_priority(left.phase))
                 })
@@ -317,10 +383,144 @@ impl SessionCache {
                 .merge_with_database_home(codex_home, database_home, now, &mut sessions);
             sessions
         };
+        // Keep stopped evidence while its rollout exists or history has not
+        // explicitly archived it. Neither a DB outage nor its limited query
+        // window proves deletion of an unchanged inProgress row.
+        #[allow(unused_mut)]
+        let mut retained_ids: HashSet<_> = self
+            .files
+            .values()
+            .filter_map(|cursor| {
+                cursor
+                    .events
+                    .session
+                    .as_ref()
+                    .map(|session| session.session_id.clone())
+            })
+            .collect();
+        #[cfg(feature = "desktop-history")]
+        retained_ids.extend(self.desktop.retained_ids().map(str::to_owned));
+        self.stopped.retain(|id, _| retained_ids.contains(id));
         Ok(sessions
             .into_iter()
+            .filter(|session| session.last_seen <= now)
+            .map(|mut session| {
+                self.observe_liveness(codex_home, &mut session);
+                session
+            })
             .filter(|session| !session.is_stale(now, STALE_AFTER_SECS))
             .collect())
+    }
+
+    fn observe_liveness(&mut self, home: &Path, session: &mut SessionState) {
+        let Some(activity) = session.codex_activity.clone() else {
+            return;
+        };
+        let explicit_stop =
+            session.phase == Phase::Completed && session.last_event != "session_disconnected";
+        if let Some(stopped) = self.stopped.get(&session.session_id) {
+            let new_turn = activity.turn.is_some()
+                && stopped.activity.turn.is_some()
+                && activity.turn != stopped.activity.turn
+                && activity.at >= stopped.activity.at;
+            // Legacy events may omit turn IDs. A strictly later explicit start
+            // is still evidence, including when later activity arrived in the
+            // same batch. Ordinary activity cannot reopen an explicit finish.
+            let legacy_start = (activity.turn.is_none() || stopped.activity.turn.is_none())
+                && activity
+                    .started_at
+                    .is_some_and(|at| at > stopped.activity.at);
+            let new_activity = !stopped.explicit && activity.at > stopped.activity.at;
+            if !(new_turn
+                || legacy_start
+                || new_activity
+                || (explicit_stop && activity.at >= stopped.activity.at))
+            {
+                session.phase = Phase::Completed;
+                session.observed_alive = false;
+                session.last_event = stopped.event.clone();
+                session.last_seen = stopped.last_seen;
+                session.codex_activity = Some(stopped.activity.clone());
+                return;
+            }
+            self.stopped.remove(&session.session_id);
+        }
+        session.observed_alive = false;
+        if session.phase != Phase::Completed {
+            match writer_alive(home, &session.session_id) {
+                Some(true) => session.observed_alive = true,
+                Some(false) => {
+                    session.phase = Phase::Completed;
+                    session.last_event = "session_disconnected".into();
+                }
+                None => {} // Unknown liveness keeps the event-age policy.
+            }
+        }
+        if session.phase == Phase::Completed {
+            self.stopped.insert(
+                session.session_id.clone(),
+                Stopped {
+                    activity,
+                    event: session.last_event.clone(),
+                    last_seen: session.last_seen,
+                    explicit: session.last_event != "session_disconnected",
+                },
+            );
+        }
+    }
+}
+
+struct Stopped {
+    activity: CodexActivity,
+    event: String,
+    last_seen: u64,
+    explicit: bool,
+}
+
+fn valid_thread_id(id: &str) -> bool {
+    id.len() == 36
+        && id.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
+}
+
+fn writer_alive(home: &Path, id: &str) -> Option<bool> {
+    if !valid_thread_id(id) {
+        return None;
+    }
+    let locks = home.join("thread-writer-locks");
+    // Writers take this coordination lock exclusively while acquiring/releasing
+    // their thread lock. Defer instead of causing a one-shot writer acquisition
+    // to fail against our brief shared probe. Never create either lock file.
+    let coordination = File::open(locks.join(".coordination.lock")).ok()?;
+    coordination.try_lock_shared().ok()?;
+    // Declared after coordination: released first on every return path.
+    let file = File::open(locks.join(format!("{id}.lock"))).ok()?;
+    match file.try_lock_shared() {
+        Ok(()) => Some(false), // Dropping the handle immediately releases our probe.
+        Err(TryLockError::WouldBlock) => Some(true),
+        Err(TryLockError::Error(_)) => None,
+    }
+}
+
+fn activity_order(left: &SessionState, right: &SessionState) -> std::cmp::Ordering {
+    match (&left.codex_activity, &right.codex_activity) {
+        (Some(left), Some(right)) => left.at.cmp(&right.at),
+        _ => left.last_seen.cmp(&right.last_seen),
+    }
+}
+
+#[cfg(feature = "desktop-history")]
+fn same_turn(left: &SessionState, right: &SessionState) -> bool {
+    match (&left.codex_activity, &right.codex_activity) {
+        (Some(left), Some(right)) if left.turn.is_some() && right.turn.is_some() => {
+            left.turn == right.turn
+        }
+        _ => true,
     }
 }
 

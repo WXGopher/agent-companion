@@ -379,6 +379,202 @@ fn a_large_rollout_starts_with_its_recent_events() {
 }
 
 #[test]
+fn initial_tail_recovers_lifecycle_before_a_large_tool_output() {
+    let (dir, path) = fixture(json!("cli"));
+    let mut writer = fs::OpenOptions::new().append(true).open(&path).unwrap();
+    writer.write_all(&vec![b'x'; READ_BUDGET as usize]).unwrap();
+    writer.write_all(b"\n").unwrap();
+    append(&path, &[event(1, "task_started", "turn")]);
+    append(
+        &path,
+        &[
+            json!({"timestamp":"2026-09-05T00:00:02Z", "type":"response_item",
+        "payload":{"type":"function_call_output", "call_id":"tool", "output":"x".repeat(600 * 1024)}}),
+        ],
+    );
+    let mut cache = SessionCache::default();
+    let sessions = cache.scan(dir.path(), now(3)).unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].phase, Phase::Running);
+    append(&path, &[event(4, "task_complete", "turn")]);
+    assert_eq!(
+        cache.scan(dir.path(), now(5)).unwrap()[0].phase,
+        Phase::Completed
+    );
+}
+
+#[test]
+fn bootstrap_reads_at_most_one_budget_including_header_prefetch() {
+    struct Counted {
+        stream: std::io::Cursor<Vec<u8>>,
+        read: u64,
+    }
+    impl Read for Counted {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let bytes = self.stream.read(buffer)?;
+            self.read += bytes as u64;
+            Ok(bytes)
+        }
+    }
+    impl Seek for Counted {
+        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+            self.stream.seek(position)
+        }
+    }
+    for header_size in [0, 128 * 1024, READ_BUDGET as usize + 1] {
+        let meta = json!({"type":"session_meta", "payload":{"id":"s-1", "source":"cli",
+            "instructions":"x".repeat(header_size)}});
+        let mut bytes = format!("{meta}\n").into_bytes();
+        bytes.extend(vec![b'x'; READ_BUDGET as usize]);
+        bytes.push(b'\n');
+        bytes.extend(format!("{}\n", event(1, "task_started", "turn")).as_bytes());
+        let length = bytes.len() as u64;
+        let mut stream = Counted {
+            stream: std::io::Cursor::new(bytes),
+            read: 0,
+        };
+        let mut cursor = Cursor::default();
+        cursor.read_from(&mut stream, length, None).unwrap();
+        assert!(
+            stream.read <= READ_BUDGET,
+            "header and tail must share one read budget"
+        );
+        if header_size < READ_BUDGET as usize {
+            assert_eq!(
+                cursor
+                    .events
+                    .snapshot(Path::new("synthetic"))
+                    .unwrap()
+                    .phase,
+                Phase::Running
+            );
+        } else {
+            assert!(cursor.events.snapshot(Path::new("synthetic")).is_none());
+        }
+        let before = stream.read;
+        cursor.read_from(&mut stream, length, None).unwrap();
+        assert_eq!(
+            stream.read, before,
+            "unchanged large logs are not searched repeatedly"
+        );
+    }
+}
+
+fn rollout_with_writer() -> (tempfile::TempDir, PathBuf, File) {
+    const ID: &str = "01a08965-575f-7870-b001-3698447df18c";
+    let (dir, path) = fixture(json!("cli"));
+    let mut meta: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    meta["payload"]["id"] = json!(ID);
+    fs::write(&path, format!("{meta}\n")).unwrap();
+    let locks = dir.path().join("thread-writer-locks");
+    fs::create_dir(&locks).unwrap();
+    File::create(locks.join(".coordination.lock")).unwrap();
+    let writer = File::create(locks.join(format!("{ID}.lock"))).unwrap();
+    writer.lock().unwrap();
+    (dir, path, writer)
+}
+
+#[test]
+fn rollout_only_live_writer_retains_known_activity_but_not_idle_or_completed() {
+    let (dir, path, _writer) = rollout_with_writer();
+    let mut cache = SessionCache::default();
+    assert!(
+        cache.scan(dir.path(), now(0)).unwrap().is_empty(),
+        "a lock cannot create a running turn"
+    );
+    append(&path, &[event(1, "task_started", "turn")]);
+    let sessions = cache.scan(dir.path(), now(1) + STALE_AFTER_SECS).unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].phase, Phase::Running);
+    assert!(sessions[0].observed_alive);
+    append(&path, &[event(2, "task_complete", "turn")]);
+    let completed = cache.scan(dir.path(), now(3)).unwrap();
+    assert_eq!(completed[0].phase, Phase::Completed);
+    assert!(!completed[0].observed_alive);
+    assert!(
+        cache
+            .scan(dir.path(), now(2) + STALE_AFTER_SECS)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn rollout_only_released_writer_marks_a_known_turn_disconnected() {
+    let (dir, path, writer) = rollout_with_writer();
+    append(&path, &[event(1, "task_started", "turn")]);
+    let mut cache = SessionCache::default();
+    cache.scan(dir.path(), now(2)).unwrap();
+    drop(writer);
+    let sessions = cache.scan(dir.path(), now(3)).unwrap();
+    assert_eq!(sessions[0].phase, Phase::Completed);
+    assert_eq!(sessions[0].last_event, "session_disconnected");
+}
+
+#[test]
+fn a_live_writer_cannot_guess_state_beyond_the_initial_read_budget() {
+    let (dir, path, _writer) = rollout_with_writer();
+    append(&path, &[event(1, "task_started", "turn")]);
+    let output = json!({"timestamp":"2026-09-05T00:00:02Z", "type":"response_item",
+        "payload":{"type":"function_call_output", "call_id":"tool", "output":"x".repeat(READ_BUDGET as usize + 1)}});
+    append(&path, &[output]);
+    let mut cache = SessionCache::default();
+    assert!(cache.scan(dir.path(), now(3)).unwrap().is_empty());
+    assert!(cache.scan(dir.path(), now(4)).unwrap().is_empty());
+    append(&path, &[event(5, "agent_reasoning", "turn")]);
+    assert_eq!(
+        cache.scan(dir.path(), now(6)).unwrap()[0].phase,
+        Phase::Running
+    );
+}
+
+#[test]
+fn an_unknown_writer_keeps_event_age_policy_and_does_not_fake_disconnect() {
+    let (dir, path, writer) = rollout_with_writer();
+    append(&path, &[event(1, "task_started", "turn")]);
+    let mut cache = SessionCache::default();
+    assert!(cache.scan(dir.path(), now(2)).unwrap()[0].observed_alive);
+    drop(writer);
+    fs::remove_dir_all(dir.path().join("thread-writer-locks")).unwrap();
+    let sessions = cache.scan(dir.path(), now(3)).unwrap();
+    assert_eq!(sessions[0].phase, Phase::Running);
+    assert!(!sessions[0].observed_alive);
+    assert!(
+        cache
+            .scan(dir.path(), now(1) + STALE_AFTER_SECS)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn live_rollout_writer_preserves_waiting_and_never_includes_a_subagent() {
+    let (dir, path, _writer) = rollout_with_writer();
+    append(
+        &path,
+        &[
+            event(1, "task_started", "turn"),
+            json!({"timestamp":"2026-09-05T00:00:02Z", "type":"response_item", "payload":{
+            "type":"function_call", "name":"request_user_input", "call_id":"question"}}),
+        ],
+    );
+    let waiting = SessionCache::default()
+        .scan(dir.path(), now(2) + STALE_AFTER_SECS)
+        .unwrap();
+    assert_eq!(waiting[0].phase, Phase::WaitingForAnswer);
+    let content = fs::read_to_string(&path)
+        .unwrap()
+        .replace("\"source\":\"cli\"", "\"source\":\"subagent\"");
+    fs::write(&path, content).unwrap();
+    assert!(
+        SessionCache::default()
+            .scan(dir.path(), now(3))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn observed_sessions_update_counts_but_never_overwrite_live_hook_approvals() {
     use crate::protocol::HookPayload;
     use crate::state::SessionTable;
@@ -423,4 +619,194 @@ fn inspect_local_sessions() {
         );
     }
     eprintln!("{} detected Codex sessions", sessions.len());
+}
+
+#[test]
+fn reacquiring_a_writer_requires_new_activity_to_revive_a_disconnected_turn() {
+    let (dir, path, writer) = rollout_with_writer();
+    append(&path, &[event(1, "task_started", "turn")]);
+    let mut cache = SessionCache::default();
+    assert!(cache.scan(dir.path(), now(2)).unwrap()[0].observed_alive);
+    drop(writer);
+    assert_eq!(
+        cache.scan(dir.path(), now(3)).unwrap()[0].phase,
+        Phase::Completed
+    );
+    let writer = File::open(
+        dir.path()
+            .join("thread-writer-locks/01a08965-575f-7870-b001-3698447df18c.lock"),
+    )
+    .unwrap();
+    writer.lock().unwrap();
+    assert_eq!(
+        cache.scan(dir.path(), now(4)).unwrap()[0].phase,
+        Phase::Completed
+    );
+    assert!(cache.scan(dir.path(), now(1) + 86400).unwrap().is_empty());
+    // A different turn may legitimately start in the same timestamp second.
+    append(&path, &[event(1, "task_started", "new-turn")]);
+    assert_eq!(
+        cache.scan(dir.path(), now(5)).unwrap()[0].phase,
+        Phase::Running
+    );
+    append(
+        &path,
+        &[
+            event(2, "task_complete", "new-turn"),
+            event(1, "task_started", "new-turn"),
+        ],
+    );
+    assert_eq!(
+        cache.scan(dir.path(), now(6)).unwrap()[0].phase,
+        Phase::Completed
+    );
+    assert!(cache.scan(dir.path(), now(2) + 86400).unwrap().is_empty());
+}
+
+#[test]
+fn writer_probe_defers_during_coordination_and_never_creates_lock_files() {
+    const ID: &str = "01a08965-575f-7870-b001-3698447df18c";
+    let (dir, _, writer) = rollout_with_writer();
+    let coordination_path = dir.path().join("thread-writer-locks/.coordination.lock");
+    let coordination = File::open(&coordination_path).unwrap();
+    coordination.lock().unwrap();
+    assert_eq!(writer_alive(dir.path(), ID), None);
+    drop(coordination);
+    assert_eq!(writer_alive(dir.path(), ID), Some(true));
+    drop(writer);
+    assert_eq!(writer_alive(dir.path(), ID), Some(false));
+    // Two observers use compatible shared locks and must not mistake each
+    // other for an exclusive writer.
+    let other_coordination = File::open(&coordination_path).unwrap();
+    other_coordination.lock_shared().unwrap();
+    let other_probe =
+        File::open(dir.path().join(format!("thread-writer-locks/{ID}.lock"))).unwrap();
+    other_probe.lock_shared().unwrap();
+    assert_eq!(writer_alive(dir.path(), ID), Some(false));
+    drop((other_probe, other_coordination));
+    // Both probe locks must have been released before returning.
+    let coordination = File::open(&coordination_path).unwrap();
+    coordination.try_lock().unwrap();
+    let writer = File::open(dir.path().join(format!("thread-writer-locks/{ID}.lock"))).unwrap();
+    writer.try_lock().unwrap();
+    drop((writer, coordination));
+    fs::remove_file(&coordination_path).unwrap();
+    assert_eq!(writer_alive(dir.path(), ID), None);
+    assert!(!coordination_path.exists());
+}
+
+#[test]
+fn later_start_without_turn_ids_can_resume_but_replays_cannot() {
+    for kind in ["task_started", "user_message"] {
+        let (dir, path, _writer) = rollout_with_writer();
+        let without_turn = |second, kind| {
+            let mut value = event(second, kind, "unused");
+            value["payload"].as_object_mut().unwrap().remove("turn_id");
+            value
+        };
+        append(
+            &path,
+            &[
+                without_turn(1, "task_started"),
+                without_turn(2, "task_complete"),
+            ],
+        );
+        let mut cache = SessionCache::default();
+        assert_eq!(
+            cache.scan(dir.path(), now(3)).unwrap()[0].phase,
+            Phase::Completed
+        );
+        append(&path, &[without_turn(1, kind), without_turn(2, kind)]);
+        assert_eq!(
+            cache.scan(dir.path(), now(3)).unwrap()[0].phase,
+            Phase::Completed
+        );
+        append(
+            &path,
+            &[without_turn(3, kind), without_turn(4, "agent_reasoning")],
+        );
+        assert_eq!(
+            cache.scan(dir.path(), now(5)).unwrap()[0].phase,
+            Phase::Running
+        );
+    }
+}
+
+#[test]
+fn fractional_activity_can_resume_a_disconnected_wait_without_clearing_it() {
+    let (dir, path, writer) = rollout_with_writer();
+    append(
+        &path,
+        &[
+            event(1, "task_started", "turn"),
+            json!({"timestamp":"2026-09-05T00:00:02.100Z", "type":"response_item", "payload":{"type":"function_call", "name":"request_user_input", "call_id":"question"}}),
+        ],
+    );
+    let mut cache = SessionCache::default();
+    assert_eq!(
+        cache.scan(dir.path(), now(3)).unwrap()[0].phase,
+        Phase::WaitingForAnswer
+    );
+    drop(writer);
+    assert_eq!(
+        cache.scan(dir.path(), now(3)).unwrap()[0].phase,
+        Phase::Completed
+    );
+    let writer = File::open(
+        dir.path()
+            .join("thread-writer-locks/01a08965-575f-7870-b001-3698447df18c.lock"),
+    )
+    .unwrap();
+    writer.lock().unwrap();
+    let mut activity = event(2, "agent_reasoning", "turn");
+    activity["timestamp"] = json!("2026-09-05T00:00:02.200Z");
+    append(&path, &[activity]);
+    assert_eq!(
+        cache.scan(dir.path(), now(3)).unwrap()[0].phase,
+        Phase::WaitingForAnswer
+    );
+    append(
+        &path,
+        &[
+            json!({"timestamp":"2026-09-05T00:00:02.300Z", "type":"response_item", "payload":{"type":"function_call_output", "call_id":"question", "output":"answered"}}),
+        ],
+    );
+    assert_eq!(
+        cache.scan(dir.path(), now(3)).unwrap()[0].phase,
+        Phase::Running
+    );
+}
+
+#[test]
+fn terminal_tail_retains_turn_identity_and_future_events_are_not_displayed() {
+    let (dir, path) = fixture(json!("cli"));
+    append(&path, &[event(2, "task_complete", "tail-turn")]);
+    let mut cache = SessionCache::default();
+    assert!(cache.scan(dir.path(), now(1)).unwrap().is_empty());
+    let sessions = cache.scan(dir.path(), now(3)).unwrap();
+    assert_eq!(
+        sessions[0].codex_activity.as_ref().unwrap().turn.as_deref(),
+        Some("tail-turn")
+    );
+    assert_eq!(sessions[0].phase, Phase::Completed);
+    fs::remove_file(path).unwrap();
+    assert!(cache.scan(dir.path(), now(4)).unwrap().is_empty());
+    assert!(cache.stopped.is_empty());
+}
+
+#[test]
+fn subsecond_rollout_copies_choose_the_newer_turn_before_phase_priority() {
+    let (dir, path) = fixture(json!("cli"));
+    let copy = path.with_file_name("rollout-copy.jsonl");
+    fs::copy(&path, &copy).unwrap();
+    let mut old = event(1, "task_complete", "old");
+    old["timestamp"] = json!("2026-09-05T00:00:01.100Z");
+    let mut new = event(1, "task_started", "new");
+    new["timestamp"] = json!("2026-09-05T00:00:01.500Z");
+    append(&path, &[old]);
+    append(&copy, &[new]);
+    assert_eq!(
+        SessionCache::default().scan(dir.path(), now(2)).unwrap()[0].phase,
+        Phase::Running
+    );
 }

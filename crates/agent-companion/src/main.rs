@@ -26,6 +26,8 @@ mod headless;
 mod macos;
 #[cfg(target_os = "macos")]
 mod macos_deployment;
+#[cfg(target_os = "macos")]
+mod macos_primary_app;
 mod out;
 #[cfg(windows)]
 mod windows_deployment;

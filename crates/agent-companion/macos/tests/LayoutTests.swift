@@ -33,6 +33,10 @@ struct LayoutTests {
             SubscriptionUsageTests.liveRead()
             return
         }
+        if CommandLine.arguments.contains("--primary-discovery") {
+            try PrimaryCodexAppTests.run()
+            return
+        }
         _ = NSApplication.shared
         let output = URL(fileURLWithPath: CommandLine.arguments[1])
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)

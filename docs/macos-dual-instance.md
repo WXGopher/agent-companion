@@ -14,8 +14,11 @@ Settings does not discover, deploy, adopt, or launch Dodex before that opt-in.
 ## Deployment and compatibility
 
 The **Codex 双开** section runs deployment on a worker and reports progress.
-Fresh deployment requires a valid OpenAI-signed Codex.app in `/Applications`
-or `~/Applications`. Its bundle is copied without changing its signature.
+Fresh deployment requires a valid OpenAI-signed Codex application in
+`/Applications` or `~/Applications`. Supported bundle names are `Codex.app`
+and `ChatGPT.app`, with the latter accepted only when its identity is Codex.
+Redirected bundles and the hidden Dodex runtime are excluded from primary
+discovery. Its bundle is copied without changing its signature.
 Companion creates `~/Applications/Dodex.app` and stores its runtime, Codex
 home, SQLite directory, desktop data, cache and logs under
 `~/Library/Application Support/AgentCompanion/Dodex`.
@@ -208,6 +211,11 @@ The primary instance uses `~/.codex`, independently of the environment of the
 process that launched Companion. Its configured `sqlite_home` is respected.
 Each instance has its own task monitor, database root, quota/error state and
 status-bar draft. Task keys combine the instance ID and conversation ID.
+
+Primary application opening, desktop navigation and bundled CLI discovery use
+the same fixed application candidates as fresh deployment. `Codex.app` takes
+priority over a Codex-identified `ChatGPT.app`; an unrelated ChatGPT app is
+never treated as Codex. Desktop navigation still matches the selected path.
 
 Tasks shows a separate weekly-quota card for every enabled instance, including
 Dodex when it has no quota reading yet. Each card opens that instance's Usage

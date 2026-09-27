@@ -139,6 +139,14 @@ impl CodexClient {
     }
 }
 
+/// Internal observation evidence; never included in the public dashboard protocol.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CodexActivity {
+    pub turn: Option<String>,
+    pub at: u128,
+    pub started_at: Option<u128>,
+}
+
 /// One agent session, as reconstructed from its hook events.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionState {
@@ -160,6 +168,7 @@ pub struct SessionState {
     pub first_seen: u64,
     /// A current Codex writer lock proves a quiet turn is still attached.
     pub observed_alive: bool,
+    pub(crate) codex_activity: Option<CodexActivity>,
     /// The desktop's saved conversation name, when available.
     pub display_name: Option<String>,
     /// Terminal metadata the hook injected, for "jump back to the session".
@@ -182,6 +191,7 @@ impl SessionState {
             last_seen: now,
             first_seen: now,
             observed_alive: false,
+            codex_activity: None,
             display_name: None,
             terminal: None,
             pending: Vec::new(),

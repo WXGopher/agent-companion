@@ -77,6 +77,7 @@ fn fake_runtime(app: &Path) {
     private_directory(&app.join("Contents/MacOS")).unwrap();
     private_directory(&app.join("Contents/Resources")).unwrap();
     write_new(&app.join("synthetic-valid-signature"), b"fixture", 0o600).unwrap();
+    write_new(&app.join("Contents/Info.plist"), b"<plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>com.openai.codex</string></dict></plist>", 0o600).unwrap();
     write_new(&app.join("Contents/MacOS/ChatGPT"), b"#!/bin/sh\n/usr/bin/env > \"$CODEX_HOME/synthetic-observed-env\"\nprintf '%s' \"$1\" > \"$CODEX_HOME/synthetic-observed-arg\"\n", 0o755).unwrap();
     write_new(
         &app.join("Contents/Resources/codex"),
@@ -246,6 +247,31 @@ fn missing_source_and_invalid_signature_create_no_environment() {
     assert!(!fixture.layout.root().exists());
     assert!(!fixture.layout.instance().launcher_app.exists());
     assert_eq!(ops.copied.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn renamed_official_primary_is_available_for_deployment_and_still_requires_signature() {
+    let fixture = Fixture::new();
+    let source = fixture.source();
+    let renamed = fixture.layout.system_applications.join("ChatGPT.app");
+    fs::rename(source, &renamed).unwrap();
+    let ops = FakeOps::default();
+    fs::remove_file(renamed.join("synthetic-valid-signature")).unwrap();
+    assert!(
+        deploy_with(&fixture.layout, &ops, |_, _| {})
+            .unwrap_err()
+            .contains("signature")
+    );
+    assert_eq!(ops.copied.load(Ordering::SeqCst), 0);
+    write_new(
+        &renamed.join("synthetic-valid-signature"),
+        b"fixture",
+        0o600,
+    )
+    .unwrap();
+    let instance = deploy_with(&fixture.layout, &ops, |_, _| {}).unwrap();
+    assert!(instance.runtime_app.is_dir());
+    assert_eq!(ops.copied.load(Ordering::SeqCst), 1);
 }
 #[test]
 fn copy_and_copied_signature_failures_clean_only_this_attempt() {
