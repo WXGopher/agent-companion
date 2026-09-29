@@ -47,6 +47,10 @@ struct LayoutTests {
     @MainActor static func main() throws {
         // Preserve the last completed scenario if a native assertion aborts CI.
         setbuf(stdout, nil)
+        if CommandLine.arguments.contains("--popup-outside-target") {
+            MenuBarLifecycleTests.runOutsideTarget()
+            return
+        }
         if CommandLine.arguments.contains("--primary-discovery") {
             try PrimaryCodexAppTests.run()
             return

@@ -123,7 +123,10 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSPopoverDelegat
         menuModel.isPresented = true
         menuModel.start()
         pendingUpdateCheck = true
+        // Focus the transient popover so returning to another app dismisses it.
+        NSApp.activate(ignoringOtherApps: true)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        popover.contentViewController?.view.window?.makeKey()
     }
 
     func popoverDidShow(_ notification: Notification) {
