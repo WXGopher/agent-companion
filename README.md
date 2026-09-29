@@ -6,6 +6,13 @@
 
 在 Windows 任务栏或 macOS 菜单栏查看 Codex 的任务状态与订阅用量。
 
+### v0.3.23 更新
+
+- macOS Dodex 改为本机官方 App 的独立镜像，保留固定的公开入口、自有名称与图标；原生入口让启动后仍使用同一个 Dock 图标，不修改官方 App。
+- 启动时轻量比较官方 App 的版本与构建号；一致时直接启动，有更新时验证并原子替换，失败则继续打开现有 App。同一构建不重复复制或签名；实际升级后 macOS 仍可能再次请求钥匙串授权。
+- 保留已有 TUI 的运行程序、命令与第二账号配置；App 同步不会覆盖账号、个人配置或会话历史。
+- 设置页分开显示 Dodex App、Companion 接入和副账号与 TUI。打开页面只显示安装信息和保存的路径；点击“安装 Dodex App”或“检查并同步”才触发该页的 App 校验与同步。[发布说明](docs/releases/v0.3.23.md)
+
 ### v0.3.22 更新
 
 - 统一两端额度刷新：默认每 5 分钟查询，设置可调整为 1–60 分钟；额度与历史 Token 统计独立加载。保留最后成功读数，仅查询失败时加 `*`，不在重置时间推算为 100%。
@@ -77,17 +84,24 @@ dodex -C C:\projects\demo
 
 应用尚未经过 Apple 公证；首次打开若被拦截，可按 [Apple 官方说明](https://support.apple.com/102445)在“系统设置 → 隐私与安全性”中选择“仍要打开”。
 
-**macOS 双开**：设置 → Codex 双开 → 安装 Dodex App。从本机签名有效的官方 `Codex.app` 或保留 Codex 身份的 `ChatGPT.app` 创建独立名称、图标和本地签名的公开 App。已有账号目录与 TUI 保持不变；新环境首次使用需登录。官方 App 更新后，下次启动 Dodex 会自动检查并同步；版本一致时直接启动，更新失败时继续使用现有版本。也可退出 Dodex 后点击“检查并同步”，或运行 `agent-companion dodex-app --sync`。详见 [Dodex App 说明](docs/macos-dual-instance.md)。
+**macOS 双开**：设置 → Codex 双开 → 安装 Dodex App。从本机签名有效的官方 `Codex.app` 或保留 Codex 身份的 `ChatGPT.app` 创建独立名称、图标和本地签名的公开 App，不修改官方 App。已有账号目录与 TUI 保持不变；新环境首次使用需登录。官方 App 更新后，下次启动 Dodex 会自动检查并同步；版本与构建号一致时直接启动，更新失败时继续使用现有版本。也可退出 Dodex 后点击“检查并同步”，或运行 `agent-companion dodex-app --sync`。已有镜像需先手动同步一次以启用启动检查；实际升级可能再次触发 macOS 钥匙串授权。详见 [Dodex App 说明](docs/macos-dual-instance.md)。
 
 macOS 重新打开 Agent Companion 会显示弹窗的 Tasks 页。刘海、悬停展开、显示器选择与独立 Dock 入口已移除；旧版入口偏好不会隐藏菜单栏，已保存的菜单栏位置继续保留。设置从弹窗底部打开。详见[菜单栏说明](docs/MACOS_MENU_BAR.md)。
 
-**双开隔离与停用**：两个平台的新环境均使用独立文件凭证、历史、数据库和个人配置，不复制原实例的账号数据。已有环境只有通过兼容性和隔离校验才会接入，冲突时停止且不覆盖。停用只关闭 Companion 对第二实例的监控，不退出 Dodex、不删除环境。暂不提供双开运行程序的自动更新或卸载。
+**双开隔离与停用**：两个平台的新环境均使用独立文件凭证、历史、数据库和个人配置，不复制原实例的账号数据。已有环境只有通过兼容性和隔离校验才会接入，冲突时停止且不覆盖。停用只关闭 Companion 对第二实例的监控，不退出 Dodex、不删除环境。macOS Dodex App 在启动时同步本机官方应用；已有 TUI 与 Windows 运行程序沿用各自的更新方式。暂不提供卸载功能。
 
 **升级**：先退出旧程序及设置窗口，再替换文件；已安装 Windows hooks 的用户需重新执行安装命令。Codex 配置、账号和双开环境会保留。
 
 ## English
 
 See Codex tasks and subscription usage in the Windows taskbar or macOS menu bar.
+
+### New in v0.3.23
+
+- macOS Dodex is now a local mirror of the official App with a stable public entry, its own name and icon, and a native entry that keeps the running App on the same Dock icon. The official App is untouched.
+- Startup compares the official App's version and build. Matching builds launch directly; changed builds are verified and replaced atomically, with the existing App retained on failure. Matching builds are not copied or signed again; actual upgrades may prompt for macOS Keychain access again.
+- Preserve the existing TUI executable, commands and second-account profile. App synchronization does not overwrite accounts, personal settings or session history.
+- Settings separates Dodex App, Companion monitoring, and the second account and TUI. Opening the page displays installation metadata and saved paths; App verification and synchronization on that page begin only through the install or sync button. [Release notes](docs/releases/v0.3.23.md)
 
 ### New in v0.3.22
 
@@ -161,11 +175,11 @@ The command is installed in a supported user command directory already on the cu
 
 The app is not Apple-notarized. If the first launch is blocked, follow [Apple's instructions](https://support.apple.com/102445) to choose **Open Anyway** in System Settings → Privacy & Security.
 
-**macOS second instance**: Settings → Codex 双开 → 安装 Dodex App. Creates a public App with its own name, icon and local signature from the validly signed official `Codex.app` or Codex-identified `ChatGPT.app` installed on this Mac. Existing profile directories and TUI stay unchanged; fresh environments require login. After the official App updates, the next Dodex startup checks and syncs it automatically. Matching versions launch directly; failed updates leave the existing App usable. Manual sync remains available after quitting Dodex through “检查并同步” or `agent-companion dodex-app --sync`. See the [Dodex App guide](docs/macos-dual-instance.md).
+**macOS second instance**: Settings → Codex 双开 → 安装 Dodex App. Creates a public App with its own name, icon and local signature from the validly signed official `Codex.app` or Codex-identified `ChatGPT.app` installed on this Mac, leaving the official App untouched. Existing profile directories and TUI stay unchanged; fresh environments require login. After the official App updates, the next Dodex startup checks and syncs it automatically. Matching versions and builds launch directly; failed updates leave the existing App usable. Manual sync remains available after quitting Dodex through “检查并同步” or `agent-companion dodex-app --sync`. Existing mirrors need one manual sync to enable startup checks; actual upgrades may prompt for macOS Keychain access again. See the [Dodex App guide](docs/macos-dual-instance.md).
 
 On macOS, reopening Agent Companion shows the popup's Tasks page. The notch, hover expansion, display selection and separate Dock entry have been removed. Legacy entry preferences cannot hide the menu bar, and its saved position is retained. Open Settings from the popup footer. See the [menu-bar guide](docs/MACOS_MENU_BAR.md).
 
-**Isolation and disabling**: on both platforms, a fresh environment has separate file credentials, history, databases and personal settings, without copying account data from the original instance. Existing environments are adopted only after compatibility and isolation checks; conflicts stop without overwriting. Disabling integration stops Companion monitoring the second instance without quitting Dodex or deleting its environment. Automatic runtime updates and uninstall are not included.
+**Isolation and disabling**: on both platforms, a fresh environment has separate file credentials, history, databases and personal settings, without copying account data from the original instance. Existing environments are adopted only after compatibility and isolation checks; conflicts stop without overwriting. Disabling integration stops Companion monitoring the second instance without quitting Dodex or deleting its environment. macOS Dodex App syncs from the local official App at startup; existing TUI and Windows runtimes retain their own update behavior. Uninstall is not included.
 
 **Upgrade**: quit the old app and its Settings window, then replace the files. If you installed Windows hooks, rerun the installation command. Codex configuration, accounts and the second-instance environment are retained.
 
