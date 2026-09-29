@@ -73,6 +73,8 @@ enum Command {
         repair: bool,
         #[arg(long, conflicts_with = "repair")]
         sync: bool,
+        #[arg(long, hide = true, conflicts_with_all = ["repair", "sync"])]
+        sync_on_launch: Option<std::path::PathBuf>,
     },
     /// Open the explicitly deployed, isolated Dodex desktop instance.
     #[cfg(windows)]
@@ -195,12 +197,20 @@ fn main() -> ExitCode {
 
     let result = match cli.command {
         #[cfg(target_os = "macos")]
-        Some(Command::DodexApp { repair, sync }) => (if sync {
-            macos_deployment::sync_desktop()
+        Some(Command::DodexApp {
+            repair,
+            sync,
+            sync_on_launch,
+        }) => if let Some(app) = sync_on_launch {
+            macos_deployment::sync_desktop_on_launch(&app)
         } else {
-            macos_deployment::desktop_entry(repair)
-        })
-        .map(|message| println!("{message}"))
+            (if sync {
+                macos_deployment::sync_desktop()
+            } else {
+                macos_deployment::desktop_entry(repair)
+            })
+            .map(|message| println!("{message}"))
+        }
         .map_err(std::io::Error::other),
         #[cfg(windows)]
         Some(Command::Dodex(DodexArgs { deploy, check })) => {
@@ -238,6 +248,46 @@ fn main() -> ExitCode {
             errln!("agent-companion: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_cli_tests {
+    use super::*;
+
+    #[test]
+    fn startup_sync_is_hidden_and_cannot_be_combined_with_manual_actions() {
+        let app = "/Applications/Dodex.app";
+        assert!(matches!(
+            Cli::try_parse_from(["agent-companion", "dodex-app", "--sync-on-launch", app])
+                .unwrap()
+                .command,
+            Some(Command::DodexApp {
+                repair: false,
+                sync: false,
+                sync_on_launch: Some(path),
+            }) if path == std::path::Path::new(app)
+        ));
+        for option in ["--repair", "--sync"] {
+            assert!(
+                Cli::try_parse_from([
+                    "agent-companion",
+                    "dodex-app",
+                    "--sync-on-launch",
+                    app,
+                    option,
+                ])
+                .is_err()
+            );
+        }
+        assert!(
+            Cli::try_parse_from(["agent-companion", "dodex-app", "--sync-on-launch",]).is_err()
+        );
+        let help = Cli::try_parse_from(["agent-companion", "dodex-app", "--help"])
+            .unwrap_err()
+            .to_string();
+        assert!(help.contains("--sync"));
+        assert!(!help.contains("--sync-on-launch"));
     }
 }
 

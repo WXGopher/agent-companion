@@ -226,11 +226,11 @@ export component MacSettings inherits Rectangle {
                             padding: 18px;
                             spacing: 8px;
                             Text { text: "使用 Dodex"; font-size: 12px; font-weight: 600; color: SettingsColors.text; }
-                            Text { text: "在应用程序或 Dock 中打开 Dodex。同步前请退出 Dodex App；同步完成不会自动启动它。已有登录与 TUI 保持不变。"; font-size: 12px; color: SettingsColors.secondary; wrap: word-wrap; }
+                            Text { text: "在应用程序或 Dock 中打开 Dodex。启动时自动检查本机 Codex 更新；手动同步前请退出 Dodex。已有登录与 TUI 保持不变。"; font-size: 12px; color: SettingsColors.secondary; wrap: word-wrap; }
                         }
                     }
                     Text {
-                        text: "先更新官方 Codex，再点击同步即可更新 Dodex App。同步只替换应用副本并保留旧副本备份，账号目录、会话和 TUI 不变。全新环境需要独立登录。";
+                        text: "官方 Codex 更新后，下次启动 Dodex 会自动同步。更新失败时继续打开现有版本。同步只替换应用副本，账号目录、会话和 TUI 不变。全新环境需要独立登录。";
                         font-size: 12px;
                         color: SettingsColors.secondary;
                         wrap: word-wrap;

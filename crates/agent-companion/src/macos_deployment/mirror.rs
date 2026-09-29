@@ -1,10 +1,11 @@
-//! A manually refreshed desktop copy of the installed official app. Only the
+//! A desktop copy refreshed on launch or manually from the installed official app. Only the
 //! public app bundle is replaced; the old TUI, manager and hidden runtime are
 //! deliberately outside this module's write set.
 use super::*;
 use serde_json::{Map, Value, json};
 
 const MIRROR_SCHEMA: u32 = 1;
+const PACKAGING_REVISION: u32 = 1;
 const BUNDLE_ID: &str = "local.agent-companion.dodex";
 const LAUNCHER_EXECUTABLE: &str = "DodexLauncher";
 const LAUNCHER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/DodexLauncher"));
@@ -15,6 +16,10 @@ const REQUIRED_FEATURES: [&[u8]; 3] = [
     b"CODEX_HOME",
     b"CODEX_SPARKLE_ENABLED",
 ];
+
+#[cfg(test)]
+#[path = "mirror_launcher_tests.rs"]
+mod launcher_tests;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(super) struct MirrorProfile {
@@ -79,6 +84,10 @@ struct SourceFingerprint {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct MirrorManifest {
     schema: u32,
+    #[serde(default)]
+    packaging_revision: u32,
+    #[serde(default)]
+    updater_executable: Option<PathBuf>,
     app: PathBuf,
     profile: MirrorProfile,
     source_app: PathBuf,
@@ -149,6 +158,60 @@ pub(super) fn sync_profile(
             .ok_or("未找到已安装的官方 Codex App；请先安装或更新官方应用。")?
             .app;
     sync_with(layout, profile, &source, &SystemMirrorOps, notify)
+}
+
+/// Called with the deployment lock held by the native bootstrap's direct child.
+/// Matching release metadata avoids copying, hashing and signature checks at launch.
+pub(super) fn sync_on_launch(layout: &Layout, app: &Path) -> Result<(), String> {
+    let parent_pid = unsafe { libc::getppid() } as u32;
+    sync_on_launch_with(layout, app, parent_pid, &SystemMirrorOps).map(|_| ())
+}
+
+fn sync_on_launch_with(
+    layout: &Layout,
+    requested_app: &Path,
+    parent_pid: u32,
+    ops: &dyn MirrorOperations,
+) -> Result<MirrorStatus, String> {
+    let app = target(layout)?;
+    if requested_app != app {
+        return Err("启动同步只支持当前公共 Dodex App。".into());
+    }
+    no_symlinks(&app)?;
+    verify_launch_parent(&processes(&ops.processes()?)?, &app, parent_pid)?;
+    let manifest = read_manifest(&app)?;
+    if manifest.app != app {
+        return Err("Dodex App 记录与公共入口不一致。".into());
+    }
+    let source =
+        crate::macos_primary_app::discover(&layout.system_applications, &layout.applications)
+            .ok_or("未找到已安装的官方 Codex App；保留现有 Dodex。")?
+            .app;
+    let (version, build) = source_version(&source)?;
+    let updater = updater_executable()?;
+    if manifest.source.version == version
+        && manifest.source.build == build
+        && current_packaging(&manifest, &updater)
+    {
+        return Ok(status(&manifest, true));
+    }
+    sync_with_caller(
+        layout,
+        &manifest.profile,
+        &source,
+        ops,
+        Some(parent_pid),
+        |_, _| {},
+    )
+}
+
+fn updater_executable() -> Result<PathBuf, String> {
+    std::env::current_exe().map_err(|_| "无法定位 Dodex App 更新程序。".into())
+}
+
+fn current_packaging(manifest: &MirrorManifest, updater: &Path) -> bool {
+    manifest.packaging_revision == PACKAGING_REVISION
+        && manifest.updater_executable.as_deref() == Some(updater)
 }
 
 pub(super) fn check(layout: &Layout) -> Result<MirrorStatus, String> {
@@ -282,7 +345,7 @@ impl MirrorOperations for SystemMirrorOps {
     }
     fn processes(&self) -> Result<Vec<u8>, String> {
         let output = Command::new("/bin/ps")
-            .args(["-axww", "-o", "comm="])
+            .args(["-axww", "-o", "pid=", "-o", "comm="])
             .output()
             .map_err(|_| "无法检查 Dodex 桌面进程。")?;
         if !output.status.success() {
@@ -391,6 +454,18 @@ fn digest(path: &Path) -> Result<String, String> {
     file_sha256(path).ok_or_else(|| "无法计算 App 文件指纹。".into())
 }
 
+fn source_version(app: &Path) -> Result<(String, String), String> {
+    no_symlinks(app)?;
+    let plist = read_plist(app)?;
+    if string_field(&plist, "CFBundleIdentifier")? != "com.openai.codex" {
+        return Err("只能从本机官方 Codex App 同步 Dodex。".into());
+    }
+    Ok((
+        string_field(&plist, "CFBundleShortVersionString")?.into(),
+        string_field(&plist, "CFBundleVersion")?.into(),
+    ))
+}
+
 fn read_source(app: &Path, ops: &dyn MirrorOperations) -> Result<SourceFingerprint, String> {
     no_symlinks(app)?;
     let plist = read_plist(app)?;
@@ -482,6 +557,7 @@ fn customize_plist(
     app: &Path,
     native_executable: &str,
     bundled_cli: bool,
+    updater: Option<&Path>,
 ) -> Result<Value, String> {
     let fields = plist.as_object_mut().ok_or("App 属性列表不是字典。")?;
     for (key, value) in [
@@ -497,6 +573,11 @@ fn customize_plist(
     }
     fields.insert("CFBundleAlternateNames".into(), json!(["Dodex"]));
     fields.insert("LSHasLocalizedDisplayName".into(), Value::Bool(false));
+    if let Some(updater) = updater {
+        fields.insert("DodexUpdaterExecutable".into(), json!(updater));
+    } else {
+        fields.remove("DodexUpdaterExecutable");
+    }
     // An asset catalog or Dock tile plug-in can override CFBundleIconFile.
     for key in [
         "CFBundleIconName",
@@ -587,6 +668,11 @@ fn read_manifest(app: &Path) -> Result<MirrorManifest, String> {
     if manifest.schema != MIRROR_SCHEMA {
         return Err("Dodex App 镜像记录版本不兼容。".into());
     }
+    match (manifest.packaging_revision, &manifest.updater_executable) {
+        (0, None) => {}
+        (PACKAGING_REVISION, Some(updater)) if updater.is_absolute() => {}
+        _ => return Err("Dodex App 启动更新记录版本不兼容。".into()),
+    }
     Ok(manifest)
 }
 
@@ -609,6 +695,7 @@ fn validate_app(
         final_app,
         &manifest.source.executable,
         manifest.source.cli_sha256.is_some(),
+        manifest.updater_executable.as_deref(),
     )?;
     executable_path(app, LAUNCHER_EXECUTABLE)?;
     executable_path(app, &manifest.source.executable)?;
@@ -635,24 +722,78 @@ fn validate_app(
     Ok(manifest)
 }
 
-fn desktop_running(output: &[u8], apps: &[PathBuf]) -> bool {
-    String::from_utf8_lossy(output).lines().any(|line| {
-        let executable = Path::new(line.trim());
-        apps.iter().any(|app| {
-            executable.starts_with(app.join("Contents/MacOS"))
-                || executable.starts_with(app.join("Contents/Frameworks"))
-        })
-    })
+struct DesktopProcess {
+    pid: u32,
+    executable: PathBuf,
 }
 
-fn require_stopped(layout: &Layout, app: &Path, ops: &dyn MirrorOperations) -> Result<(), String> {
+fn processes(output: &[u8]) -> Result<Vec<DesktopProcess>, String> {
+    String::from_utf8_lossy(output)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let (pid, executable) = line
+                .trim_start()
+                .split_once(char::is_whitespace)
+                .ok_or("无法读取 Dodex 桌面进程信息。")?;
+            let pid = pid
+                .parse::<u32>()
+                .ok()
+                .filter(|pid| *pid > 0)
+                .ok_or("无法读取 Dodex 桌面进程编号。")?;
+            Ok(DesktopProcess {
+                pid,
+                executable: PathBuf::from(executable.trim_start()),
+            })
+        })
+        .collect()
+}
+
+fn verify_launch_parent(
+    processes: &[DesktopProcess],
+    app: &Path,
+    parent_pid: u32,
+) -> Result<(), String> {
+    let launcher = app.join("Contents/MacOS").join(LAUNCHER_EXECUTABLE);
+    if parent_pid <= 1
+        || !processes
+            .iter()
+            .any(|process| process.pid == parent_pid && process.executable == launcher)
+    {
+        return Err("启动同步必须由当前 Dodex App 启动器直接调用。".into());
+    }
+    Ok(())
+}
+
+fn require_stopped(
+    layout: &Layout,
+    app: &Path,
+    ops: &dyn MirrorOperations,
+    launch_parent: Option<u32>,
+) -> Result<(), String> {
+    let processes = processes(&ops.processes()?)?;
+    if let Some(parent) = launch_parent {
+        // Recheck the parent for each snapshot, including just before publication.
+        verify_launch_parent(&processes, app, parent)?;
+    }
     let apps = [
         app.to_path_buf(),
         layout.system_applications.join(".Dodex/Dodex.app"),
         layout.system_applications.join("Codex B Runtime.app"),
         layout.root().join("Runtime.app"),
     ];
-    if desktop_running(&ops.processes()?, &apps) {
+    let launcher = app.join("Contents/MacOS").join(LAUNCHER_EXECUTABLE);
+    if processes.iter().any(|process| {
+        if launch_parent == Some(process.pid) && process.executable == launcher {
+            return false;
+        }
+        apps.iter().any(|app| {
+            process.executable.starts_with(app.join("Contents/MacOS"))
+                || process
+                    .executable
+                    .starts_with(app.join("Contents/Frameworks"))
+        })
+    }) {
         return Err("请先退出 Dodex 桌面 App，再同步官方版本；TUI 可以继续运行。".into());
     }
     Ok(())
@@ -715,6 +856,7 @@ fn customize_app(app: &Path, manifest: &MirrorManifest) -> Result<(), String> {
         &manifest.app,
         &manifest.source.executable,
         manifest.source.cli_sha256.is_some(),
+        manifest.updater_executable.as_deref(),
     )?;
     let path = app.join("Contents/Info.plist");
     let bytes = serde_json::to_vec(&plist).map_err(|_| "无法生成 Dodex App 属性。")?;
@@ -763,12 +905,24 @@ fn sync_with(
     profile: &MirrorProfile,
     source: &Path,
     ops: &dyn MirrorOperations,
+    notify: impl FnMut(&str, &str),
+) -> Result<MirrorStatus, String> {
+    sync_with_caller(layout, profile, source, ops, None, notify)
+}
+
+fn sync_with_caller(
+    layout: &Layout,
+    profile: &MirrorProfile,
+    source: &Path,
+    ops: &dyn MirrorOperations,
+    launch_parent: Option<u32>,
     mut notify: impl FnMut(&str, &str),
 ) -> Result<MirrorStatus, String> {
     let app = target(layout)?;
     no_symlinks(&app)?;
     validate_profile(layout, profile)?;
-    require_stopped(layout, &app, ops)?;
+    require_stopped(layout, &app, ops, launch_parent)?;
+    let updater = updater_executable()?;
     notify("verifying", "正在验证本机官方 Codex App…");
     let fingerprint = read_source(source, ops)?;
     let existing = if exists(&app.join(MIRROR_MANIFEST)) {
@@ -782,6 +936,7 @@ fn sync_with(
     if let Some(existing) = &existing
         && existing.source == fingerprint
         && &existing.profile == profile
+        && current_packaging(existing, &updater)
     {
         return Ok(status(existing, true));
     }
@@ -801,6 +956,8 @@ fn sync_with(
     let backup_app = preserve_backup(&app, existing.as_ref(), ops)?;
     let manifest = MirrorManifest {
         schema: MIRROR_SCHEMA,
+        packaging_revision: PACKAGING_REVISION,
+        updater_executable: Some(updater),
         app: app.clone(),
         profile: profile.clone(),
         source_app: source.to_path_buf(),
@@ -814,7 +971,7 @@ fn sync_with(
     if read_source(source, ops)? != manifest.source {
         return Err("同步期间官方 Codex 已更新；现有 Dodex 未替换，请重新同步。".into());
     }
-    require_stopped(layout, &app, ops)?;
+    require_stopped(layout, &app, ops, launch_parent)?;
     notify("finishing", "正在发布 Dodex App…");
     if exists(&app) {
         exchange(&stage, &app)?;
@@ -866,13 +1023,19 @@ mod tests {
     struct FakeOps {
         copies: AtomicUsize,
         registrations: AtomicUsize,
+        source_verifications: AtomicUsize,
+        local_verifications: AtomicUsize,
+        signatures: AtomicUsize,
         process_list: Vec<u8>,
         reject_source: bool,
         reject_signature: bool,
+        reject_copy: bool,
+        reject_signing: bool,
         change_source_during_copy: bool,
     }
     impl MirrorOperations for FakeOps {
         fn verify_official(&self, _: &Path) -> Result<(), String> {
+            self.source_verifications.fetch_add(1, Ordering::SeqCst);
             if self.reject_source {
                 Err("synthetic invalid official signature".into())
             } else {
@@ -881,6 +1044,9 @@ mod tests {
         }
         fn copy(&self, source: &Path, destination: &Path) -> Result<(), String> {
             self.copies.fetch_add(1, Ordering::SeqCst);
+            if self.reject_copy {
+                return Err("synthetic copy failure".into());
+            }
             SystemMirrorOps.copy(source, destination)?;
             if self.change_source_during_copy {
                 fs::write(
@@ -892,9 +1058,14 @@ mod tests {
             Ok(())
         }
         fn sign(&self, _: &Path) -> Result<(), String> {
+            self.signatures.fetch_add(1, Ordering::SeqCst);
+            if self.reject_signing {
+                return Err("synthetic signing failure".into());
+            }
             Ok(())
         }
         fn verify_local(&self, _: &Path) -> Result<(), String> {
+            self.local_verifications.fetch_add(1, Ordering::SeqCst);
             if self.reject_signature {
                 Err("synthetic invalid local signature".into())
             } else {
@@ -944,6 +1115,12 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
+            command_ok(
+                Command::new("/usr/bin/plutil")
+                    .args(["-convert", "xml1"])
+                    .arg(source.join("Contents/Info.plist")),
+            )
+            .unwrap();
             let executable = source.join("Contents/MacOS/ChatGPT");
             fs::write(&executable, b"synthetic executable, never run").unwrap();
             fs::set_permissions(executable, fs::Permissions::from_mode(0o755)).unwrap();
@@ -970,6 +1147,20 @@ mod tests {
                 source,
             }
         }
+
+        fn change_release(&self, key: &str, value: &str) {
+            let mut plist = read_plist(&self.source).unwrap();
+            plist[key] = json!(value);
+            let path = self.source.join("Contents/Info.plist");
+            fs::write(&path, serde_json::to_vec(&plist).unwrap()).unwrap();
+            command_ok(
+                Command::new("/usr/bin/plutil")
+                    .args(["-convert", "xml1"])
+                    .arg(path),
+            )
+            .unwrap();
+        }
+
         fn legacy(&self) -> MirrorProfile {
             let app = self.layout.system_applications.join("Dodex.app");
             fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
@@ -1086,6 +1277,17 @@ mod tests {
         )
         .unwrap();
         let app = result.instance.runtime_app;
+        command_ok(
+            Command::new("/usr/bin/plutil")
+                .args([
+                    "-replace",
+                    "DodexUpdaterExecutable",
+                    "-string",
+                    "/usr/bin/true",
+                ])
+                .arg(app.join("Contents/Info.plist")),
+        )
+        .unwrap();
         let child = Command::new(app.join("Contents/MacOS").join(LAUNCHER_EXECUTABLE))
             .args([
                 "--user-data-dir=/wrong-profile",
@@ -1129,7 +1331,7 @@ mod tests {
             fs::write(path, b"must remain byte-for-byte unchanged").unwrap();
         }
         let ops = FakeOps {
-            process_list: format!("{}\n{}\n", tui.display(), hidden.display()).into_bytes(),
+            process_list: format!("100 {}\n101 {}\n", tui.display(), hidden.display()).into_bytes(),
             ..FakeOps::default()
         };
         let result =
@@ -1210,6 +1412,10 @@ mod tests {
             fixture
                 .layout
                 .system_applications
+                .join("Dodex.app/Contents/MacOS/DodexLauncher"),
+            fixture
+                .layout
+                .system_applications
                 .join("Dodex.app/Contents/MacOS/ChatGPT"),
             fixture
                 .layout
@@ -1221,7 +1427,7 @@ mod tests {
                 .join("Dodex.app/Contents/Frameworks/Helper.app/Contents/MacOS/Helper"),
         ] {
             let ops = FakeOps {
-                process_list: format!("{}\n", path.display()).into_bytes(),
+                process_list: format!("100 {}\n", path.display()).into_bytes(),
                 ..FakeOps::default()
             };
             assert!(
@@ -1230,6 +1436,252 @@ mod tests {
                     .contains("退出 Dodex")
             );
             assert_eq!(ops.copies.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    fn launch_ops(app: &Path) -> FakeOps {
+        FakeOps {
+            process_list: format!(
+                "  123 {}\n",
+                app.join("Contents/MacOS")
+                    .join(LAUNCHER_EXECUTABLE)
+                    .display()
+            )
+            .into_bytes(),
+            ..FakeOps::default()
+        }
+    }
+
+    #[test]
+    fn launch_with_matching_release_only_reads_metadata() {
+        let fixture = Fixture::new(false);
+        let profile = MirrorProfile::fresh(&fixture.layout);
+        let installed = sync_with(
+            &fixture.layout,
+            &profile,
+            &fixture.source,
+            &FakeOps::default(),
+            |_, _| {},
+        )
+        .unwrap();
+        let app = installed.instance.runtime_app;
+        let manifest_before = fs::read(app.join(MIRROR_MANIFEST)).unwrap();
+        // A same-release launch must not read the archive or run either verifier.
+        fs::remove_file(fixture.source.join("Contents/Resources/app.asar")).unwrap();
+        let ops = FakeOps {
+            reject_source: true,
+            reject_signature: true,
+            ..launch_ops(&app)
+        };
+        let result = sync_on_launch_with(&fixture.layout, &app, 123, &ops).unwrap();
+        assert!(result.up_to_date);
+        assert_eq!(ops.copies.load(Ordering::SeqCst), 0);
+        assert_eq!(ops.signatures.load(Ordering::SeqCst), 0);
+        assert_eq!(ops.source_verifications.load(Ordering::SeqCst), 0);
+        assert_eq!(ops.local_verifications.load(Ordering::SeqCst), 0);
+        assert_eq!(ops.registrations.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            fs::read(app.join(MIRROR_MANIFEST)).unwrap(),
+            manifest_before
+        );
+    }
+
+    #[test]
+    fn launch_updates_a_changed_version_or_build_and_preserves_the_shared_profile() {
+        for (key, value) in [
+            ("CFBundleShortVersionString", "26.925.1"),
+            ("CFBundleVersion", "11646"),
+        ] {
+            let fixture = Fixture::new(false);
+            let profile = fixture.legacy();
+            let config = profile.codex_home.join("config.toml");
+            let tui = fixture.layout.user_home.join(".local/bin/dodex");
+            for path in [&config, &tui] {
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(path, b"existing shared profile and TUI").unwrap();
+            }
+            let installed = sync_with(
+                &fixture.layout,
+                &profile,
+                &fixture.source,
+                &FakeOps::default(),
+                |_, _| {},
+            )
+            .unwrap();
+            let app = installed.instance.runtime_app;
+            fixture.change_release(key, value);
+            let ops = launch_ops(&app);
+            let updated = sync_on_launch_with(&fixture.layout, &app, 123, &ops).unwrap();
+            let plist = read_plist(&app).unwrap();
+            assert_eq!(plist[key], value);
+            assert_eq!(updated.backup_app, installed.backup_app);
+            assert_eq!(read_manifest(&app).unwrap().profile, profile);
+            assert_eq!(ops.copies.load(Ordering::SeqCst), 1);
+            assert_eq!(ops.signatures.load(Ordering::SeqCst), 1);
+            assert_eq!(ops.registrations.load(Ordering::SeqCst), 1);
+            for path in [&config, &tui] {
+                assert_eq!(fs::read(path).unwrap(), b"existing shared profile and TUI");
+            }
+        }
+    }
+
+    #[test]
+    fn launch_errors_leave_the_installed_app_intact() {
+        for failure in ["missing", "source", "local", "copy", "sign", "changed"] {
+            let fixture = Fixture::new(false);
+            let profile = MirrorProfile::fresh(&fixture.layout);
+            let installed = sync_with(
+                &fixture.layout,
+                &profile,
+                &fixture.source,
+                &FakeOps::default(),
+                |_, _| {},
+            )
+            .unwrap();
+            let app = installed.instance.runtime_app;
+            let before = [
+                MIRROR_MANIFEST,
+                "Contents/Info.plist",
+                "Contents/MacOS/ChatGPT",
+            ]
+            .map(|path| (path, fs::read(app.join(path)).unwrap()));
+            fixture.change_release("CFBundleVersion", "11646");
+            if failure == "missing" {
+                fs::remove_dir_all(&fixture.source).unwrap();
+            }
+            let ops = FakeOps {
+                reject_source: failure == "source",
+                reject_signature: failure == "local",
+                reject_copy: failure == "copy",
+                reject_signing: failure == "sign",
+                change_source_during_copy: failure == "changed",
+                ..launch_ops(&app)
+            };
+            assert!(sync_on_launch_with(&fixture.layout, &app, 123, &ops).is_err());
+            for (path, bytes) in before {
+                assert_eq!(
+                    fs::read(app.join(path)).unwrap(),
+                    bytes,
+                    "{failure}: {path}"
+                );
+            }
+            assert_eq!(ops.registrations.load(Ordering::SeqCst), 0);
+            assert!(fs::read_dir(app.parent().unwrap()).unwrap().all(|entry| {
+                !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".Dodex-stage-")
+            }));
+        }
+    }
+
+    #[test]
+    fn launch_rejects_other_bootstraps_native_processes_and_unverified_callers() {
+        let fixture = Fixture::new(false);
+        let profile = MirrorProfile::fresh(&fixture.layout);
+        let installed = sync_with(
+            &fixture.layout,
+            &profile,
+            &fixture.source,
+            &FakeOps::default(),
+            |_, _| {},
+        )
+        .unwrap();
+        let app = installed.instance.runtime_app;
+        fixture.change_release("CFBundleVersion", "11646");
+        for relative in [
+            "Contents/MacOS/DodexLauncher",
+            "Contents/MacOS/ChatGPT",
+            "Contents/Frameworks/Helper.app/Contents/MacOS/Helper",
+        ] {
+            let mut ops = launch_ops(&app);
+            ops.process_list
+                .extend_from_slice(format!("124 {}\n", app.join(relative).display()).as_bytes());
+            assert!(
+                sync_on_launch_with(&fixture.layout, &app, 123, &ops)
+                    .unwrap_err()
+                    .contains("退出 Dodex")
+            );
+            assert_eq!(ops.copies.load(Ordering::SeqCst), 0);
+        }
+        for (path, pid) in [(app.clone(), 124), (app.with_file_name("Other.app"), 123)] {
+            let ops = launch_ops(&app);
+            assert!(sync_on_launch_with(&fixture.layout, &path, pid, &ops).is_err());
+            assert_eq!(ops.source_verifications.load(Ordering::SeqCst), 0);
+        }
+        let ops = FakeOps {
+            process_list: format!("123 {}\n", app.join("Contents/MacOS/ChatGPT").display())
+                .into_bytes(),
+            ..FakeOps::default()
+        };
+        assert!(sync_on_launch_with(&fixture.layout, &app, 123, &ops).is_err());
+        assert_eq!(ops.source_verifications.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn legacy_packaging_and_a_moved_updater_are_rebuilt_once() {
+        for legacy in [true, false] {
+            let fixture = Fixture::new(false);
+            let profile = MirrorProfile::fresh(&fixture.layout);
+            let installed = sync_with(
+                &fixture.layout,
+                &profile,
+                &fixture.source,
+                &FakeOps::default(),
+                |_, _| {},
+            )
+            .unwrap();
+            let app = installed.instance.runtime_app;
+            let mut manifest: Value = read_json(&app.join(MIRROR_MANIFEST)).unwrap();
+            let mut plist = read_plist(&app).unwrap();
+            if legacy {
+                manifest
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("packaging_revision");
+                manifest
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("updater_executable");
+                plist
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("DodexUpdaterExecutable");
+            } else {
+                manifest["updater_executable"] = json!("/previous/agent-companion");
+                plist["DodexUpdaterExecutable"] = json!("/previous/agent-companion");
+            }
+            fs::write(
+                app.join(MIRROR_MANIFEST),
+                serde_json::to_vec(&manifest).unwrap(),
+            )
+            .unwrap();
+            fs::write(
+                app.join("Contents/Info.plist"),
+                serde_json::to_vec(&plist).unwrap(),
+            )
+            .unwrap();
+            let ops = FakeOps::default();
+            let old = validate_app(&fixture.layout, &app, &app, &ops).unwrap();
+            assert_eq!(old.schema, MIRROR_SCHEMA);
+            assert_eq!(
+                old.packaging_revision,
+                if legacy { 0 } else { PACKAGING_REVISION }
+            );
+            sync_with(&fixture.layout, &profile, &fixture.source, &ops, |_, _| {}).unwrap();
+            let updated = validate_app(&fixture.layout, &app, &app, &ops).unwrap();
+            assert!(current_packaging(
+                &updated,
+                &std::env::current_exe().unwrap()
+            ));
+            assert_eq!(updated.profile, profile);
+            assert_eq!(ops.copies.load(Ordering::SeqCst), 2); // refreshed app and one backup
+            assert_eq!(ops.signatures.load(Ordering::SeqCst), 1);
+            sync_with(&fixture.layout, &profile, &fixture.source, &ops, |_, _| {}).unwrap();
+            assert_eq!(ops.copies.load(Ordering::SeqCst), 2);
+            assert_eq!(ops.signatures.load(Ordering::SeqCst), 1);
+            assert_eq!(ops.registrations.load(Ordering::SeqCst), 1);
         }
     }
 

@@ -359,7 +359,7 @@ pub(super) fn mirror_message(status: &mirror::MirrorStatus) -> String {
         if status.up_to_date {
             "与本机官方 App 一致。现有账号目录与 TUI 保持不变。"
         } else {
-            "本机官方 App 已变化，可再次同步更新 Dodex App。"
+            "本机官方 App 已变化，下次启动 Dodex 时会自动同步，也可手动同步。"
         }
     );
     if let Some(backup) = &status.backup_app {
@@ -378,6 +378,15 @@ pub fn sync_desktop() -> Result<String, String> {
     }
     let status = mirror::sync(&layout, |_, _| {})?;
     Ok(mirror_message(&status))
+}
+
+/// The native launcher waits for this child before opening the current bundle.
+/// Waiting for the shared lock keeps it from launching an app being replaced.
+pub fn sync_desktop_on_launch(app: &Path) -> Result<(), String> {
+    let layout = Layout::current()?;
+    private_directory(&layout.support)?;
+    let _lock = DeploymentLock::acquire_waiting(&layout.support.join("deployment.lock"))?;
+    mirror::sync_on_launch(&layout, app)
 }
 
 /// `dodex-app` checks only; `dodex-app --repair` supports the legacy entry.

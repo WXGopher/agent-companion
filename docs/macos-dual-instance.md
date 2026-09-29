@@ -13,19 +13,34 @@ Settings does not discover, deploy, adopt, or launch Dodex before that opt-in.
 
 ## Create and update Dodex App
 
-The **Codex 双开** page creates or updates Dodex App from the official Codex App
-already installed on this Mac. Quit Dodex App, update the official Codex App as
-usual, then click **从本机 Codex 同步 Dodex App**. The same explicit operation is
-available from the packaged Companion binary:
+The **Codex 双开** page creates Dodex App from the official Codex App already
+installed on this Mac. Thereafter, opening Dodex from Finder or Dock checks the
+official App's version and build. Matching versions launch immediately without
+copying or signing. A different version is copied, verified and published before
+the Dodex window opens. Updating the official App while Dodex is running takes
+effect after Dodex is quit and opened again.
+
+This startup check uses the installed Companion executable; its menu bar app
+does not need to be running. It does not download an installer or run a background
+update daemon. If the source or updater is unavailable, or synchronization fails,
+the existing Dodex App still opens and a later startup can retry. Concurrent
+startup and manual synchronization share a deployment lock; an already running
+Dodex process is never replaced.
+
+For a manual sync, quit Dodex and click **从本机 Codex 同步 Dodex App**, or run:
 
 ```sh
 agent-companion dodex-app --sync
 ```
 
 `agent-companion dodex-app` only checks the current App and reports whether its
-source matches the locally installed official version. Neither command launches
-an App. Synchronization does not download an installer or run in a background
-update daemon.
+source matches the locally installed official version. Neither public command
+launches an App. Existing mirrors need one manual sync after installing this
+Companion update to receive the startup check.
+
+The startup check leaves signatures untouched when versions match. An actual
+upgrade changes the local signature, so macOS may ask again for Keychain access;
+silent synchronization does not bypass system authorization prompts.
 
 The source must have a valid OpenAI signature and the Codex identity. Supported
 source names are `Codex.app` and `ChatGPT.app` in `/Applications` or

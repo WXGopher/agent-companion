@@ -588,6 +588,33 @@ fn parallel_deployment_is_rejected_and_kernel_lock_releases_on_drop() {
     worker.join().unwrap().unwrap();
     deploy_fixture(&fixture, &FakeOps::default());
 }
+
+#[test]
+fn launch_deployment_lock_waits_until_the_other_operation_finishes() {
+    use std::{sync::mpsc, time::Duration};
+    let fixture = Fixture::new();
+    private_directory(&fixture.layout.support).unwrap();
+    let path = fixture.layout.support.join("deployment.lock");
+    let held = DeploymentLock::acquire(&path).unwrap();
+    assert!(DeploymentLock::acquire(&path).is_err());
+    let (started, ready) = mpsc::channel();
+    let (finished, result) = mpsc::channel();
+    let waiter = std::thread::spawn(move || {
+        started.send(()).unwrap();
+        let lock = DeploymentLock::acquire_waiting(&path);
+        finished.send(lock.is_ok()).unwrap();
+        lock.map(drop)
+    });
+    ready.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(matches!(
+        result.recv_timeout(Duration::from_millis(100)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    drop(held);
+    assert!(result.recv_timeout(Duration::from_secs(2)).unwrap());
+    waiter.join().unwrap().unwrap();
+}
+
 #[test]
 fn exclusive_publication_never_replaces_an_existing_destination() {
     let fixture = Fixture::new();

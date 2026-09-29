@@ -39,7 +39,7 @@ mod desktop;
 mod icon_signature;
 #[path = "macos_deployment/mirror.rs"]
 mod mirror;
-pub use desktop::{desktop_entry, sync_desktop};
+pub use desktop::{desktop_entry, sync_desktop, sync_desktop_on_launch};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InstanceConfig {
@@ -1428,6 +1428,14 @@ impl Drop for OwnedArtifacts {
 struct DeploymentLock(File);
 impl DeploymentLock {
     fn acquire(path: &Path) -> Result<Self, String> {
+        Self::acquire_with(path, false)
+    }
+
+    fn acquire_waiting(path: &Path) -> Result<Self, String> {
+        Self::acquire_with(path, true)
+    }
+
+    fn acquire_with(path: &Path, wait: bool) -> Result<Self, String> {
         use std::os::fd::AsRawFd;
         no_symlinks(path)?;
         let file = OpenOptions::new()
@@ -1443,8 +1451,14 @@ impl DeploymentLock {
             fn flock(fd: std::ffi::c_int, operation: std::ffi::c_int) -> std::ffi::c_int;
         }
         // Kernel lock is released on crashes. A stale file never blocks retries.
-        if unsafe { flock(file.as_raw_fd(), 2 | 4) } != 0 {
-            return Err("另一进程正在部署 Dodex，请等待完成。".into());
+        loop {
+            if unsafe { flock(file.as_raw_fd(), if wait { 2 } else { 2 | 4 }) } == 0 {
+                break;
+            }
+            if wait && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err("另一进程正在部署 Dodex，或无法锁定部署目录。".into());
         }
         Ok(Self(file))
     }
