@@ -77,7 +77,7 @@ dodex -C C:\projects\demo
 
 应用尚未经过 Apple 公证；首次打开若被拦截，可按 [Apple 官方说明](https://support.apple.com/102445)在“系统设置 → 隐私与安全性”中选择“仍要打开”。
 
-**macOS 双开**：设置 → Codex 双开 → 部署双开环境。需要本机已安装且签名有效的官方 Codex 应用；兼容 `Codex.app` 和保留 Codex 身份的 `ChatGPT.app` 安装名。完成后在“应用程序”中打开 Dodex 并登录。
+**macOS 双开**：设置 → Codex 双开 → 部署 Dodex App。从本机签名有效的官方 `Codex.app` 或保留 Codex 身份的 `ChatGPT.app` 创建独立名称、图标和本地签名的公开 App。已有账号目录与 TUI 保持不变；新环境首次使用需登录。官方 App 更新后，先退出 Dodex，再点击“从本机 Codex 同步 Dodex App”，或运行 `agent-companion dodex-app --sync`。详见 [Dodex App 说明](docs/macos-dual-instance.md)。
 
 macOS 重新打开 Agent Companion 会显示弹窗的 Tasks 页。刘海、悬停展开、显示器选择与独立 Dock 入口已移除；旧版入口偏好不会隐藏菜单栏，已保存的菜单栏位置继续保留。设置从弹窗底部打开。详见[菜单栏说明](docs/MACOS_MENU_BAR.md)。
 
@@ -161,7 +161,7 @@ The command is installed in a supported user command directory already on the cu
 
 The app is not Apple-notarized. If the first launch is blocked, follow [Apple's instructions](https://support.apple.com/102445) to choose **Open Anyway** in System Settings → Privacy & Security.
 
-**macOS second instance**: Settings → Codex 双开 → 部署双开环境. Requires a locally installed, validly signed official Codex application, named `Codex.app` or `ChatGPT.app` with the Codex identity. After deployment, open Dodex from Applications and sign in.
+**macOS second instance**: Settings → Codex 双开 → 部署 Dodex App. Creates a public App with its own name, icon and local signature from the validly signed official `Codex.app` or Codex-identified `ChatGPT.app` installed on this Mac. Existing profile directories and TUI stay unchanged; fresh environments require login. After updating the official App, quit Dodex and click “从本机 Codex 同步 Dodex App”, or run `agent-companion dodex-app --sync`. See the [Dodex App guide](docs/macos-dual-instance.md).
 
 On macOS, reopening Agent Companion shows the popup's Tasks page. The notch, hover expansion, display selection and separate Dock entry have been removed. Legacy entry preferences cannot hide the menu bar, and its saved position is retained. Open Settings from the popup footer. See the [menu-bar guide](docs/MACOS_MENU_BAR.md).
 

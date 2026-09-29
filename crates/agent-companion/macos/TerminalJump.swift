@@ -64,9 +64,8 @@ enum TerminalJump {
             completion("The running \(instance.label) app could not be located. Open \(instance.label) from Applications, then try again.")
             return
         }
-        // Both runtimes retain the official bundle identifier and signature.
-        // Address the URL event to the exact PID; Launch Services can otherwise
-        // pick a different running app with the same bundle identifier.
+        // Address the selected instance directly; the global codex:// handler
+        // belongs to the primary app, not the locally signed Dodex mirror.
         let event = NSAppleEventDescriptor(eventClass: AEEventClass(kInternetEventClass),
             eventID: AEEventID(kAEGetURL), targetDescriptor: NSAppleEventDescriptor(processIdentifier: app.processIdentifier),
             returnID: AEReturnID(kAutoGenerateReturnID), transactionID: AETransactionID(kAnyTransactionID))

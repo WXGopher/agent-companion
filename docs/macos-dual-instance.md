@@ -11,169 +11,98 @@ identify last-known readings awaiting an update. Missing readings show `—`.
 Second-instance support remains disabled until explicit opt-in. Opening
 Settings does not discover, deploy, adopt, or launch Dodex before that opt-in.
 
-## Deployment and compatibility
+## Create and update Dodex App
 
-The **Codex 双开** section runs deployment on a worker and reports progress.
-Fresh deployment requires a valid OpenAI-signed Codex application in
-`/Applications` or `~/Applications`. Supported bundle names are `Codex.app`
-and `ChatGPT.app`, with the latter accepted only when its identity is Codex.
-Redirected bundles and the hidden Dodex runtime are excluded from primary
-discovery. Its bundle is copied without changing its signature.
-Companion creates `~/Applications/Dodex.app` and stores its runtime, Codex
-home, SQLite directory, desktop data, cache and logs under
-`~/Library/Application Support/AgentCompanion/Dodex`.
-
-The launcher binds each directory explicitly, starts with a clean environment,
-and never inherits authentication or instance overrides. A fresh profile sets
-`cli_auth_credentials_store = "file"`; no credentials, history or personal
-settings are copied. The user opens Dodex and signs in separately after
-deployment. See [the official authentication documentation](https://developers.openai.com/zh-Hans/docs/auth).
-
-Existing Companion deployments are checked against their manifest, completion
-marker, launcher, configuration, runtime signature and isolation paths.
-The original Codex-B layout can also be adopted when its launcher, plist and
-manager match the audited code fingerprints in `macos_deployment.rs`.
-Its `Dodex.app` entry may be a symbolic link to `Codex B.app`; the real bundle
-is verified before adoption. This exception applies only to the launcher alias,
-not to profile, credential, database or runtime paths. Signed runtime archives
-are checked in fixed-size chunks so larger official releases remain supported.
-Unknown legacy versions, ambiguous environments, redirected/shared files and
-overlapping primary/secondary data directories fail without being overwritten.
-Companion does not execute a legacy manager while validating it.
-
-Temporary directories and exclusive renames prevent replacement of existing
-environments. The completion marker is published atomically after validation.
-Retry can finish an interrupted publication only when the exact expected
-Companion manifest and remaining files validate. An OS file lock serializes
-deployment and preference writes across settings processes.
-
-Disabling support stops Companion's secondary monitoring and discards its
-caches. It does not quit Dodex or delete files. Re-enabling validates the saved
-deployment before monitoring resumes. Runtime updates and uninstall are not
-provided.
-
-## Repairing the original desktop launcher
-
-Version `0.3.19` adds `agent-companion dodex-app` (read-only check)
-and `agent-companion dodex-app --repair` (explicit desktop repair). Exit the
-Dodex desktop first; running TUI sessions can remain open. The repair validates
-the known original installation, copies its signed runtime unchanged into
-`/Applications/.Dodex/Dodex.app`, and replaces the original desktop launcher
-with an exact, isolated launcher. `/Applications/Dodex.app` continues to be the
-public entry. Its existing alias to `Codex B.app` is supported.
-
-A saved environment originally deployed by Companion also supports the check;
-`--repair` validates it and reports that no legacy repair is needed. Legacy
-repair accepts only the audited original code fingerprints. Unknown variants
-are preserved and rejected. After the publication journal exists, retry can
-finish or clean up the recognized interrupted publication. A forced exit before
-that journal is written leaves the incomplete directory for manual inspection.
-
-The new launcher always supplies the second profile and desktop data directory.
-It does not ask the old manager whether a CLI process is running. Electron's
-instance handling receives repeated opens with the same explicit desktop data
-path. No login, credentials, history or profile configuration is migrated.
-The old runtime, manager and shell commands remain in place for TUI use.
-The original launcher is backed up as
-`/Applications/.Dodex/Original Launcher.app`; Companion's existing enabled or
-disabled preference is retained while its runtime reference is updated.
-
-After repair, run `python3 scripts/repair-dodex-dock.py --check` to inspect
-existing Dock entries, then `--apply` to remove known Dodex launcher/runtime pins.
-The launcher and signed runtime have different bundle identities: pinning the
-launcher creates an extra icon while the desktop runs. The running Dodex app
-supplies its own Dock icon, alongside the primary Codex app. After quitting Dodex,
-start it from Applications/Dodex.app or `dodex app`. Do not pin or directly open
-the hidden runtime: it would bypass the launcher's independent account environment.
-Applying saves a private Dock preference backup, updates only matching application
-tiles and restarts Dock. Other entries and their order remain unchanged. It neither
-quits an app nor changes the global recent-apps setting.
-
-Before consolidation, the desktop copy and retained TUI runtime are separate
-snapshots. The old manager's maintenance commands do not discover the new
-desktop path: **exit Dodex desktop before using those legacy commands**.
-The optional `scripts/prepare-dodex-manager.py` prepares the narrowly audited
-old manager launch-detection fix into an explicitly supplied output file; it
-never installs it. Companion accepts both audited manager fingerprints, as well
-as its own exact repaired desktop launcher and manifest. Unknown variants still
-fail validation.
-
-## Consolidating the repaired App and TUI entries
-
-The following maintenance scripts run from a **source checkout** and are not
-installed with the packaged App. They support only the audited original legacy
-installation; they are not a general installer for arbitrary copies of Codex.
-They never run automatically when upgrading or opening Companion.
-
-For the audited original installation after desktop repair,
-`python3 scripts/consolidate-dodex.py` checks the plan without installing it.
-`--apply` publishes the unified layout. Quit Dodex desktop first; the existing
-Dodex CLI can remain running. The installer checks pending maintenance
-transactions, preserves original launch entries and manager code in
-`/Applications/.Dodex/Consolidation Backup`, and records an interruption journal.
-Rerunning the same installer completes a recognized interrupted publication.
-It rejects unknown or concurrently changed files instead of replacing them.
-
-The resulting layout is:
-
-| Entry | Purpose |
-| --- | --- |
-| Original official Codex App | Primary desktop, unchanged |
-| `/Applications/Dodex.app` | Real isolated launcher bundle, replacing the alias and `Codex B.app` |
-| `/Applications/.Dodex/Dodex.app` | One unchanged signed runtime used by Dodex App and TUI |
-| `codex` | Primary CLI entry, explicitly bound to `~/.codex` |
-| `dodex` | Secondary CLI entry, explicitly bound to `~/.codex-second` |
-
-The original account, session and desktop-data directories stay in place.
-Both CLI entries preserve working directory, arguments, PATH, proxy settings
-and inherited containment metadata, while removing inherited account/session
-and runtime overrides. Primary credential-store and SQLite settings still come
-from its own configuration. The primary wrapper execs the vendor-managed
-standalone `current/bin/codex`; no vendor package files are changed. A future
-standalone installer may replace this entry with a symlink, in which case the
-same-target wrapper can be restored by rerunning the consolidation installer.
-Unknown targets remain untouched.
-
-All Dodex desktop forms, including `dodex app PATH`, use the same runtime.
-Desktop launch detection ignores TUI processes. Update, checkpoint and rollback
-require all Dodex App, TUI and helper processes to exit, including old runtime
-processes. The existing `codex-b-*` aliases remain compatible. New snapshots use
-the canonical schema; old snapshots remain intact but cannot be restored over
-the new layout, because doing so would resurrect the obsolete manager and paths.
-Runtime replacement may require reapplying the custom icon.
-
-While the current CLI still uses `/Applications/Codex B Runtime.app`, the
-installer only adds the directory's BSD hidden flag. It never kills or moves a
-running runtime. After its last process exits, the next Dodex manager operation
-checks the deferred retirement record and signature, then moves the old runtime
-exclusively to `/Applications/.Dodex/Retired Runtime.app`. Conflicts and failed
-checks preserve the original. This is a backup, not another launch entry.
-
-After consolidation, `python3 scripts/repair-dodex-dock.py --apply` removes known
-Dodex launcher/runtime entries from both pinned and recent Dock items, preserving
-other applications and global preferences. macOS may add recent items again
-later; the helper does not disable recent applications globally.
-
-## Custom Dodex icon
-
-From a source checkout, `scripts/set-macos-app-icon.swift` applies an image you
-supply as a Finder custom icon. Apply the same image to the repaired desktop
-runtime and public launcher; do not replace signed `Contents/Resources` files.
-Personal artwork and image-generation metadata are not distributed.
+The **Codex 双开** page creates or updates Dodex App from the official Codex App
+already installed on this Mac. Quit Dodex App, update the official Codex App as
+usual, then click **从本机 Codex 同步 Dodex App**. The same explicit operation is
+available from the packaged Companion binary:
 
 ```sh
-swift scripts/set-macos-app-icon.swift /path/to/icon.icns /Applications/.Dodex/Dodex.app
-swift scripts/set-macos-app-icon.swift /path/to/icon.icns /Applications/Dodex.app
+agent-companion dodex-app --sync
 ```
 
-macOS custom icons add an `Icon\r` resource fork and root FinderInfo, which
-strict codesign verification rejects as metadata. Companion first attempts
-normal strict verification. For this specific metadata shape only, it verifies
-the installed app's official identity and sealed resources, makes a private
-copy-on-write clone, removes only the clone's root icon file and FinderInfo,
-and requires strict verification of that clone. Other modified resources or
-nested metadata still fail. The installed bundle is never changed by checking.
-This fallback requires a filesystem that supports macOS copy-on-write clones.
+`agent-companion dodex-app` only checks the current App and reports whether its
+source matches the locally installed official version. Neither command launches
+an App. Synchronization does not download an installer or run in a background
+update daemon.
+
+The source must have a valid OpenAI signature and the Codex identity. Supported
+source names are `Codex.app` and `ChatGPT.app` in `/Applications` or
+`~/Applications`; unrelated ChatGPT applications and the hidden TUI runtime are
+not sources. Companion copies the official App, sets the Dodex bundle identity,
+name, icon and explicit instance environment, then signs the local copy. The
+vendor executable's code and `app.asar` are not patched. A small native entry
+inside the same bundle uses `exec` to start the original executable with the
+selected desktop-data directory. It accepts no extra launch arguments, so they
+cannot override that directory; Companion task navigation uses Apple events.
+The native executable and outer bundle receive local ad-hoc signatures. The
+modified bundle does not retain the source App's original signature.
+
+Dodex is one public App bundle, normally `/Applications/Dodex.app`. On a new
+installation without a system-wide Dodex entry, it uses
+`~/Applications/Dodex.app`. Finder, Dock and Companion desktop navigation all
+open that public App. There is no separate shell launcher starting another
+hidden desktop App. The entry and original process use the same PID and
+public bundle, keeping the running App attached to its Dodex Dock entry.
+
+## Accounts, TUI and monitoring
+
+Existing environments keep their Codex home, desktop data and SQLite directory.
+For the original installation these are `~/.codex-second`,
+`~/Library/Application Support/Codex-B` and `~/.codex-second/sqlite`. Dodex App
+and the existing TUI continue to share that profile, including its configuration,
+login and session history. App synchronization does not rewrite its files.
+
+The TUI command wrappers, manager, aliases and hidden runtime stay in place.
+The old manager's `dodex app` subcommand is also unchanged and still opens its
+legacy runtime; open the new public App through Finder, Dock or Companion.
+An existing Companion monitoring record also keeps its original CLI path and
+profile. Only the in-memory desktop navigation target changes to the public
+Dodex App, so opening an App from a task does not bypass its instance settings.
+The App mirror has its own record inside
+`Contents/Resources/agent-companion-mirror.json`.
+
+A fresh App uses separate directories under
+`~/Library/Application Support/AgentCompanion/DodexApp`; it does not copy the
+primary instance's credentials, history or personal configuration and requires
+its own login. If that official release does not include a compatible CLI,
+the App can still be synchronized, but Companion cannot enable its task/usage
+monitoring until a compatible CLI is available.
+
+The support switch controls Companion monitoring. Disabling it does not quit
+Dodex or remove files. Updating an existing App preserves this preference.
+
+## Publication, backup and Dock
+
+Synchronization checks the current App, builds and verifies a staged copy, then
+publishes it at the public path. It refuses to replace an App while its desktop
+process is running and never quits it automatically. The first replaced public
+bundle is retained as `.Dodex-mirror-backup.app` beside the public entry. Unknown
+or changed installation contents fail validation instead of being overwritten.
+The original official App and the hidden TUI runtime are not modified.
+
+The public bundle now provides both the saved Dock entry and the running App
+identity. Old shell-launcher or hidden-runtime Dock items may still need cleanup:
+
+```sh
+python3 scripts/repair-dodex-dock.py --check
+python3 scripts/repair-dodex-dock.py --apply
+```
+
+The helper normalizes existing known Dodex pins to one public entry, preserves
+its position and GUID, removes duplicates and matching recent shortcuts, and
+keeps unrelated entries unchanged. A correct public pin retains its macOS
+bookmarks and dates. It does not add a pin when none exists or change the global
+recent-apps setting. Applying saves a private preference backup, verifies the
+written arrays and restarts Dock.
+
+The earlier `dodex-app --repair` and source-checkout consolidation tools are
+legacy maintenance paths. They are not the App update mechanism. Existing
+schema-1 and schema-2 shell launchers remain recognized as migration inputs;
+new App deployment uses the public mirror. Do not rerun an old consolidation
+journal over the mirrored public App, because its stored launcher fingerprint
+belongs to the previous layout.
 
 ## Manual configuration and instruction sync
 

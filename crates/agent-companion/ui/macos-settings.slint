@@ -174,7 +174,7 @@ export component MacSettings inherits Rectangle {
                         spacing: 8px;
                         Text { text: "Codex 双开"; font-size: 16px; font-weight: 600; color: SettingsColors.text; }
                         Text {
-                            text: "创建独立的 Dodex 环境，首次使用需要自行登录。任务按来源合并显示，用量和状态栏配置分别管理。";
+                            text: "从本机 Codex 创建或更新 Dodex App。已有环境继续使用原账号目录，TUI 命令保持不变。任务按来源合并显示，用量和状态栏配置分别管理。";
                             font-size: 12px;
                             color: SettingsColors.secondary;
                             wrap: word-wrap;
@@ -197,11 +197,11 @@ export component MacSettings inherits Rectangle {
                                 color: root.dual-error ? SettingsColors.error : SettingsColors.secondary;
                                 wrap: word-wrap;
                             }
-                            if !root.dual-deployed: SettingsButton {
-                                text: root.dual-busy ? "正在检查与部署…" : root.dual-error ? "重试部署" : "部署双开环境";
+                            SettingsButton {
+                                text: root.dual-busy ? "正在同步 Dodex App…" : root.dual-deployed ? "从本机 Codex 同步 Dodex App" : "部署 Dodex App";
                                 enabled: !root.dual-busy;
                                 primary: true;
-                                accessible-label: "部署双开环境";
+                                accessible-label: "从本机 Codex 同步 Dodex App";
                                 clicked => { root.deploy-dual(); }
                             }
                             if root.dual-deployed: HorizontalLayout {
@@ -226,11 +226,11 @@ export component MacSettings inherits Rectangle {
                             padding: 18px;
                             spacing: 8px;
                             Text { text: "使用 Dodex"; font-size: 12px; font-weight: 600; color: SettingsColors.text; }
-                            Text { text: "在应用程序中打开 Dodex，首次使用请登录。部署完成不会自动启动 Dodex。"; font-size: 12px; color: SettingsColors.secondary; wrap: word-wrap; }
+                            Text { text: "在应用程序或 Dock 中打开 Dodex。同步前请退出 Dodex App；同步完成不会自动启动它。已有登录与 TUI 保持不变。"; font-size: 12px; color: SettingsColors.secondary; wrap: word-wrap; }
                         }
                     }
                     Text {
-                        text: "部署使用本机已安装且签名有效的官方 Codex 应用。已有 Dodex 环境会先验证，程序、配置和数据不会被覆盖。全新环境不复制主实例的凭证、历史或个人配置。";
+                        text: "先更新官方 Codex，再点击同步即可更新 Dodex App。同步只替换应用副本并保留旧副本备份，账号目录、会话和 TUI 不变。全新环境需要独立登录。";
                         font-size: 12px;
                         color: SettingsColors.secondary;
                         wrap: word-wrap;

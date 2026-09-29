@@ -66,11 +66,13 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Check a saved Dodex desktop; --repair fixes only audited legacy launchers.
+    /// Check Dodex App; --sync copies the locally installed official Codex App.
     #[cfg(target_os = "macos")]
     DodexApp {
-        #[arg(long)]
+        #[arg(long, conflicts_with = "sync")]
         repair: bool,
+        #[arg(long, conflicts_with = "repair")]
+        sync: bool,
     },
     /// Open the explicitly deployed, isolated Dodex desktop instance.
     #[cfg(windows)]
@@ -193,9 +195,13 @@ fn main() -> ExitCode {
 
     let result = match cli.command {
         #[cfg(target_os = "macos")]
-        Some(Command::DodexApp { repair }) => macos_deployment::desktop_entry(repair)
-            .map(|message| println!("{message}"))
-            .map_err(std::io::Error::other),
+        Some(Command::DodexApp { repair, sync }) => (if sync {
+            macos_deployment::sync_desktop()
+        } else {
+            macos_deployment::desktop_entry(repair)
+        })
+        .map(|message| println!("{message}"))
+        .map_err(std::io::Error::other),
         #[cfg(windows)]
         Some(Command::Dodex(DodexArgs { deploy, check })) => {
             let result = if check {

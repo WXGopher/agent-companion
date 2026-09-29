@@ -32,6 +32,19 @@ def tile(url, label="Codex B Runtime"):
     }
 
 
+def public_tile(guid=123456):
+    return {
+        "GUID": guid,
+        "tile-type": "file-tile",
+        "tile-data": {
+            "file-data": {"_CFURLString": "file:///Applications/Dodex.app/", "_CFURLStringType": 15},
+            "file-label": "Dodex",
+            "bundle-identifier": "local.agent-companion.dodex",
+            "file-type": 41,
+        },
+    }
+
+
 class TileTests(unittest.TestCase):
     def test_exact_local_urls_and_percent_encoded_spaces(self):
         for url in (
@@ -66,7 +79,7 @@ class TileTests(unittest.TestCase):
         ], "autohide": True, "persistent-others": [{"untouched": True}]}
         original = copy.deepcopy(preferences)
         actual, matched, changed = dock.repaired_tiles(preferences)
-        expected = [original["persistent-apps"][0], original["persistent-apps"][2]]
+        expected = [original["persistent-apps"][0], public_tile(), original["persistent-apps"][2]]
         self.assertEqual(actual, expected)
         self.assertEqual(matched, [1])
         self.assertEqual(changed, [1])
@@ -76,7 +89,7 @@ class TileTests(unittest.TestCase):
         actual, _, _ = dock.repaired_tiles({"persistent-apps": [tile("file:///Applications/Dodex.app/")]})
         again, matched, changed = dock.repaired_tiles({"persistent-apps": actual})
         self.assertEqual(again, actual)
-        self.assertEqual(matched, [])
+        self.assertEqual(matched, [0])
         self.assertEqual(changed, [])
         self.assertEqual(dock.repaired_tiles({}), ([], [], []))
         unrelated = [tile("file:///Applications/Codex.app", "Dodex")]
@@ -87,11 +100,22 @@ class TileTests(unittest.TestCase):
         value = dock.serialize_tile(original)
         self.assertEqual(plistlib.loads(("<plist>" + value + "</plist>").encode()), original)
 
-    def test_removes_all_launcher_and_runtime_duplicates_with_bookmarks(self):
+    def test_correct_wrapper_preserves_macos_bookmarks_and_dates(self):
+        correct = tile("file:///Applications/Dodex.app/", "Dodex")
+        correct["tile-data"]["bundle-identifier"] = "local.agent-companion.dodex"
+        correct["tile-data"]["book"] = b"current public wrapper bookmark"
+        original = copy.deepcopy(correct)
+        actual, matched, changed = dock.repaired_tiles({"persistent-apps": [correct]})
+        self.assertEqual(actual, [original])
+        self.assertEqual(matched, [0])
+        self.assertEqual(changed, [])
+        self.assertIsNot(actual[0], correct)
+
+    def test_keeps_one_public_wrapper_and_removes_all_stale_bookmarks_and_duplicates(self):
         urls = ["file:///Applications/Dodex.app", "file:///Applications/Codex%20B.app/",
                 "file:///Applications/.Dodex/Dodex.app/", "file:///Applications/Codex%20B%20Runtime.app/"]
         actual, matched, changed = dock.repaired_tiles({"persistent-apps": [tile(url) for url in urls]})
-        self.assertEqual(actual, [])
+        self.assertEqual(actual, [public_tile()])
         self.assertEqual(matched, [0, 1, 2, 3])
         self.assertEqual(changed, matched)
 
@@ -145,7 +169,7 @@ class OperationTests(unittest.TestCase):
             self.assertEqual(backup.parent.stat().st_mode & 0o777, 0o700)
         commands = [call.args[0] for call in run.call_args_list]
         self.assertEqual(commands[0][:5], ["/usr/bin/defaults", "write", "com.apple.dock", "persistent-apps", "-array"])
-        self.assertEqual(len(commands[0]), 5)
+        self.assertEqual(commands[0][5:], [dock.serialize_tile(repaired[0])])
         self.assertEqual(commands[1], ["/usr/bin/killall", "Dock"])
         self.assertEqual(result["status"], "repaired")
 
@@ -163,7 +187,7 @@ class OperationTests(unittest.TestCase):
         preferences = {**self.preferences, "recent-apps": [primary, tile("file:///Applications/.Dodex/Dodex.app/")],
                        "show-recents": True, "persistent-others": [{"keep": 1}]}
         raw = plistlib.dumps(preferences)
-        first = {**preferences, "persistent-apps": []}
+        first = {**preferences, "persistent-apps": [public_tile()]}
         actual = {**first, "recent-apps": [primary]}
         snapshots = [(raw, preferences)] * 3 + [(plistlib.dumps(first), first)] * 2 + [(plistlib.dumps(actual), actual)]
         with tempfile.TemporaryDirectory() as directory, \
@@ -174,7 +198,7 @@ class OperationTests(unittest.TestCase):
         commands = [call.args[0] for call in run.call_args_list]
         self.assertEqual([command[3] for command in commands[:-1]], ["persistent-apps", "recent-apps"])
         self.assertEqual(commands[-1], ["/usr/bin/killall", "Dock"])
-        self.assertEqual(result["removed_by_key"], {"persistent-apps": 1, "recent-apps": 1})
+        self.assertEqual(result["removed_by_key"], {"persistent-apps": 0, "recent-apps": 1})
         self.assertEqual(result["changed_tiles"], 2)
         # The recent array serializes the complete surviving tile including GUID.
         self.assertEqual(commands[1][5:], [dock.serialize_tile(primary)])
@@ -204,7 +228,7 @@ class OperationTests(unittest.TestCase):
     def test_concurrent_edit_between_arrays_stops_and_reports_partial_write(self):
         preferences = {**self.preferences, "recent-apps": [tile("file:///Applications/Dodex.app/")]}
         raw = plistlib.dumps(preferences)
-        first = {**preferences, "persistent-apps": []}
+        first = {**preferences, "persistent-apps": [public_tile()]}
         concurrent = {**first, "recent-apps": [tile("file:///Applications/New.app/")]}
         snapshots = [(raw, preferences)] * 3 + [(b"first", first), (b"concurrent", concurrent)]
         with patch.object(dock, "export_preferences", side_effect=snapshots), \

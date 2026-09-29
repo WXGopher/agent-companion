@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Remove Dodex pins and recent-app shortcuts. Read-only by default."""
+"""Keep one public Dodex App pin and clear stale recent shortcuts. Read-only by default."""
 
 import argparse
 import copy
@@ -17,6 +17,8 @@ import uuid
 DOMAIN = "com.apple.dock"
 KEY = "persistent-apps"
 APP_ARRAY_KEYS = (KEY, "recent-apps")
+PUBLIC_URL = "file:///Applications/Dodex.app/"
+PUBLIC_IDENTIFIER = "local.agent-companion.dodex"
 APP_PATHS = frozenset({
     "/Applications/Codex B Runtime.app",
     "/Applications/.Dodex/Dodex.app",
@@ -53,25 +55,47 @@ def matches_app_url(value):
 
 
 def repaired_tiles(preferences, key=KEY):
-    """Remove known Dodex pins, preserving unrelated tiles and their order.
+    """Normalize existing pins to one public App; never add a pin when none exists.
 
-    The launcher and signed runtime have distinct bundle identities. Pinning the
-    launcher produces a second icon while the runtime is open; pinning the runtime
-    bypasses its isolated environment on the next launch. Leave the running app's
-    dynamic Dock icon alone and use Applications/Dodex.app to start it after quit.
+    The public mirror replaces the old wrapper/hidden desktop pair. Rebuild the
+    first matching pin at its position, dropping stale runtime identity/bookmark
+    data. Recent items are removed instead of becoming pins.
     """
     original = preferences.get(key, [])
     if not isinstance(original, list):
         raise ValueError(f"Dock {key} is not an array; no changes made")
-    tiles, removed = [], []
+    tiles, matched, changed = [], [], []
     for index, tile in enumerate(original):
         data = tile.get("tile-data") if isinstance(tile, dict) else None
         file_data = data.get("file-data") if isinstance(data, dict) else None
         if isinstance(file_data, dict) and matches_app_url(file_data.get("_CFURLString")):
-            removed.append(index)
+            matched.append(index)
+            if key == KEY and len(matched) == 1:
+                if (matching_app_path(file_data.get("_CFURLString")) == "/Applications/Dodex.app"
+                        and data.get("bundle-identifier") == PUBLIC_IDENTIFIER):
+                    # Dock enriches a valid pin with bookmarks and dates after
+                    # restart. Preserve them so --check stays read-only/idempotent.
+                    replacement = copy.deepcopy(tile)
+                else:
+                    replacement = {
+                        "tile-type": "file-tile",
+                        "tile-data": {
+                            "file-data": {"_CFURLString": PUBLIC_URL, "_CFURLStringType": 15},
+                            "file-label": "Dodex",
+                            "bundle-identifier": PUBLIC_IDENTIFIER,
+                            "file-type": 41,
+                        },
+                    }
+                    if "GUID" in tile:
+                        replacement["GUID"] = copy.deepcopy(tile["GUID"])
+                tiles.append(replacement)
+                if replacement != tile:
+                    changed.append(index)
+            else:
+                changed.append(index)
         else:
             tiles.append(copy.deepcopy(tile))
-    return tiles, removed, removed.copy()
+    return tiles, matched, changed
 
 
 def export_preferences():
@@ -108,13 +132,16 @@ def repair(*, apply=False, backup_dir=DEFAULT_BACKUP_DIR):
     raw, preferences = export_preferences()
     repairs = {key: repaired_tiles(preferences, key) for key in APP_ARRAY_KEYS}
     changed_arrays = {key: tiles for key, (tiles, _, changed) in repairs.items() if changed}
-    removed_by_key = {key: len(changed) for key, (_, _, changed) in repairs.items()}
+    removed_by_key = {
+        key: max(0, len(matched) - 1) if key == KEY else len(matched)
+        for key, (_, matched, _) in repairs.items()
+    }
     report = {
         "mode": "apply" if apply else "check",
         "matched_tiles": sum(len(matched) for _, matched, _ in repairs.values()),
-        "changed_tiles": sum(removed_by_key.values()),
+        "changed_tiles": sum(len(changed) for _, _, changed in repairs.values()),
         "removed_by_key": removed_by_key,
-        "policy": "running-app-only",
+        "policy": "public-app",
         "status": "changes-needed" if changed_arrays else "already-correct",
     }
     if not apply or not changed_arrays:
@@ -161,7 +188,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true", help="inspect existing tiles without changes (default)")
-    mode.add_argument("--apply", action="store_true", help="back up, remove Dodex pins/recent shortcuts, then restart Dock")
+    mode.add_argument("--apply", action="store_true", help="back up, normalize existing Dodex pins, clear recent shortcuts, then restart Dock")
     parser.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR)
     args = parser.parse_args(argv)
     if sys.platform != "darwin":

@@ -37,7 +37,9 @@ const REPAIRED_LEGACY_MANAGER_SHA256: &str =
 mod desktop;
 #[path = "macos_deployment/icon_signature.rs"]
 mod icon_signature;
-pub use desktop::desktop_entry;
+#[path = "macos_deployment/mirror.rs"]
+mod mirror;
+pub use desktop::{desktop_entry, sync_desktop};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InstanceConfig {
@@ -250,11 +252,28 @@ pub fn status() -> DeploymentStatus {
 pub fn active_instance() -> Option<InstanceConfig> {
     refresh_from_disk();
     let state = shared().lock().unwrap_or_else(|e| e.into_inner());
-    state
+    let instance = state
         .status
         .enabled
         .then(|| state.instance.clone())
-        .flatten()
+        .flatten()?;
+    Some(desktop_navigation_instance(
+        instance,
+        Layout::current()
+            .ok()
+            .and_then(|layout| mirror::deployed_app(&layout)),
+    ))
+}
+
+fn desktop_navigation_instance(
+    mut instance: InstanceConfig,
+    app: Option<PathBuf>,
+) -> InstanceConfig {
+    if let Some(app) = app {
+        instance.runtime_app = app.clone();
+        instance.launcher_app = app;
+    }
+    instance
 }
 
 /// Read-only discovery also permits a saved, disabled deployment. Cache the
@@ -424,11 +443,85 @@ pub fn deploy() -> Result<DeploymentStatus, String> {
         let layout = Layout::current()?;
         private_directory(&layout.support)?;
         let _lock = DeploymentLock::acquire(&layout.support.join("deployment.lock"))?;
-        let instance = deploy_under_lock(&layout, &SystemOps, progress)?;
-        save_record(&layout, true, &instance)?;
-        Ok((instance, preference_stamp(&layout)))
+        let saved = existing_monitor_record(&layout)?;
+        if let Some(record) = &saved {
+            validate_record_for_app_sync(&layout, record)?;
+        }
+        let mirrored = mirror::sync(&layout, progress)?;
+        let record = monitor_after_app_sync(&layout, saved, &mirrored.instance)?;
+        let mut state = read_saved_state(&layout);
+        state.status.busy = false;
+        state.status.enabled = record.enabled;
+        state.status.phase = if record.enabled { "ready" } else { "disabled" }.into();
+        state.status.message = desktop::mirror_message(&mirrored);
+        if !record.enabled && !record.instance.cli_path.is_file() {
+            state.status.message.push_str(
+                " 此官方版本未内置 CLI，App 可独立使用；Companion 的第二实例 CLI 监控未启用。",
+            );
+        }
+        Ok(state)
     })();
-    finish(result)
+    match result {
+        Ok(state) => {
+            let status = state.status.clone();
+            *shared().lock().unwrap_or_else(|e| e.into_inner()) = state;
+            Ok(status)
+        }
+        Err(error) => finish(Err(error)),
+    }
+}
+
+fn validate_record_for_app_sync(layout: &Layout, record: &Record) -> Result<(), String> {
+    if !record.enabled && mirror::is_deployed(layout) && !exists(&record.instance.cli_path) {
+        let mirrored = mirror::check(layout)?;
+        if record.instance == mirrored.instance {
+            return Ok(());
+        }
+    }
+    validate_existing(layout, &SystemOps, &record.instance)
+}
+
+fn monitor_after_app_sync(
+    layout: &Layout,
+    saved: Option<Record>,
+    mirrored: &InstanceConfig,
+) -> Result<Record, String> {
+    // A saved monitor record belongs to the existing CLI/profile. Desktop
+    // synchronization must not rewrite it or switch its CLI to the new App.
+    if let Some(record) = saved {
+        validate_mirror_monitor_binding(layout, &record.instance, mirrored)?;
+        return Ok(record);
+    }
+    // A current official App may manage its runtime outside the bundle. Keep
+    // that App usable without inventing a CLI path or falling back to the TUI.
+    if !exists(&mirrored.cli_path) {
+        save_record(layout, false, mirrored)?;
+        return Ok(Record {
+            schema: SCHEMA,
+            enabled: false,
+            instance: mirrored.clone(),
+        });
+    }
+    validate_instance_paths(layout, mirrored)
+        .and_then(|()| validate_config(&mirrored.codex_home.join("config.toml"), mirrored))
+        .map_err(|error| format!("Dodex App 已同步，但监控尚未启用：{error}"))?;
+    save_record(layout, true, mirrored)?;
+    Ok(Record {
+        schema: SCHEMA,
+        enabled: true,
+        instance: mirrored.clone(),
+    })
+}
+
+fn existing_monitor_record(layout: &Layout) -> Result<Option<Record>, String> {
+    if !exists(&layout.settings()) {
+        return Ok(None);
+    }
+    let record: Record = read_json(&layout.settings())?;
+    if record.schema != SCHEMA {
+        return Err("Dodex 监控记录版本不兼容；未修改记录。".into());
+    }
+    Ok(Some(record))
 }
 /// Disabling preserves files and running processes. Enabling validates before use.
 pub fn set_enabled(enabled: bool) -> Result<DeploymentStatus, String> {
@@ -624,6 +717,7 @@ fn deploy_with(
     let _lock = DeploymentLock::acquire(&layout.support.join("deployment.lock"))?;
     deploy_under_lock(layout, ops, notify)
 }
+#[cfg(test)]
 fn deploy_under_lock(
     layout: &Layout,
     ops: &dyn Operations,
@@ -710,6 +804,7 @@ fn deploy_under_lock(
     cleanup.paths.clear();
     Ok(instance)
 }
+#[cfg(test)]
 fn recover_or_validate_managed(
     layout: &Layout,
     ops: &dyn Operations,
@@ -761,7 +856,9 @@ fn validate_existing(
     ops: &dyn Operations,
     instance: &InstanceConfig,
 ) -> Result<(), String> {
-    if instance == &layout.instance() {
+    if mirror::is_deployed(layout) {
+        validate_mirror_monitor(layout, ops, instance, true, true)
+    } else if instance == &layout.instance() {
         validate_managed(layout, ops, instance)
     } else if &validate_legacy(layout, ops)? == instance {
         Ok(())
@@ -775,13 +872,65 @@ fn validate_existing_for_sync(
     instance: &InstanceConfig,
     runtime: bool,
 ) -> Result<(), String> {
-    if instance == &layout.instance() {
+    if mirror::is_deployed(layout) {
+        validate_mirror_monitor(layout, ops, instance, false, runtime)
+    } else if instance == &layout.instance() {
         validate_managed_with_config(layout, ops, instance, false, runtime)
     } else if &validate_legacy_with_config(layout, ops, false, runtime)? == instance {
         Ok(())
     } else {
         Err("已有双开环境的路径发生变化；未同步文件。".into())
     }
+}
+
+fn validate_mirror_monitor(
+    layout: &Layout,
+    ops: &dyn Operations,
+    instance: &InstanceConfig,
+    require_config: bool,
+    runtime: bool,
+) -> Result<(), String> {
+    let mirrored = mirror::check(layout)?;
+    validate_mirror_monitor_binding(layout, instance, &mirrored.instance)?;
+    validate_instance_paths(layout, instance)?;
+    let config = instance.codex_home.join("config.toml");
+    if require_config || exists(&config) {
+        validate_config(&config, instance)?;
+    }
+    if runtime && instance.runtime_app != mirrored.instance.runtime_app {
+        ops.verify_runtime(&instance.runtime_app)?;
+    }
+    Ok(())
+}
+
+fn validate_mirror_monitor_binding(
+    layout: &Layout,
+    instance: &InstanceConfig,
+    mirrored: &InstanceConfig,
+) -> Result<(), String> {
+    if instance.codex_home != mirrored.codex_home
+        || instance.desktop_user_data != mirrored.desktop_user_data
+        || instance.database_dir != mirrored.database_dir
+    {
+        return Err("Dodex App 与现有监控记录使用不同账号目录；未更改 TUI 记录。".into());
+    }
+    if instance == mirrored || instance == &desktop::original_instance(layout) {
+        return Ok(());
+    }
+    let manifests = if instance == &layout.instance() {
+        vec![layout.root().join(MANIFEST), layout.root().join(MARKER)]
+    } else if instance == &desktop::repaired_instance(layout) {
+        vec![desktop::repair_root(layout).join(MANIFEST)]
+    } else {
+        return Err("Dodex 监控路径不属于已知安装；未更改 TUI 记录。".into());
+    };
+    for path in manifests {
+        let manifest: Manifest = read_json(&path)?;
+        if manifest.schema != SCHEMA || &manifest.instance != instance {
+            return Err("Dodex 原监控清单与现有目录不一致；未更改 TUI 记录。".into());
+        }
+    }
+    Ok(())
 }
 fn validate_managed(
     layout: &Layout,
@@ -1033,6 +1182,26 @@ fn validate_config(path: &Path, instance: &InstanceConfig) -> Result<(), String>
     walk_item(document.as_item(), instance)
 }
 fn launcher_text(layout: &Layout, instance: &InstanceConfig) -> String {
+    // Compatibility with earlier launcher repairs. New deployment uses mirror.
+    // LaunchServices must keep tracking this wrapper's PID. exec (including a
+    // shell's last-command optimization) lets the signed runtime replace that
+    // identity, so Dock rewrites a saved wrapper pin to the hidden runtime.
+    let legacy = legacy_launcher_text(layout, instance);
+    let command = legacy.replacen(
+        "# Agent Companion isolated Dodex launcher, schema 1.\nexec /usr/bin/env",
+        "# Agent Companion isolated Dodex launcher, schema 2.\n/usr/bin/env",
+        1,
+    );
+    format!(
+        "{} &\nchild_pid=$!\nwait \"$child_pid\"\nexit \"$?\"\n",
+        command.trim_end_matches('\n')
+    )
+}
+fn known_launcher_text(layout: &Layout, instance: &InstanceConfig, text: &[u8]) -> bool {
+    text == launcher_text(layout, instance).as_bytes()
+        || text == legacy_launcher_text(layout, instance).as_bytes()
+}
+fn legacy_launcher_text(layout: &Layout, instance: &InstanceConfig) -> String {
     // env -i guarantees inherited credentials, session IDs, Electron and dynamic
     // loader overrides cannot redirect the instance. No original profile is read.
     let fields = [
@@ -1094,6 +1263,7 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 const LAUNCHER_PLIST: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict>\n<key>CFBundleIdentifier</key><string>local.agent-companion.dodex</string>\n<key>CFBundleName</key><string>Dodex</string>\n<key>CFBundleDisplayName</key><string>Dodex</string>\n<key>CFBundleExecutable</key><string>Dodex</string>\n<key>CFBundlePackageType</key><string>APPL</string>\n<key>CFBundleVersion</key><string>1</string>\n<key>LSUIElement</key><true/>\n</dict></plist>\n";
+#[cfg(test)]
 fn build_launcher(layout: &Layout, instance: &InstanceConfig, app: &Path) -> Result<(), String> {
     private_directory(&app.join("Contents/MacOS"))?;
     write_new(
@@ -1109,8 +1279,11 @@ fn build_launcher(layout: &Layout, instance: &InstanceConfig, app: &Path) -> Res
 }
 fn validate_launcher(layout: &Layout, instance: &InstanceConfig, app: &Path) -> Result<(), String> {
     if read_limited(&app.join("Contents/Info.plist"), 8192)? != LAUNCHER_PLIST.as_bytes()
-        || read_limited(&app.join("Contents/MacOS/Dodex"), 32768)?
-            != launcher_text(layout, instance).as_bytes()
+        || !known_launcher_text(
+            layout,
+            instance,
+            &read_limited(&app.join("Contents/MacOS/Dodex"), 32768)?,
+        )
     {
         return Err("Dodex 启动配置与隔离目录不一致；未修改现有环境。".into());
     }

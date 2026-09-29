@@ -16,7 +16,7 @@ struct PendingRepair {
 pub(super) fn repair_root(layout: &Layout) -> PathBuf {
     layout.system_applications.join(".Dodex")
 }
-fn repaired_instance(layout: &Layout) -> InstanceConfig {
+pub(super) fn repaired_instance(layout: &Layout) -> InstanceConfig {
     let runtime = repair_root(layout).join("Dodex.app");
     InstanceConfig {
         id: "dodex".into(),
@@ -29,7 +29,7 @@ fn repaired_instance(layout: &Layout) -> InstanceConfig {
         launcher_app: layout.system_applications.join("Dodex.app"),
     }
 }
-fn original_instance(layout: &Layout) -> InstanceConfig {
+pub(super) fn original_instance(layout: &Layout) -> InstanceConfig {
     let mut instance = repaired_instance(layout);
     instance.runtime_app = layout.system_applications.join("Codex B Runtime.app");
     instance.cli_path = instance.runtime_app.join("Contents/Resources/codex");
@@ -155,8 +155,11 @@ fn desktop_plist() -> String {
 }
 fn validate_entry(layout: &Layout, instance: &InstanceConfig, bundle: &Path) -> Result<(), String> {
     if read_limited(&bundle.join("Contents/Info.plist"), 8192)? != desktop_plist().as_bytes()
-        || read_limited(&bundle.join("Contents/MacOS/Dodex"), 32768)?
-            != launcher_text(layout, instance).as_bytes()
+        || !known_launcher_text(
+            layout,
+            instance,
+            &read_limited(&bundle.join("Contents/MacOS/Dodex"), 32768)?,
+        )
     {
         return Err("Dodex 桌面启动器与独立目录不一致；未修改现有环境。".into());
     }
@@ -346,10 +349,44 @@ fn managed_entry_message(
     }))
 }
 
-/// `dodex-app` checks only; `dodex-app --repair` mutates only the legacy entry.
+pub(super) fn mirror_message(status: &mirror::MirrorStatus) -> String {
+    let mut message = format!(
+        "Dodex App 校验通过：{}，来源 {}，版本 {}（{}）。{}",
+        status.instance.launcher_app.display(),
+        status.source_app.display(),
+        status.source_version,
+        status.source_build,
+        if status.up_to_date {
+            "与本机官方 App 一致。现有账号目录与 TUI 保持不变。"
+        } else {
+            "本机官方 App 已变化，可再次同步更新 Dodex App。"
+        }
+    );
+    if let Some(backup) = &status.backup_app {
+        message.push_str(&format!(" 原公共 App 备份：{}。", backup.display()));
+    }
+    message
+}
+
+/// Synchronize only the public App. Existing CLI/monitor records are not rewritten.
+pub fn sync_desktop() -> Result<String, String> {
+    let layout = Layout::current()?;
+    private_directory(&layout.support)?;
+    let _lock = DeploymentLock::acquire(&layout.support.join("deployment.lock"))?;
+    if let Some(record) = existing_monitor_record(&layout)? {
+        validate_record_for_app_sync(&layout, &record)?;
+    }
+    let status = mirror::sync(&layout, |_, _| {})?;
+    Ok(mirror_message(&status))
+}
+
+/// `dodex-app` checks only; `dodex-app --repair` supports the legacy entry.
 /// It neither opens an app nor changes the manager, shell command or credentials.
 pub fn desktop_entry(repair: bool) -> Result<String, String> {
     let layout = Layout::current()?;
+    if mirror::is_deployed(&layout) {
+        return mirror::check(&layout).map(|status| mirror_message(&status));
+    }
     if let Some(message) = managed_entry_message(&layout, &SystemOps, repair)? {
         return Ok(message);
     }
@@ -721,6 +758,27 @@ mod tests {
         )
         .unwrap();
     }
+    #[test]
+    fn repaired_desktop_accepts_both_exact_launcher_schemas() {
+        let (fixture, _) = legacy_fixture();
+        let ops = FakeOps {
+            legacy: true,
+            ..FakeOps::default()
+        };
+        let instance = repair_with(&fixture.layout, &ops).unwrap();
+        let executable = instance.launcher_app.join("Contents/MacOS/Dodex");
+        for text in [
+            legacy_launcher_text(&fixture.layout, &instance),
+            launcher_text(&fixture.layout, &instance),
+        ] {
+            fs::write(&executable, &text).unwrap();
+            validate_repaired(&fixture.layout, &ops, true, true).unwrap();
+            assert_eq!(fs::read_to_string(&executable).unwrap(), text);
+            fs::write(&executable, format!("{text}# unknown change\n")).unwrap();
+            assert!(validate_repaired(&fixture.layout, &ops, true, true).is_err());
+        }
+    }
+
     #[test]
     fn repaired_launcher_tampering_is_rejected() {
         let (fixture, _) = legacy_fixture();
