@@ -152,6 +152,36 @@ fn default_is_disabled_without_discovering_or_creating_dodex() {
     assert!(!fixture.layout.support.exists());
     assert!(!fixture.layout.applications.exists());
     assert_eq!(fake.verified.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        settings_presentation_for(&fixture.layout, state.instance.as_ref()),
+        SettingsPresentation::default()
+    );
+}
+
+#[test]
+fn settings_metadata_keeps_legacy_cli_separate_from_desktop_installation() {
+    let (fixture, instance) = legacy_fixture();
+    let config = fs::read(instance.codex_home.join("config.toml")).unwrap();
+    for enabled in [false, true] {
+        save_record(&fixture.layout, enabled, &instance).unwrap();
+        let settings = fs::read(fixture.layout.settings()).unwrap();
+        let state = read_saved_state(&fixture.layout);
+        assert!(state.status.deployed);
+        let presentation = settings_presentation_for(&fixture.layout, state.instance.as_ref());
+        assert_eq!(presentation.app_path, None);
+        assert!(presentation.app_version.is_empty());
+        assert_eq!(presentation.profile_home, Some(instance.codex_home.clone()));
+        assert!(presentation.tui_available);
+        assert_eq!(fs::read(fixture.layout.settings()).unwrap(), settings);
+        assert_eq!(
+            fs::read(instance.codex_home.join("config.toml")).unwrap(),
+            config
+        );
+    }
+    fs::set_permissions(&instance.cli_path, fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(!settings_presentation_for(&fixture.layout, Some(&instance)).tui_available);
+    fs::remove_file(&instance.cli_path).unwrap();
+    assert!(!settings_presentation_for(&fixture.layout, Some(&instance)).tui_available);
 }
 #[test]
 fn fresh_deployment_is_private_separate_and_does_not_start_runtime() {

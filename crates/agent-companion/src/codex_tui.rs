@@ -259,6 +259,13 @@ impl Editor {
         assert!(!self.live_deployment);
         let primary = self.drafts.borrow().primary.path.clone();
         let home = path.parent().unwrap();
+        #[cfg(target_os = "macos")]
+        {
+            self.window
+                .set_dual_profile_home(home.to_string_lossy().as_ref().into());
+            // This fixture supplies an already validated synthetic CLI instance.
+            self.window.set_dual_tui_available(true);
+        }
         let paths = |config: PathBuf| profile_sync::ProfilePaths {
             instructions: config.parent().unwrap().join("AGENTS.md"),
             instructions_override: config
@@ -737,6 +744,10 @@ impl Editor {
         }
         self.window.set_sync_busy(busy);
         self.window.set_dual_busy(busy || deployment_busy);
+        #[cfg(target_os = "macos")]
+        if busy {
+            self.window.set_dual_phase("正在同步所选配置文件…".into());
+        }
         let pair = self.sync_paths.borrow();
         let dirty = pair
             .as_ref()
@@ -939,6 +950,43 @@ impl Editor {
         self.window.set_dual_enabled(available);
         self.window.set_dual_deployed(status.deployed);
         self.window.set_dual_busy(busy);
+        #[cfg(target_os = "macos")]
+        {
+            let presentation = deployment::settings_presentation();
+            self.window
+                .set_dual_app_installed(presentation.app_path.is_some());
+            self.window.set_dual_app_path(
+                presentation
+                    .app_path
+                    .as_deref()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+                    .into(),
+            );
+            self.window
+                .set_dual_app_version(presentation.app_version.into());
+            self.window.set_dual_profile_home(
+                presentation
+                    .profile_home
+                    .as_deref()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+                    .into(),
+            );
+            self.window
+                .set_dual_tui_available(presentation.tui_available);
+            self.window.set_dual_phase(
+                if self.sync_operation.borrow().is_some() {
+                    "正在同步所选配置文件…"
+                } else if status.busy {
+                    &status.message
+                } else {
+                    "正在处理双开设置…"
+                }
+                .into(),
+            );
+        }
+        #[cfg(windows)]
         self.window.set_dual_phase(
             match status.phase.as_str() {
                 "copying" => "正在复制官方运行程序…",

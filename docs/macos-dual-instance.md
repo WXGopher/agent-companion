@@ -8,10 +8,18 @@ the popup footer. Reopening Companion reveals the popup.
 Codex appears above Dodex, with each row showing its own task-status dot and
 weekly quota. A previous reading stays visible while idle; `*` and a tooltip
 identify last-known readings awaiting an update. Missing readings show `—`.
-Second-instance support remains disabled until explicit opt-in. Opening
-Settings does not discover, deploy, adopt, or launch Dodex before that opt-in.
+Second-instance support remains disabled until explicit opt-in. Settings reads
+installed App metadata and saved directory paths for display; opening the page
+does not deploy, adopt, or launch Dodex, or read account credentials.
 
 ## Create and update Dodex App
+
+The settings page separates **Dodex App**, **Companion 接入**, and the secondary
+account's **副账号与 TUI**. App installation is reported independently
+of Companion monitoring: an existing TUI profile does not mean the new App is
+installed, and disabling monitoring does not uninstall the App. The account
+configuration actions below these sections copy files between Codex and Dodex;
+they do not update either application's program files.
 
 The **Codex 双开** page creates Dodex App from the official Codex App already
 installed on this Mac. Thereafter, opening Dodex from Finder or Dock checks the
@@ -27,7 +35,8 @@ the existing Dodex App still opens and a later startup can retry. Concurrent
 startup and manual synchronization share a deployment lock; an already running
 Dodex process is never replaced.
 
-For a manual sync, quit Dodex and click **从本机 Codex 同步 Dodex App**, or run:
+To install, click **安装 Dodex App**. For a manual update, quit Dodex and click
+**检查并同步**, or run:
 
 ```sh
 agent-companion dodex-app --sync
@@ -70,8 +79,8 @@ and the existing TUI continue to share that profile, including its configuration
 login and session history. App synchronization does not rewrite its files.
 
 The TUI command wrappers, manager, aliases and hidden runtime stay in place.
-The old manager's `dodex app` subcommand is also unchanged and still opens its
-legacy runtime; open the new public App through Finder, Dock or Companion.
+The old manager's desktop subcommands are unchanged; open the new public App
+through Finder, Dock or Companion for its native entry and startup synchronization.
 An existing Companion monitoring record also keeps its original CLI path and
 profile. Only the in-memory desktop navigation target changes to the public
 Dodex App, so opening an App from a task does not bypass its instance settings.

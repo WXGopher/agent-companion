@@ -86,6 +86,10 @@ component FilePath inherits VerticalLayout {
 }
 
 export component ProfileSyncSettings inherits VerticalLayout {
+    in property <string> section-title: "配置与全局指令";
+    in property <string> description;
+    in property <string> primary-label: "Codex";
+    in property <string> secondary-label: "Dodex";
     in property <[ProfileSyncFile]> files;
     in property <bool> busy;
     in property <string> status;
@@ -95,9 +99,15 @@ export component ProfileSyncSettings inherits VerticalLayout {
     callback refresh();
     spacing: 16px;
     HorizontalLayout {
-        Text { text: "配置与全局指令"; font-size: 17px; font-weight: 600; color: SettingsColors.text; vertical-alignment: center; }
+        Text { text: root.section-title; font-size: 17px; font-weight: 600; color: SettingsColors.text; vertical-alignment: center; }
         Rectangle { horizontal-stretch: 1; }
         SettingsButton { text: "刷新状态"; accessible-label: "刷新文件状态"; enabled: !root.busy; clicked => { root.refresh(); } }
+    }
+    if root.description != "": Text {
+        text: root.description;
+        font-size: 12px;
+        color: SettingsColors.secondary;
+        wrap: word-wrap;
     }
     Text {
         text: root.status != "" ? root.status : "每次手动选择覆盖方向；不会自动同步或建立链接。目标文件存在时会先备份。";
@@ -120,14 +130,14 @@ export component ProfileSyncSettings inherits VerticalLayout {
                 wrap: word-wrap;
             }
             FilePath {
-                label: "Codex · " + file.title;
+                label: root.primary-label + " · " + file.title;
                 path: file.primary-path;
                 exists: file.primary-exists;
                 busy: root.busy;
                 open(edit) => { root.open-file(file.key, false, edit); }
             }
             FilePath {
-                label: "Dodex · " + file.title;
+                label: root.secondary-label + " · " + file.title;
                 path: file.secondary-path;
                 exists: file.secondary-exists;
                 busy: root.busy;
@@ -144,17 +154,17 @@ export component ProfileSyncSettings inherits VerticalLayout {
                 spacing: 8px;
                 Text { text: "覆盖方向"; font-size: 12px; color: SettingsColors.secondary; vertical-alignment: center; }
                 SettingsButton {
-                    text: "Codex → Dodex";
-                    Tooltip { text: @markdown("覆盖 Dodex 的文件，原文件会先备份。"); }
+                    text: root.primary-label + " → " + root.secondary-label;
+                    Tooltip { text: @markdown("覆盖 \{root.secondary-label} 的文件，原文件会先备份。"); }
                     enabled: file.to-secondary && !root.busy;
-                    accessible-label: file.title + "：Codex 覆盖到 Dodex";
+                    accessible-label: file.title + "：" + root.primary-label + " 覆盖到 " + root.secondary-label;
                     clicked => { root.sync(file.key, true); }
                 }
                 SettingsButton {
-                    text: "Dodex → Codex";
-                    Tooltip { text: @markdown("覆盖 Codex 的文件，原文件会先备份。"); }
+                    text: root.secondary-label + " → " + root.primary-label;
+                    Tooltip { text: @markdown("覆盖 \{root.primary-label} 的文件，原文件会先备份。"); }
                     enabled: file.to-primary && !root.busy;
-                    accessible-label: file.title + "：Dodex 覆盖到 Codex";
+                    accessible-label: file.title + "：" + root.secondary-label + " 覆盖到 " + root.primary-label;
                     clicked => { root.sync(file.key, false); }
                 }
                 Rectangle { horizontal-stretch: 1; }

@@ -113,6 +113,30 @@ pub(super) fn is_deployed(layout: &Layout) -> bool {
     deployed_app(layout).is_some()
 }
 
+/// Cheap settings-only observation of a completed mirror. Do not call `check`
+/// here: polling the UI must not hash an App or verify either signature.
+pub(super) fn installed_presentation(layout: &Layout) -> Option<(InstanceConfig, String)> {
+    let app = target(layout).ok()?;
+    let manifest = read_manifest(&app).ok()?;
+    if manifest.app != app {
+        return None;
+    }
+    executable_path(&app, LAUNCHER_EXECUTABLE).ok()?;
+    executable_path(&app, &manifest.source.executable).ok()?;
+    regular_file(&app.join("Contents/Info.plist")).ok()?;
+    regular_file(&app.join("Contents/Resources/app.asar")).ok()?;
+    let version = match (
+        manifest.source.version.as_str(),
+        manifest.source.build.as_str(),
+    ) {
+        ("", "") => String::new(),
+        (version, "") => version.into(),
+        ("", build) => format!("build {build}"),
+        (version, build) => format!("{version} ({build})"),
+    };
+    Some((manifest.profile.instance(&app), version))
+}
+
 fn saved_profile(layout: &Layout, app: &Path) -> Result<MirrorProfile, String> {
     if exists(&app.join(MIRROR_MANIFEST)) {
         return Ok(read_manifest(app)?.profile);
@@ -1243,6 +1267,29 @@ mod tests {
         assert!(again.up_to_date);
         assert_eq!(ops.copies.load(Ordering::SeqCst), 1);
         assert_eq!(ops.registrations.load(Ordering::SeqCst), 1);
+
+        let record = monitor_after_app_sync(&fixture.layout, None, &result.instance).unwrap();
+        assert!(!record.enabled);
+        let settings = fs::read(fixture.layout.settings()).unwrap();
+        let config = fs::read(profile.codex_home.join("config.toml")).unwrap();
+        let presentation = settings_presentation_for(&fixture.layout, Some(&record.instance));
+        assert_eq!(presentation.app_path, Some(app.clone()));
+        assert_eq!(presentation.app_version, "26.924.22138 (11645)");
+        assert_eq!(presentation.profile_home, Some(profile.codex_home.clone()));
+        assert!(!presentation.tui_available);
+        assert_eq!(fs::read(fixture.layout.settings()).unwrap(), settings);
+        assert_eq!(
+            fs::read(profile.codex_home.join("config.toml")).unwrap(),
+            config
+        );
+
+        // A retained preference/manifest is not evidence of an installed App
+        // when its executable has disappeared. The saved home stays visible.
+        fs::remove_file(app.join("Contents/MacOS").join(LAUNCHER_EXECUTABLE)).unwrap();
+        let presentation = settings_presentation_for(&fixture.layout, Some(&record.instance));
+        assert!(presentation.app_path.is_none() && presentation.app_version.is_empty());
+        assert_eq!(presentation.profile_home, Some(profile.codex_home));
+        assert!(!presentation.tui_available);
     }
 
     #[test]

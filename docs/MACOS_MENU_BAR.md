@@ -35,7 +35,9 @@ Codex 在上、Dodex 在下，每个已启用实例各有一行。圆点表示�
 - 底部太阳／月亮按钮切换亮色与暗色。主题会保存，切换保留页面、实例选择及滚动位置，不触发额外额度查询。
 - Tasks、Usage 和两种主题使用固定弹窗尺寸，避免切换时跳动。
 
-设置包含所有实例共用的额度自动刷新间隔、Codex CLI 状态栏编辑和 Codex 双开。双开页提供两边 `config.toml` 与全局 `CODEX_HOME/AGENTS.md` 的路径和手动双向覆盖，覆盖前备份目标。配置中的内嵌密钥会复制，`auth.json` 不会复制，目标的登录存储、数据库与日志设置继续独立。存在 `AGENTS.override.md` 时会提示它可能优先生效，同步不会覆盖该文件。没有自动同步；详情见[同步说明](macos-dual-instance.md#manual-configuration-and-instruction-sync)。
+设置包含所有实例共用的额度自动刷新间隔、Codex CLI 状态栏编辑和 Codex 双开。双开页分别展示 Dodex App 的安装状态、Companion 接入开关，以及第二账号的数据目录与 TUI 信息。App 启动时自动跟随本机官方应用更新；Companion 开关只控制任务与用量接入，已有 TUI 的程序和更新方式保持不变。
+
+页面下方提供两边 `config.toml` 与全局 `CODEX_HOME/AGENTS.md` 的路径和手动双向覆盖，覆盖前备份目标。这是 Codex 与 Dodex 两个账号之间的文件复制，与 App 自动更新分开。配置中的内嵌密钥会复制，`auth.json` 不会复制，目标的登录存储、数据库与日志设置继续独立。存在 `AGENTS.override.md` 时会提示它可能优先生效，同步不会覆盖该文件。配置与指令不会自动同步；详情见[同步说明](macos-dual-instance.md#manual-configuration-and-instruction-sync)。
 
 ## 验证
 

@@ -1,5 +1,5 @@
-//! Opt-in, local-only Dodex deployment. This module never starts either application,
-//! reads credential files, or discovers a second profile before an explicit opt-in.
+//! Opt-in, local-only Dodex deployment. This module never starts either application
+//! or reads credentials. Settings can display saved App/profile metadata read-only.
 use agent_companion_core::install::profile_sync::{
     self, Direction, FileKind, IsolationPaths, ProfilePair, SyncOutcome,
 };
@@ -61,6 +61,17 @@ pub struct DeploymentStatus {
     pub phase: String,
     pub message: String,
 }
+
+/// Read-only settings metadata. This describes files we can see, not a runtime
+/// validation or permission to launch/sync them. It never opens profile contents.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SettingsPresentation {
+    pub app_path: Option<PathBuf>,
+    pub app_version: String,
+    pub profile_home: Option<PathBuf>,
+    pub tui_available: bool,
+}
+
 impl Default for DeploymentStatus {
     fn default() -> Self {
         Self {
@@ -249,6 +260,48 @@ pub fn status() -> DeploymentStatus {
         .status
         .clone()
 }
+
+pub fn settings_presentation() -> SettingsPresentation {
+    let Ok(layout) = Layout::current() else {
+        return SettingsPresentation::default();
+    };
+    let instance = shared()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .instance
+        .clone();
+    settings_presentation_for(&layout, instance.as_ref())
+}
+
+fn settings_presentation_for(
+    layout: &Layout,
+    saved: Option<&InstanceConfig>,
+) -> SettingsPresentation {
+    let mirrored = mirror::installed_presentation(layout);
+    let profile_home = mirrored
+        .as_ref()
+        .map(|(instance, _)| &instance.codex_home)
+        .or_else(|| saved.map(|instance| &instance.codex_home))
+        .filter(|path| no_symlinks(path).is_ok() && path.is_dir())
+        .cloned();
+    // A saved CLI can remain in the old hidden runtime after App sync. Do not
+    // infer a CLI or shell command from the presence of the desktop mirror.
+    let tui_available = saved.is_some_and(|instance| {
+        profile_home.as_ref() == Some(&instance.codex_home)
+            && regular_file(&instance.cli_path).is_ok()
+            && fs::metadata(&instance.cli_path)
+                .is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+    });
+    SettingsPresentation {
+        app_path: mirrored
+            .as_ref()
+            .map(|(instance, _)| instance.launcher_app.clone()),
+        app_version: mirrored.map(|(_, version)| version).unwrap_or_default(),
+        profile_home,
+        tui_available,
+    }
+}
+
 pub fn active_instance() -> Option<InstanceConfig> {
     refresh_from_disk();
     let state = shared().lock().unwrap_or_else(|e| e.into_inner());

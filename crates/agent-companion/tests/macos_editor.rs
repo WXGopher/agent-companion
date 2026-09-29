@@ -52,7 +52,7 @@ fn check_editor_startup() {
     let started = Instant::now();
     eprintln!("[editor-fixture] startup at {:?}", started.elapsed());
 
-    // The fixture has 29 validated phases. The watchdog measures a stalled
+    // The fixture has 32 validated phases. The watchdog measures a stalled
     // startup or phase, not their cumulative render and filesystem work.
     let (finished, deadline) = mpsc::channel::<Option<usize>>();
     let watchdog = std::thread::spawn(move || {
@@ -206,6 +206,9 @@ fn check_editor_startup() {
                         "sync-error-progress",
                         "sync-error-light",
                         "sync-instructions-light",
+                        "dual-app-only-light",
+                        "dual-app-disabled-light",
+                        "dual-app-enabled-dark",
                     ][phase]
                 ))
             };
@@ -266,6 +269,10 @@ fn check_editor_startup() {
             9 => {
                 assert!(!window.get_dual_enabled());
                 assert!(!window.get_dual_deployed());
+                assert!(!window.get_dual_app_installed());
+                assert!(window.get_dual_app_path().is_empty());
+                assert!(window.get_dual_profile_home().is_empty());
+                assert!(!window.get_dual_tui_available());
                 assert!(!window.get_dual_busy());
                 window.set_dual_busy(true);
                 window.set_dual_phase("正在验证隔离与签名…".into());
@@ -285,11 +292,14 @@ fn check_editor_startup() {
                 window.set_dual_deployed(true);
                 window.set_dual_enabled(true);
                 window.set_dual_error(false);
-                window.set_dual_message("在应用程序中打开 Dodex，首次使用请登录。".into());
+                window.set_dual_message("副账号 CLI 已接入 Companion。".into());
                 weak_editor.upgrade().unwrap().add_isolated_secondary(second_config_path.clone());
             }
             12 => {
                 assert!(window.get_dual_deployed());
+                assert!(!window.get_dual_app_installed(), "A saved CLI profile must not imply an installed desktop App");
+                assert!(window.get_dual_tui_available());
+                assert_eq!(window.get_dual_profile_home(), second_config_path.parent().unwrap().to_string_lossy().as_ref());
                 window.set_settings_page(0);
                 window.invoke_select_instance("Dodex".into());
                 assert_eq!(window.get_selected_instance(), 1);
@@ -479,13 +489,38 @@ fn check_editor_startup() {
                 assert!(window.get_sync_files().row_data(0).unwrap().error, "Refreshing file state erased the operation result");
                 window.set_dual_scroll_y(-1000.0);
             }
-            _ => {
+            28 => {
                 for (path, value) in [(&config_path, "primary-login"), (&second_config_path, "secondary-login")] {
                     assert_eq!(std::fs::read_to_string(path.with_file_name("auth.json")).unwrap(), value);
                     assert_eq!(std::fs::read_to_string(path.with_file_name("state.sqlite")).unwrap(), "database fixture");
                     assert_eq!(std::fs::read_to_string(path.with_file_name("session.log")).unwrap(), "log fixture");
                 }
                 assert_eq!(std::fs::read_to_string(second_config_path.with_file_name("AGENTS.override.md")).unwrap(), "Secondary override stays local\n");
+                window.set_dual_scroll_y(0.0);
+                window.set_dual_app_installed(true);
+                window.set_dual_app_path("/Applications/Dodex.app".into());
+                window.set_dual_app_version("26.924.22138 (11645)".into());
+                window.set_dual_tui_available(false);
+                window.set_dual_message("Dodex App 已安装；Companion 监控未启用。".into());
+            }
+            29 => {
+                assert!(window.get_dual_app_installed() && window.get_dual_deployed());
+                assert!(!window.get_dual_enabled() && !window.get_dual_tui_available());
+                assert!(!window.get_dual_app_path().is_empty());
+                assert_eq!(window.get_dual_profile_home(), second_config_path.parent().unwrap().to_string_lossy().as_ref());
+                window.set_dual_tui_available(true);
+            }
+            30 => {
+                assert!(window.get_dual_app_installed() && window.get_dual_tui_available());
+                assert!(!window.get_dual_enabled(), "Detecting a CLI must not enable monitoring");
+                weak_editor.upgrade().unwrap().set_isolated_monitoring(true);
+                window.set_dual_message("Companion 已接入副账号 CLI。".into());
+                window.global::<ui::Palette>().set_color_scheme(ColorScheme::Dark);
+            }
+            _ => {
+                assert!(window.get_dual_enabled() && window.get_dual_tui_available());
+                assert!(window.get_dual_app_installed());
+                assert_eq!(window.get_dual_app_path(), "/Applications/Dodex.app");
                 completed_check.set(true);
                 slint::quit_event_loop().unwrap();
             }
@@ -504,6 +539,6 @@ fn check_editor_startup() {
     finished.send(None).unwrap();
     watchdog.join().unwrap();
     println!(
-        "PASS: opaque AppKit editor; two menu-only settings sections, light/dark/minimum-size layouts, separate status-bar drafts; manual bidirectional config/AGENTS sync with backups, no-op/error feedback, disabled-monitoring and missing-target support, override warnings, dirty/busy guards and retained selection; all file writes stayed in isolated fixtures"
+        "PASS: opaque AppKit editor; two menu-only settings sections, light/dark/minimum-size layouts, separate status-bar drafts; fresh/legacy/App-only/monitored desktop states; manual bidirectional config/AGENTS sync with backups, no-op/error feedback, disabled-monitoring and missing-target support, override warnings, dirty/busy guards and retained selection; all file writes stayed in isolated fixtures"
     );
 }

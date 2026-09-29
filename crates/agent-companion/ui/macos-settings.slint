@@ -24,6 +24,11 @@ export component MacSettings inherits Rectangle {
     in property <string> catalog-version;
     in property <bool> dual-enabled;
     in property <bool> dual-deployed;
+    in property <bool> dual-app-installed;
+    in property <string> dual-app-path;
+    in property <string> dual-app-version;
+    in property <string> dual-profile-home;
+    in property <bool> dual-tui-available;
     in property <bool> dual-busy;
     in property <bool> dual-error;
     in property <string> dual-phase;
@@ -173,10 +178,10 @@ export component MacSettings inherits Rectangle {
                     VerticalLayout {
                         spacing: 8px;
                         Text { text: "Codex 双开"; font-size: 16px; font-weight: 600; color: SettingsColors.text; }
-                        Text {
-                            text: "从本机 Codex 创建或更新 Dodex App。已有环境继续使用原账号目录，TUI 命令保持不变。任务按来源合并显示，用量和状态栏配置分别管理。";
+                        if root.dual-busy || root.dual-message != "": Text {
+                            text: root.dual-busy ? root.dual-phase : root.dual-message;
                             font-size: 12px;
-                            color: SettingsColors.secondary;
+                            color: !root.dual-busy && root.dual-error ? SettingsColors.error : SettingsColors.secondary;
                             wrap: word-wrap;
                         }
                     }
@@ -184,58 +189,140 @@ export component MacSettings inherits Rectangle {
                         vertical-stretch: 0;
                         VerticalLayout {
                             padding: 18px;
-                            spacing: 14px;
-                            Text {
-                                text: root.dual-busy ? root.dual-phase : root.dual-deployed ? (root.dual-enabled ? "双开支持已启用" : "双开环境已部署 · 支持已停用") : "双开默认关闭";
-                                font-size: 13px;
-                                font-weight: 600;
-                                color: SettingsColors.text;
+                            spacing: 10px;
+                            HorizontalLayout {
+                                Text { text: "Dodex App"; font-size: 13px; font-weight: 600; color: SettingsColors.text; }
+                                Text {
+                                    text: root.dual-app-installed ? "已安装" : "未安装";
+                                    font-size: 12px;
+                                    color: root.dual-app-installed ? SettingsColors.accent : SettingsColors.secondary;
+                                    horizontal-alignment: right;
+                                }
                             }
-                            Text {
-                                text: root.dual-message;
+                            if root.dual-app-installed && root.dual-app-version != "": Text {
+                                text: "已同步版本：" + root.dual-app-version;
                                 font-size: 12px;
-                                color: root.dual-error ? SettingsColors.error : SettingsColors.secondary;
+                                color: SettingsColors.secondary;
                                 wrap: word-wrap;
                             }
-                            SettingsButton {
-                                text: root.dual-busy ? "正在同步 Dodex App…" : root.dual-deployed ? "从本机 Codex 同步 Dodex App" : "部署 Dodex App";
-                                enabled: !root.dual-busy;
-                                primary: true;
-                                accessible-label: "从本机 Codex 同步 Dodex App";
-                                clicked => { root.deploy-dual(); }
+                            if root.dual-app-installed && root.dual-app-path != "": Text {
+                                text: root.dual-app-path;
+                                font-size: 12px;
+                                color: SettingsColors.secondary;
+                                wrap: word-wrap;
                             }
-                            if root.dual-deployed: HorizontalLayout {
-                                spacing: 24px;
-                                VerticalLayout {
-                                    spacing: 5px;
-                                    Text { text: "在 Companion 中启用双实例支持"; font-size: 12px; color: SettingsColors.text; }
-                                    Text { text: "停用不会退出 Dodex，也不会删除环境。重新启用时会先验证部署。"; font-size: 12px; color: SettingsColors.secondary; wrap: word-wrap; }
-                                }
-                                Switch {
-                                    checked: root.dual-enabled;
+                            if !root.dual-app-installed: Text {
+                                text: "从本机 Codex 安装 Dodex，可在应用程序或 Dock 中打开。";
+                                font-size: 12px;
+                                color: SettingsColors.secondary;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: "启动 Dodex 时自动检查本机 Codex，版本变化后同步 App。";
+                                font-size: 12px;
+                                color: SettingsColors.secondary;
+                                wrap: word-wrap;
+                            }
+                            HorizontalLayout {
+                                spacing: 12px;
+                                SettingsButton {
+                                    text: root.dual-busy ? "处理中…" : root.dual-app-installed ? "检查并同步" : "安装 Dodex App";
                                     enabled: !root.dual-busy;
-                                    accessible-label: "启用 Codex 双实例支持";
-                                    toggled => { root.toggle-dual(self.checked); }
+                                    primary: true;
+                                    accessible-label: root.dual-app-installed ? "从本机 Codex 检查并同步 Dodex App" : "从本机 Codex 安装 Dodex App";
+                                    clicked => { root.deploy-dual(); }
                                 }
+                                if root.dual-app-installed: Text {
+                                    text: "手动同步前请退出 Dodex。";
+                                    font-size: 12px;
+                                    color: SettingsColors.secondary;
+                                    vertical-alignment: center;
+                                    wrap: word-wrap;
+                                }
+                                Rectangle { horizontal-stretch: 1; }
                             }
                         }
                     }
-                    if root.dual-deployed: SettingsCard {
+                    SettingsCard {
+                        vertical-stretch: 0;
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 10px;
+                            HorizontalLayout {
+                                spacing: 24px;
+                                VerticalLayout {
+                                    spacing: 5px;
+                                    Text { text: "Companion 接入"; font-size: 13px; font-weight: 600; color: SettingsColors.text; }
+                                    Text { text: "任务合并显示，额度与状态栏配置按账号分别管理。"; font-size: 12px; color: SettingsColors.secondary; wrap: word-wrap; }
+                                }
+                                Switch {
+                                    checked: root.dual-enabled;
+                                    enabled: !root.dual-busy && (root.dual-tui-available || root.dual-enabled);
+                                    accessible-label: "在 Companion 中接入 Dodex 副账号";
+                                    toggled => { root.toggle-dual(self.checked); }
+                                }
+                            }
+                            Text {
+                                text: !root.dual-tui-available && !root.dual-enabled
+                                    ? "需要副账号 CLI 程序才能启用接入。"
+                                    : root.dual-enabled ? "已启用。关闭后，Dodex 仍可照常使用。" : "已关闭。Dodex 可独立使用。";
+                                font-size: 12px;
+                                color: SettingsColors.secondary;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                    SettingsCard {
                         vertical-stretch: 0;
                         VerticalLayout {
                             padding: 18px;
                             spacing: 8px;
-                            Text { text: "使用 Dodex"; font-size: 12px; font-weight: 600; color: SettingsColors.text; }
-                            Text { text: "在应用程序或 Dock 中打开 Dodex。启动时自动检查本机 Codex 更新；手动同步前请退出 Dodex。已有登录与 TUI 保持不变。"; font-size: 12px; color: SettingsColors.secondary; wrap: word-wrap; }
+                            Text { text: "副账号与 TUI"; font-size: 13px; font-weight: 600; color: SettingsColors.text; }
+                            Text {
+                                text: "Dodex App 与已有 TUI 共用副账号目录、登录和会话。TUI 单独安装和更新。";
+                                font-size: 12px;
+                                color: SettingsColors.secondary;
+                                wrap: word-wrap;
+                            }
+                            if root.dual-profile-home != "": Rectangle {
+                                height: 32px;
+                                border-radius: 7px;
+                                border-width: 1px;
+                                border-color: SettingsColors.border;
+                                background: SettingsColors.background;
+                                Tooltip { text: @markdown("副账号目录：\{root.dual-profile-home}"); }
+                                TextInput {
+                                    x: 10px;
+                                    width: parent.width - 20px;
+                                    height: parent.height;
+                                    text: root.dual-profile-home;
+                                    read-only: true;
+                                    single-line: true;
+                                    font-size: 12px;
+                                    color: SettingsColors.text;
+                                    vertical-alignment: center;
+                                    accessible-label: "副账号目录，可选择复制";
+                                }
+                            }
+                            if root.dual-profile-home == "": Text {
+                                text: "安装后显示副账号目录；首次使用需要登录。";
+                                font-size: 12px;
+                                color: SettingsColors.secondary;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: root.dual-tui-available ? "已检测到副账号 CLI 程序。" : "未检测到副账号 CLI 程序；本页只安装或更新 App。";
+                                font-size: 12px;
+                                color: SettingsColors.secondary;
+                                wrap: word-wrap;
+                            }
                         }
                     }
-                    Text {
-                        text: "官方 Codex 更新后，下次启动 Dodex 会自动同步。更新失败时继续打开现有版本。同步只替换应用副本，账号目录、会话和 TUI 不变。全新环境需要独立登录。";
-                        font-size: 12px;
-                        color: SettingsColors.secondary;
-                        wrap: word-wrap;
-                    }
                     ProfileSyncSettings {
+                        section-title: "手动同步配置";
+                        description: "Codex 与 Dodex 的账号配置仅手动复制，不随 App 自动更新。";
+                        primary-label: "Codex（主账号）";
+                        secondary-label: "Dodex（副账号）";
                         files: root.sync-files;
                         busy: root.dual-busy || root.sync-busy;
                         status: root.sync-status;
