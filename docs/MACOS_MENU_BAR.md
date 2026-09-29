@@ -49,6 +49,8 @@ v0.3.20 的菜单栏专项检查通过，已查看浅色、深色、蓝色背景
 
 v0.3.22 verification: the full native suite, 29-phase isolated Settings editor and core synchronization tests passed locally. The optimized app was installed with an old-version backup; packaged and installed bundles passed signature and version checks. The installed Tasks / Usage navigation, instance quota reads and Settings process startup were confirmed, and the release query successfully persisted its daily cache. No real configuration files were synchronized. Full Settings layout and controls were checked with isolated fixtures; exhaustive manual interaction with the installed Settings window and native Windows desktop verification remain unperformed.
 
+v0.3.23 local verification: the 102-case binary suite, a later five-case targeted run covering two added Settings cases, and the 32-phase native Settings editor passed. Local development bundles still labeled v0.3.22 passed signature and package-extraction checks. Manual checks confirmed the existing Dodex account opens, a web page loads in its built-in browser, and quitting and reopening preserves one custom Dock icon without another Keychain prompt for the same build. A real upstream upgrade may prompt again; that authorization flow and native Windows desktop checks remain unverified. Final platform CI, downloadable assets, checksums and build provenance are recorded on the GitHub release.
+
 安装包由 `scripts/package-macos.py` 生成，校验完整应用签名、解压后签名及程序版本；更新前退出旧应用和设置窗口。包使用本地完整性签名，没有 Apple 公证。
 
 旧版刘海实现与历史验证记录保存在 [MACOS_NOTCH.md](MACOS_NOTCH.md)，不代表当前功能。
