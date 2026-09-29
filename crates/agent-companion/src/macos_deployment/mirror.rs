@@ -121,6 +121,7 @@ pub(super) fn installed_presentation(layout: &Layout) -> Option<(InstanceConfig,
     if manifest.app != app {
         return None;
     }
+    validate_profile(layout, &manifest.profile).ok()?;
     executable_path(&app, LAUNCHER_EXECUTABLE).ok()?;
     executable_path(&app, &manifest.source.executable).ok()?;
     regular_file(&app.join("Contents/Info.plist")).ok()?;
@@ -1218,6 +1219,68 @@ mod tests {
             }
             profile
         }
+    }
+
+    #[test]
+    fn settings_observe_mirror_metadata_but_explicit_operations_check_app_contents() {
+        let fixture = Fixture::new(true);
+        let profile = MirrorProfile::fresh(&fixture.layout);
+        let ops = FakeOps::default();
+        let installed =
+            sync_with(&fixture.layout, &profile, &fixture.source, &ops, |_, _| {}).unwrap();
+        let instance = installed.instance;
+        save_record(&fixture.layout, true, &instance).unwrap();
+        fs::write(
+            instance.runtime_app.join("Contents/Resources/app.asar"),
+            b"changed synthetic App contents",
+        )
+        .unwrap();
+        let preference = fs::read(fixture.layout.settings()).unwrap();
+        let config = fs::read(instance.codex_home.join("config.toml")).unwrap();
+        let runtime_ops = super::super::tests::FakeOps::default();
+
+        // Opening/polling settings and selecting its saved profile still work.
+        // Calling mirror::check on any of these paths would reject this App.
+        let current = State::default();
+        for _ in 0..3 {
+            let observed = settings_state_for(&fixture.layout, &current);
+            assert!(observed.status.enabled && observed.status.deployed);
+            assert!(!observed.status.busy);
+            let presentation =
+                settings_presentation_for(&fixture.layout, observed.instance.as_ref());
+            assert_eq!(presentation.app_path, Some(instance.launcher_app.clone()));
+            assert_eq!(presentation.app_version, "26.924.22138 (11645)");
+            assert_eq!(
+                saved_sync_instance(&fixture.layout, &runtime_ops, false).unwrap(),
+                instance
+            );
+            assert_eq!(
+                settings_config_path_for(&fixture.layout, &runtime_ops).unwrap(),
+                Some(instance.codex_home.join("config.toml"))
+            );
+        }
+        assert!(!current.initialized && !current.status.enabled);
+        assert_eq!(runtime_ops.verified.load(Ordering::SeqCst), 0);
+
+        // Monitor/enable validation, explicit profile sync, and App sync still
+        // reject changed App contents before writing profile or App files.
+        assert!(validate_existing(&fixture.layout, &runtime_ops, &instance).is_err());
+        assert!(
+            sync_profile_file_under_lock(
+                &fixture.layout,
+                &runtime_ops,
+                &fixture.layout.user_home.join(".codex"),
+                FileKind::Config,
+                Direction::ToSecondary,
+            )
+            .is_err()
+        );
+        assert!(sync_with(&fixture.layout, &profile, &fixture.source, &ops, |_, _| {}).is_err());
+        assert_eq!(fs::read(fixture.layout.settings()).unwrap(), preference);
+        assert_eq!(
+            fs::read(instance.codex_home.join("config.toml")).unwrap(),
+            config
+        );
     }
 
     #[test]

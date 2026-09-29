@@ -10,7 +10,10 @@ weekly quota. A previous reading stays visible while idle; `*` and a tooltip
 identify last-known readings awaiting an update. Missing readings show `—`.
 Second-instance support remains disabled until explicit opt-in. Settings reads
 installed App metadata and saved directory paths for display; opening the page
-does not deploy, adopt, or launch Dodex, or read account credentials.
+does not verify or synchronize the App, deploy, adopt, or launch Dodex, or read
+account credentials. App checks and synchronization on this page start only
+when **安装 Dodex App** or **检查并同步** is clicked. Enabling monitoring and
+explicit configuration writes retain their own validation.
 
 ## Create and update Dodex App
 

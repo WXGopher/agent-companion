@@ -159,6 +159,115 @@ fn default_is_disabled_without_discovering_or_creating_dodex() {
 }
 
 #[test]
+fn settings_observes_enabled_preference_without_starting_runtime_validation() {
+    let fixture = Fixture::new();
+    let instance = fixture.layout.instance();
+    save_record(&fixture.layout, true, &instance).unwrap();
+    let preference_before = fs::read(fixture.layout.settings()).unwrap();
+    let current = State::default();
+
+    for _ in 0..2 {
+        let observed = settings_state_for(&fixture.layout, &current);
+        assert!(observed.status.enabled && observed.status.deployed);
+        assert!(!observed.status.busy);
+        assert_eq!(observed.status.phase, "saved");
+        assert_eq!(observed.instance, Some(instance.clone()));
+    }
+    assert!(!current.initialized && !current.status.enabled && !current.status.busy);
+    assert!(current.instance.is_none());
+    assert!(!instance.runtime_app.exists());
+    assert_eq!(
+        fs::read(fixture.layout.settings()).unwrap(),
+        preference_before
+    );
+
+    // The runtime observer must still require validation of this same record.
+    let monitor = read_saved_state(&fixture.layout);
+    assert!(monitor.status.busy && !monitor.status.enabled);
+}
+
+#[test]
+fn busy_settings_operations_preserve_the_saved_enabled_profile() {
+    let fixture = Fixture::new();
+    let instance = fixture.layout.instance();
+    save_record(&fixture.layout, true, &instance).unwrap();
+
+    for prepared in [false, true] {
+        let mut current = State::default();
+        if prepared {
+            prepare_saved_action(&fixture.layout, &mut current).unwrap();
+        }
+        current.status.busy = true;
+        current.status.phase = "copying".into();
+        current.status.message = "Synthetic explicit operation".into();
+
+        let observed = settings_state_for(&fixture.layout, &current);
+        assert!(observed.status.enabled && observed.status.deployed && observed.status.busy);
+        assert_eq!(observed.instance, Some(instance.clone()));
+        assert_eq!(observed.status.phase, current.status.phase);
+        assert_eq!(observed.status.message, current.status.message);
+        assert!(!current.status.enabled);
+    }
+}
+
+#[test]
+fn first_explicit_action_loads_enabled_preference_without_a_competing_check() {
+    let fixture = Fixture::new();
+    let instance = fixture.layout.instance();
+    save_record(&fixture.layout, true, &instance).unwrap();
+    let mut state = State::default();
+
+    prepare_saved_action(&fixture.layout, &mut state).unwrap();
+    assert!(state.initialized && state.status.deployed);
+    assert!(!state.status.busy && !state.status.enabled);
+    assert_eq!(state.instance, Some(instance));
+    assert_eq!(state.preference_stamp, preference_stamp(&fixture.layout));
+
+    state.status.busy = true;
+    assert!(prepare_saved_action(&fixture.layout, &mut state).is_err());
+    assert!(state.status.busy);
+}
+
+#[test]
+fn settings_apply_guard_skips_runtime_checks_but_rechecks_preference_and_config_path() {
+    let fixture = Fixture::new();
+    fixture.source();
+    let ops = FakeOps::default();
+    let instance = deploy_fixture(&fixture, &ops);
+    save_record(&fixture.layout, true, &instance).unwrap();
+    let config = instance.codex_home.join("config.toml");
+    fs::remove_file(instance.runtime_app.join("synthetic-valid-signature")).unwrap();
+    let checks_before = ops.verified.load(Ordering::SeqCst);
+
+    assert_eq!(
+        settings_config_path_for(&fixture.layout, &ops).unwrap(),
+        Some(config.clone())
+    );
+    assert_eq!(ops.verified.load(Ordering::SeqCst), checks_before);
+    assert!(validate_existing(&fixture.layout, &ops, &instance).is_err());
+    assert_eq!(ops.verified.load(Ordering::SeqCst), checks_before + 1);
+
+    save_record(&fixture.layout, false, &instance).unwrap();
+    assert_eq!(
+        settings_config_path_for(&fixture.layout, &ops).unwrap(),
+        None
+    );
+    save_record(&fixture.layout, true, &instance).unwrap();
+    let primary = fixture.layout.user_home.join(".codex");
+    private_directory(&primary).unwrap();
+    let primary_config = primary.join("config.toml");
+    fs::write(&primary_config, b"model = 'keep-primary'\n").unwrap();
+    fs::remove_file(&config).unwrap();
+    std::os::unix::fs::symlink(&primary_config, &config).unwrap();
+    assert!(settings_config_path_for(&fixture.layout, &ops).is_err());
+    assert_eq!(ops.verified.load(Ordering::SeqCst), checks_before + 1);
+    assert_eq!(
+        fs::read(&primary_config).unwrap(),
+        b"model = 'keep-primary'\n"
+    );
+}
+
+#[test]
 fn settings_metadata_keeps_legacy_cli_separate_from_desktop_installation() {
     let (fixture, instance) = legacy_fixture();
     let config = fs::read(instance.codex_home.join("config.toml")).unwrap();
@@ -923,6 +1032,7 @@ fn explicit_sync_uses_disabled_saved_deployment_and_preserves_each_destinations_
         )
     })
     .unwrap();
+    assert_eq!(ops.verified.load(Ordering::SeqCst), checks_before + 1);
     assert_eq!(
         fs::read(copied.backup_path.unwrap()).unwrap(),
         original_secondary

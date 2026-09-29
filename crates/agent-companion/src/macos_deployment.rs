@@ -97,7 +97,7 @@ struct Manifest {
 type PreferenceStamp = Option<(u64, u64, u128)>;
 type CompletedDeployment = (InstanceConfig, PreferenceStamp);
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct State {
     status: DeploymentStatus,
     instance: Option<InstanceConfig>,
@@ -215,8 +215,8 @@ fn refresh_from_disk() {
         return;
     }
     let instance = state.instance.clone().expect("enabled record has instance");
-    // Signatures are validated once per saved preference generation, on a worker.
-    // This also synchronizes the settings subprocess with the resident monitor.
+    // The resident monitor validates each saved preference generation on a
+    // worker. Read-only settings observation never enters this path.
     std::thread::spawn(move || {
         let result = validate_existing(&layout, &SystemOps, &instance);
         let current_stamp = preference_stamp(&layout);
@@ -261,15 +261,49 @@ pub fn status() -> DeploymentStatus {
         .clone()
 }
 
+/// Settings show the saved preference and any explicit operation in this
+/// process. Observing it never starts validation or enables runtime use.
+pub fn settings_status() -> DeploymentStatus {
+    settings_state().status
+}
+
+fn settings_state() -> State {
+    let current = shared().lock().unwrap_or_else(|e| e.into_inner());
+    match Layout::current() {
+        Ok(layout) => settings_state_for(&layout, &current),
+        Err(_) => current.clone(),
+    }
+}
+
+fn settings_state_for(layout: &Layout, current: &State) -> State {
+    if !current.status.busy
+        && current.initialized
+        && current.preference_stamp == preference_stamp(layout)
+    {
+        return current.clone();
+    }
+    let mut observed = read_saved_state(layout);
+    if observed.status.busy {
+        observed.status.busy = false;
+        observed.status.enabled = true;
+        observed.status.phase = "saved".into();
+        observed.status.message = "双实例支持已启用；点击「检查并同步」检查 Dodex App。".into();
+    }
+    if current.status.busy {
+        // Keep the saved profile selected while a settings worker runs, even
+        // when this process has never initialized its runtime validation state.
+        observed.status.busy = true;
+        observed.status.phase.clone_from(&current.status.phase);
+        observed.status.message.clone_from(&current.status.message);
+    }
+    observed
+}
+
 pub fn settings_presentation() -> SettingsPresentation {
     let Ok(layout) = Layout::current() else {
         return SettingsPresentation::default();
     };
-    let instance = shared()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .instance
-        .clone();
+    let instance = settings_state().instance;
     settings_presentation_for(&layout, instance.as_ref())
 }
 
@@ -303,7 +337,9 @@ fn settings_presentation_for(
 }
 
 pub fn active_instance() -> Option<InstanceConfig> {
-    refresh_from_disk();
+    if !status().enabled {
+        return None;
+    }
     let state = shared().lock().unwrap_or_else(|e| e.into_inner());
     let instance = state
         .status
@@ -416,6 +452,24 @@ fn saved_sync_instance(
     Ok(record.instance)
 }
 
+/// A fresh path/account guard for an explicit status-line edit. This does not
+/// launch an executable or require the App's full signature/content check.
+pub fn settings_config_path() -> Option<PathBuf> {
+    settings_config_path_for(&Layout::current().ok()?, &SystemOps).ok()?
+}
+
+fn settings_config_path_for(
+    layout: &Layout,
+    ops: &dyn Operations,
+) -> Result<Option<PathBuf>, String> {
+    let record: Record = read_json(&layout.settings())?;
+    if record.schema != SCHEMA || !record.enabled {
+        return Ok(None);
+    }
+    validate_existing_for_sync(layout, ops, &record.instance, false)?;
+    Ok(Some(record.instance.codex_home.join("config.toml")))
+}
+
 fn sync_pair(primary: &Path, instance: &InstanceConfig) -> Result<ProfilePair, String> {
     Ok(ProfilePair {
         primary: profile_sync::profile_paths(primary)
@@ -441,14 +495,25 @@ fn sync_profile_file_under_lock(
     profile_sync::sync_file(&pair, kind, direction).map_err(|error| error.to_string())
 }
 fn begin() -> Result<(), String> {
-    refresh_from_disk();
+    let layout = Layout::current()?;
     let mut state = shared().lock().unwrap_or_else(|e| e.into_inner());
-    if state.status.busy {
-        return Err("正在处理双开环境，请等待完成。".into());
-    }
+    prepare_saved_action(&layout, &mut state)?;
     state.status.busy = true;
     state.status.phase = "checking".into();
     state.status.message = "正在检查应用与隔离目录…".into();
+    Ok(())
+}
+
+fn prepare_saved_action(layout: &Layout, state: &mut State) -> Result<(), String> {
+    if state.status.busy {
+        return Err("正在处理双开环境，请等待完成。".into());
+    }
+    if !state.initialized || state.preference_stamp != preference_stamp(layout) {
+        *state = read_saved_state(layout);
+        // The explicit caller owns validation. Do not start a competing monitor
+        // worker or treat an enabled preference as already validated.
+        state.status.busy = false;
+    }
     Ok(())
 }
 fn progress(phase: &str, message: &str) {
@@ -596,13 +661,10 @@ pub fn set_enabled(enabled: bool) -> Result<DeploymentStatus, String> {
         })();
         return finish(result);
     }
-    refresh_from_disk();
+    let layout = Layout::current()?;
     let mut state = shared().lock().unwrap_or_else(|e| e.into_inner());
-    if state.status.busy {
-        return Err("正在处理双开环境，请等待完成。".into());
-    }
+    prepare_saved_action(&layout, &mut state)?;
     if let Some(instance) = &state.instance {
-        let layout = Layout::current()?;
         private_directory(&layout.support)?;
         let _lock = DeploymentLock::acquire(&layout.support.join("deployment.lock"))?;
         save_record(&layout, false, instance)?;
@@ -943,14 +1005,20 @@ fn validate_mirror_monitor(
     require_config: bool,
     runtime: bool,
 ) -> Result<(), String> {
-    let mirrored = mirror::check(layout)?;
-    validate_mirror_monitor_binding(layout, instance, &mirrored.instance)?;
+    let mirrored = if runtime {
+        mirror::check(layout)?.instance
+    } else {
+        mirror::installed_presentation(layout)
+            .map(|(instance, _)| instance)
+            .ok_or("Dodex App 部署元数据无效；请点击「检查并同步」。")?
+    };
+    validate_mirror_monitor_binding(layout, instance, &mirrored)?;
     validate_instance_paths(layout, instance)?;
     let config = instance.codex_home.join("config.toml");
     if require_config || exists(&config) {
         validate_config(&config, instance)?;
     }
-    if runtime && instance.runtime_app != mirrored.instance.runtime_app {
+    if runtime && instance.runtime_app != mirrored.runtime_app {
         ops.verify_runtime(&instance.runtime_app)?;
     }
     Ok(())

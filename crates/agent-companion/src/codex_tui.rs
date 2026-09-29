@@ -4,8 +4,12 @@
 
 #[cfg(target_os = "macos")]
 use crate::macos_deployment as deployment;
+#[cfg(target_os = "macos")]
+use crate::macos_deployment::settings_status as deployment_status;
 #[cfg(windows)]
 use crate::windows_deployment as deployment;
+#[cfg(windows)]
+use crate::windows_deployment::status as deployment_status;
 
 use std::{cell::RefCell, collections::HashSet, path::PathBuf, rc::Rc};
 
@@ -708,7 +712,7 @@ impl Editor {
     fn update_profile_sync(&self) {
         let busy = self.sync_operation.borrow().is_some();
         let deployment_busy = self.deployment_operation.borrow().is_some()
-            || (self.live_deployment && deployment::status().busy);
+            || (self.live_deployment && deployment_status().busy);
         // Validation shares the deployment lock. Keep the last validated paths
         // visible while an operation holds it, then rediscover on completion.
         if self.live_deployment && !busy && !deployment_busy {
@@ -723,7 +727,7 @@ impl Editor {
                 }
                 Err(error) => {
                     self.sync_paths.borrow_mut().take();
-                    let deployed = deployment::status().deployed;
+                    let deployed = deployment_status().deployed;
                     self.window.set_sync_status(if deployed {
                         error.into()
                     } else {
@@ -874,7 +878,7 @@ impl Editor {
         // same event-loop turn cannot start two workers.
         if self.deployment_operation.borrow().is_some()
             || self.sync_operation.borrow().is_some()
-            || deployment::status().busy
+            || deployment_status().busy
         {
             return;
         }
@@ -918,19 +922,23 @@ impl Editor {
             self.deployment_operation.borrow_mut().take();
             *self.deployment_error.borrow_mut() = result.err();
         }
-        let status = deployment::status();
+        let status = deployment_status();
         let busy = status.busy
             || self.deployment_operation.borrow().is_some()
             || self.sync_operation.borrow().is_some();
-        let active = deployment::active_instance();
+        #[cfg(target_os = "macos")]
+        let config_path = self
+            .sync_paths
+            .borrow()
+            .as_ref()
+            .map(|pair| pair.secondary.config.clone());
+        #[cfg(windows)]
+        let config_path =
+            deployment::active_instance().map(|instance| instance.codex_home.join("config.toml"));
         let (available, selection_changed) = {
             let mut drafts = self.drafts.borrow_mut();
             let previous_path = drafts.active().path.clone();
-            drafts.set_secondary(
-                active
-                    .filter(|_| status.enabled)
-                    .map(|instance| instance.codex_home.join("config.toml")),
-            );
+            drafts.set_secondary(config_path.filter(|_| status.enabled));
             (
                 drafts.secondary_available,
                 previous_path != drafts.active().path,
@@ -1130,10 +1138,12 @@ impl Editor {
         }
         #[cfg(any(target_os = "macos", windows))]
         if self.live_deployment && self.drafts.borrow().secondary_selected {
-            let active = deployment::active_instance();
-            if active.is_none_or(|instance| {
-                instance.codex_home.join("config.toml") != self.drafts.borrow().active().path
-            }) {
+            #[cfg(target_os = "macos")]
+            let config_path = deployment::settings_config_path();
+            #[cfg(windows)]
+            let config_path = deployment::active_instance()
+                .map(|instance| instance.codex_home.join("config.toml"));
+            if config_path.as_ref() != Some(&self.drafts.borrow().active().path) {
                 self.note("Dodex is no longer available. Re-enable and validate its deployment before saving.", true);
                 return;
             }
