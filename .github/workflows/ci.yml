@@ -56,6 +56,9 @@ jobs:
 
       - name: Build
         run: cargo build ${{ matrix.packages }} --target ${{ matrix.target }} --locked
+      - name: Resume terminal acceptance
+        if: runner.os == 'macOS'
+        run: python3 scripts/test-resume-tui.py --binary target/${{ matrix.target }}/debug/acomp
 
       - name: Clippy
         run: cargo clippy ${{ matrix.packages }} --all-targets --target ${{ matrix.target }} --locked -- -D warnings

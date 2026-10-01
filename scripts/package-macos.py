@@ -11,13 +11,16 @@ from pathlib import Path
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--binary", type=Path, default=Path("target/aarch64-apple-darwin/release/agent-companion"))
+parser.add_argument("--cli-binary", type=Path, help="acomp console binary; defaults beside --binary")
 parser.add_argument("--output", type=Path, default=Path("dist"))
 args = parser.parse_args()
 root = Path(__file__).resolve().parent.parent
 version = tomllib.loads((root / "Cargo.toml").read_text())["workspace"]["package"]["version"]
-arches = subprocess.check_output(["lipo", "-archs", str(args.binary)], text=True).strip()
-if arches != "arm64":
-    parser.error(f"expected Apple Silicon arm64 binary, found: {arches}")
+cli_binary = args.cli_binary or args.binary.with_name("acomp")
+for binary in (args.binary, cli_binary):
+    arches = subprocess.check_output(["lipo", "-archs", str(binary)], text=True).strip()
+    if arches != "arm64":
+        parser.error(f"expected Apple Silicon arm64 binary, found: {arches}")
 args.output.mkdir(parents=True, exist_ok=True)
 app = args.output / "Agent Companion.app"
 if app.exists():
@@ -31,6 +34,8 @@ with tempfile.TemporaryDirectory(prefix="agent-companion-icon-") as temporary:
     subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o", str(contents / "Resources/AgentCompanion.icns")], check=True)
 shutil.copy2(args.binary, contents / "MacOS" / "agent-companion")
 (contents / "MacOS" / "agent-companion").chmod(0o755)
+shutil.copy2(cli_binary, contents / "MacOS" / "acomp")
+(contents / "MacOS" / "acomp").chmod(0o755)
 with (contents / "Info.plist").open("wb") as stream:
     plistlib.dump({
         "CFBundleExecutable": "agent-companion",
@@ -54,6 +59,8 @@ for name in ("README.md", "LICENSE", "THIRD_PARTY_NOTICES.md"):
     shutil.copy2(root / name, contents / "Resources" / name)
 screenshots = contents / "Resources" / "docs"
 screenshots.mkdir()
+shutil.copy2(root / "docs/RESUME.md", screenshots / "RESUME.md")
+shutil.copy2(root / "docs/terminal-dependency-licenses.md", screenshots / "terminal-dependency-licenses.md")
 for name in ("panel.png", "windows-usage.png", "codex-tui.png", "windows-dual.png", "macos-menu-bar.png", "macos-panel.png", "macos-panel-light.png", "macos-settings.png"):
     shutil.copy2(root / "docs" / name, screenshots / name)
 # Rust's linker signs the Mach-O executable ad hoc. Once it is placed in an
@@ -75,6 +82,11 @@ with tempfile.TemporaryDirectory(prefix="agent-companion-package-check-") as tem
     ).strip()
     if reported != f"agent-companion {version}":
         parser.error(f"packaged executable version mismatch: {reported}")
+    reported_cli = subprocess.check_output(
+        [str(restored / "Contents/MacOS/acomp"), "--version"], text=True
+    ).strip()
+    if reported_cli != f"acomp {version}":
+        parser.error(f"packaged CLI version mismatch: {reported_cli}")
 digest = hashlib.sha256(archive.read_bytes()).hexdigest()
 (args.output / "SHA256SUMS-macos-arm64.txt").write_text(f"{digest}  {archive.name}\n")
 print(archive)

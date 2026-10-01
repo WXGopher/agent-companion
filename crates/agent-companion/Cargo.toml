@@ -14,13 +14,20 @@ path = "src/main.rs"
 name = "agent-companion-codex"
 path = "src/codex_main.rs"
 
+[[bin]]
+name = "acomp"
+path = "src/acomp_main.rs"
+
 [[test]]
 name = "macos_editor"
 harness = false
 
 [dependencies]
-agent-companion-core = { workspace = true, features = ["config-edit"] }
+agent-companion-core = { workspace = true, features = ["config-edit", "resume"] }
 clap.workspace = true
+crossterm = "0.29"
+unicode-width = "0.2"
+tempfile.workspace = true
 semver = "1"
 serde.workspace = true
 serde_json.workspace = true
@@ -34,7 +41,6 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 sha2 = "0.10"
 toml_edit = "0.25.13"
-tempfile.workspace = true
 agent-companion-core = { workspace = true, features = ["server"] }
 futures-util = { version = "0.3", features = ["sink"] }
 tokio-tungstenite = "0.28"
@@ -43,7 +49,6 @@ windows.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 toml_edit = "0.25.13"
-tempfile.workspace = true
 agent-companion-core = { workspace = true, features = ["desktop-history"] }
 slint = { workspace = true, features = ["unstable-winit-030"] }
 

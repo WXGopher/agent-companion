@@ -28,6 +28,7 @@
 
 ### 主要功能
 
+- **会话接力 CLI**：`acomp resume` 按当前目录搜索 Codex / Dodex 原会话，展示历史、设置和额度账号的来源，选择本次额度账号。`agent-companion install-cli` 安装用户级入口；未验证或不兼容的组合显示原因并禁用。命令、兼容性和验收边界见 [接力说明](docs/RESUME.md)。
 - **更新提示**：主动打开面板时在后台检查 GitHub 正式发布版本，每 24 小时最多检查一次，重启后仍复用本地记录。发现更高版本时显示版本号，点击“查看更新”打开对应 Release 页面。检查不阻塞面板；断网或检查失败时静默保留已有提示，不自动下载或安装。
 - **任务状态**：查看运行中、待处理和已结束的任务，点击返回对应对话或终端。
 - **Tasks / Usage**：切换任务与用量，查看剩余额度、重置时间、累计 Token 和最近七个有记录日期的用量柱状图。
@@ -95,6 +96,8 @@ macOS 重新打开 Agent Companion 会显示弹窗的 Tasks 页。刘海、悬�
 ## English
 
 See Codex tasks and subscription usage in the Windows taskbar or macOS menu bar.
+
+`acomp resume` searches original Codex / Dodex sessions in the exact current directory and shows history, settings, and quota-account provenance. Install user-level commands with `agent-companion install-cli`. Unverified or incompatible combinations are disabled with a reason; see [resume usage and validation boundaries](docs/RESUME.md).
 
 ### New in v0.3.23
 
