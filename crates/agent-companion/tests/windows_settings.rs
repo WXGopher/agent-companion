@@ -11,6 +11,8 @@ mod macos;
 mod macos_deployment;
 #[path = "../src/macos_primary_app.rs"]
 mod macos_primary_app;
+#[path = "../src/software_updates.rs"]
+mod software_updates;
 #[path = "../src/update_service.rs"]
 mod update_service;
 #[path = "../src/usage_service.rs"]
@@ -19,8 +21,8 @@ mod usage_service;
 mod ui {
     slint::slint! {
         #[style = "fluent"]
-        import { CodexTuiWindow, StatusComponent } from "../ui/codex-tui.slint";
-        export { CodexTuiWindow, StatusComponent }
+        import { CodexTuiWindow, StatusComponent, SoftwareVersion } from "../ui/codex-tui.slint";
+        export { CodexTuiWindow, StatusComponent, SoftwareVersion }
         export { Palette } from "std-widgets.slint";
     }
 }

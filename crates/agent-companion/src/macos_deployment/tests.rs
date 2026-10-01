@@ -103,7 +103,7 @@ fn mirrored_app_navigation_keeps_the_original_cli_and_profile() {
     let fixture = Fixture::new();
     let original = desktop::repaired_instance(&fixture.layout);
     let app = fixture.layout.system_applications.join("Dodex.app");
-    let navigation = desktop_navigation_instance(original.clone(), Some(app.clone()));
+    let navigation = desktop_navigation_instance(original.clone(), Some(app.clone()), None);
     assert_eq!(navigation.runtime_app, app);
     assert_eq!(navigation.launcher_app, app);
     assert_eq!(navigation.cli_path, original.cli_path);
@@ -111,9 +111,28 @@ fn mirrored_app_navigation_keeps_the_original_cli_and_profile() {
     assert_eq!(navigation.desktop_user_data, original.desktop_user_data);
     assert_eq!(navigation.database_dir, original.database_dir);
     assert_eq!(
-        desktop_navigation_instance(original.clone(), None),
+        desktop_navigation_instance(original.clone(), None, None),
         original
     );
+}
+
+#[test]
+fn migrated_tui_navigation_uses_managed_cli_with_the_existing_session_paths() {
+    let fixture = Fixture::new();
+    let original = desktop::repaired_instance(&fixture.layout);
+    let cli = fixture
+        .layout
+        .support
+        .join("Tui/packages/current/package/bin/codex");
+    let app = fixture.layout.system_applications.join("Dodex.app");
+    let navigation =
+        desktop_navigation_instance(original.clone(), Some(app.clone()), Some(cli.clone()));
+    assert_eq!(navigation.cli_path, cli);
+    assert_eq!(navigation.runtime_app, app);
+    assert_eq!(navigation.codex_home, original.codex_home);
+    assert_eq!(navigation.database_dir, original.database_dir);
+    assert_eq!(navigation.desktop_user_data, original.desktop_user_data);
+    assert_ne!(navigation.cli_path, original.cli_path);
 }
 
 #[test]
@@ -122,7 +141,7 @@ fn app_sync_preserves_the_existing_monitor_record_and_rejects_a_changed_profile(
     save_record(&fixture.layout, false, &original).unwrap();
     let before = fs::read(fixture.layout.settings()).unwrap();
     let mirrored =
-        desktop_navigation_instance(original.clone(), Some(original.launcher_app.clone()));
+        desktop_navigation_instance(original.clone(), Some(original.launcher_app.clone()), None);
     let saved = existing_monitor_record(&fixture.layout).unwrap();
     let record = monitor_after_app_sync(&fixture.layout, saved, &mirrored).unwrap();
     assert!(!record.enabled);

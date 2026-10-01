@@ -2,8 +2,24 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-int main(void) {
+int main(int argc, const char *argv[]) {
     @autoreleasepool {
+        NSString *workspace = nil;
+        for (int index = 1; index < argc; index++) {
+            if (strcmp(argv[index], "--open-project") != 0) { continue; }
+            if (workspace != nil || ++index >= argc) {
+                fputs("Dodex: invalid project argument\n", stderr);
+                return 64;
+            }
+            NSString *candidate = [NSString stringWithUTF8String:argv[index]];
+            BOOL directory = NO;
+            if (!candidate.isAbsolutePath ||
+                ![NSFileManager.defaultManager fileExistsAtPath:candidate isDirectory:&directory] || !directory) {
+                fputs("Dodex: project must be an existing absolute directory\n", stderr);
+                return 64;
+            }
+            workspace = candidate;
+        }
         NSBundle *bundle = NSBundle.mainBundle;
         NSString *app = [bundle.bundlePath copy];
         NSString *updater = [bundle objectForInfoDictionaryKey:@"DodexUpdaterExecutable"];
@@ -54,9 +70,12 @@ int main(void) {
             stringByAppendingPathComponent:name];
         NSString *profile = [@"--user-data-dir=" stringByAppendingString:data];
         // execv preserves the PID and the public App's Dock identity. Launch
-        // arguments cannot override the profile; task navigation uses Apple events.
+        // arguments cannot override the profile. Only a validated project is
+        // forwarded; a new launch lets Electron hand it to an existing instance.
         char *const arguments[] = {
-            (char *)native.fileSystemRepresentation, (char *)profile.UTF8String, NULL
+            (char *)native.fileSystemRepresentation, (char *)profile.UTF8String,
+            workspace ? "--open-project" : NULL,
+            workspace ? (char *)workspace.fileSystemRepresentation : NULL, NULL
         };
         execv(arguments[0], arguments);
         perror("Dodex: cannot start native executable");

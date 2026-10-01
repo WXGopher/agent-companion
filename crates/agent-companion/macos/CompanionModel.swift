@@ -111,9 +111,7 @@ final class CompanionModel: ObservableObject {
     var quit: (() -> Void)?
     var settingsAction: (() -> Void)?
     private var timer: Timer?
-    private var settingsProcess: Process?
-    private var settingsApplication: NSRunningApplication?
-    private var openingSettings = false
+    private let editorLauncher: CompanionEditorLauncher
     private var presentationRevision: UInt64 = 0
     private let openTask: (CodexTask, CodexInstance, @escaping (String?) -> Void) -> Void
     private let clock: () -> Date
@@ -130,11 +128,13 @@ final class CompanionModel: ObservableObject {
          usageBridge: SubscriptionUsageBridging = RustSubscriptionUsageBridge(),
          updateBridge: AppUpdateBridging = RustAppUpdateBridge(),
          openReleaseURL: @escaping (URL) -> Void = { _ = NSWorkspace.shared.open($0) },
-         clock: @escaping () -> Date = Date.init) {
+         clock: @escaping () -> Date = Date.init,
+         editorLauncher: CompanionEditorLauncher = CompanionEditorLauncher()) {
         self.openTask = openTask
         self.clock = clock
         self.updateBridge = updateBridge
         self.openReleaseURL = openReleaseURL
+        self.editorLauncher = editorLauncher
         usageCoordinator = SubscriptionUsageCoordinator(bridge: usageBridge)
         usageCoordinator.onChange = { [weak self] in self?.receiveUsageSnapshot() }
     }
@@ -290,49 +290,16 @@ final class CompanionModel: ObservableObject {
 
     func openSettings() {
         if let settingsAction { settingsAction(); return }
-        if let application = settingsApplication, !application.isTerminated {
-            application.activate(options: [.activateAllWindows])
-            dismiss?()
-            return
+        let revision = presentationRevision
+        editorLauncher.open { [weak self] error in
+            guard let self, self.presentationRevision == revision else { return }
+            if let error { self.message = "Could not open settings: \(error)" }
+            else { self.dismiss?() }
         }
-        guard !openingSettings else { return }
-        if let process = settingsProcess, process.isRunning {
-            NSRunningApplication(processIdentifier: process.processIdentifier)?.activate(options: [.activateAllWindows])
-            dismiss?()
-            return
-        }
-        guard let executable = Bundle.main.executableURL else { return }
-        let environment = ProcessInfo.processInfo.environment
-        if Bundle.main.bundleURL.pathExtension == "app" {
-            // Register the accessory editor with Launch Services so its window
-            // can be activated even though it has no Dock tile of its own.
-            let configuration = NSWorkspace.OpenConfiguration()
-            configuration.createsNewApplicationInstance = true
-            configuration.arguments = ["codex-tui"]
-            configuration.environment = environment
-            openingSettings = true
-            let revision = presentationRevision
-            NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { [weak self] application, error in
-                DispatchQueue.main.async {
-                    guard let self else { return }
-                    self.openingSettings = false
-                    self.settingsApplication = application
-                    guard self.presentationRevision == revision else { return }
-                    if let error { self.message = "Could not open settings: \(error.localizedDescription)" }
-                    else { self.dismiss?() }
-                }
-            }
-            return
-        }
-        let process = Process()
-        process.executableURL = executable
-        process.arguments = ["codex-tui"]
-        process.environment = environment
-        do {
-            try process.run()
-            settingsProcess = process
-            dismiss?()
-        } catch { message = "Could not open settings: \(error.localizedDescription)" }
+    }
+
+    func openSoftwareAction(_ action: SoftwareAction, completion: @escaping (String?) -> Void) {
+        editorLauncher.open(action: action, completion: completion)
     }
 
     func openCodex() {

@@ -18,6 +18,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSPopoverDelegat
     private let themePreferences: ThemePreferences
     private let menuBarPlacement: MenuBarPlacement
     private let settingsOverride: (() -> Void)?
+    private let presentContextMenu: (NSMenu, NSStatusBarButton) -> Void
+    private let reportSoftwareActionError: (String) -> Void
     private let clock: () -> Date
     private let usageCoordinator: SubscriptionUsageCoordinator
     private let menuBarActivity: MenuBarActivityView
@@ -28,18 +30,43 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSPopoverDelegat
     private var themeChanges: AnyCancellable?
     private var quitting = false
     private var pendingUpdateCheck = false
+    private lazy var contextMenu: NSMenu = {
+        let menu = NSMenu()
+        for action in SoftwareAction.allCases {
+            let item = menu.addItem(withTitle: action.title, action: #selector(performSoftwareAction(_:)), keyEquivalent: "")
+            item.representedObject = action.rawValue
+            item.target = self
+        }
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Exit", action: #selector(quit), keyEquivalent: "").target = self
+        return menu
+    }()
 
     init(model: CompanionModel = CompanionModel(), menuModel: CompanionModel = CompanionModel(),
          themePreferences: ThemePreferences = .shared,
          menuBarPlacement: MenuBarPlacement = MenuBarPlacement(), settingsOverride: (() -> Void)? = nil,
          clock: @escaping () -> Date = Date.init,
          menuBarReducedMotion: @escaping () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion },
-         usageBridge: SubscriptionUsageBridging = RustSubscriptionUsageBridge()) {
+         usageBridge: SubscriptionUsageBridging = RustSubscriptionUsageBridge(),
+         presentContextMenu: @escaping (NSMenu, NSStatusBarButton) -> Void = { menu, button in
+             menu.popUp(positioning: nil, at: NSPoint(x: button.bounds.minX, y: button.bounds.minY), in: button)
+         },
+         reportSoftwareActionError: @escaping (String) -> Void = { message in
+             let alert = NSAlert()
+             alert.alertStyle = .warning
+             alert.messageText = "无法执行版本操作"
+             alert.informativeText = message
+             alert.addButton(withTitle: "好")
+             NSApp.activate(ignoringOtherApps: true)
+             alert.runModal()
+         }) {
         self.model = model
         self.menuModel = menuModel
         self.themePreferences = themePreferences
         self.menuBarPlacement = menuBarPlacement
         self.settingsOverride = settingsOverride
+        self.presentContextMenu = presentContextMenu
+        self.reportSoftwareActionError = reportSoftwareActionError
         self.clock = clock
         menuBarActivity = MenuBarActivityView(reduceMotion: menuBarReducedMotion)
         usageCoordinator = SubscriptionUsageCoordinator(bridge: usageBridge)
@@ -98,7 +125,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSPopoverDelegat
         ) { [weak self] _ in self?.showTasks() })
         let item = menuBarPlacement.makeItem()
         item.button?.target = self
-        item.button?.action = #selector(toggleMenuPanel)
+        item.button?.action = #selector(menuBarClicked)
+        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         statusItem = item
         updateMenuBarUsage()
         model.start()
@@ -113,6 +141,26 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSPopoverDelegat
         guard value != menuBarUsage else { return }
         menuBarUsage = value
         value.apply(to: statusItem, indicator: menuBarActivity)
+    }
+
+    @objc private func menuBarClicked() { handleMenuBarClick(NSApp.currentEvent) }
+
+    func handleMenuBarClick(_ event: NSEvent?) {
+        if event?.type == .rightMouseUp || (event?.type == .leftMouseUp && event?.modifierFlags.contains(.control) == true) {
+            guard !quitting, let button = statusItem?.button else { return }
+            popover.performClose(nil)
+            presentContextMenu(contextMenu, button)
+        } else { toggleMenuPanel() }
+    }
+
+    @objc private func performSoftwareAction(_ sender: NSMenuItem) {
+        guard !quitting, let value = sender.representedObject as? String,
+              let action = SoftwareAction(rawValue: value) else { return }
+        popover.performClose(nil)
+        model.openSoftwareAction(action) { [weak self] error in
+            guard let self, !self.quitting, let error else { return }
+            self.reportSoftwareActionError("\(action.title)：\(error)")
+        }
     }
 
     @objc func toggleMenuPanel() {

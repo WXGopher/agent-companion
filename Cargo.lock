@@ -141,6 +141,7 @@ dependencies = [
  "futures-util",
  "libc",
  "objc2-app-kit 0.2.2",
+ "roxmltree",
  "semver",
  "serde",
  "serde_json",

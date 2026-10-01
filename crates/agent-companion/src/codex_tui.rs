@@ -225,6 +225,10 @@ pub(crate) struct Editor {
     drafts: RefCell<InstanceDrafts>,
     left_rows: Rc<VecModel<ui::StatusComponent>>,
     right_rows: Rc<VecModel<ui::StatusComponent>>,
+    #[cfg(target_os = "macos")]
+    software: Option<crate::software_updates::Service>,
+    #[cfg(target_os = "macos")]
+    software_rows: Rc<VecModel<ui::SoftwareVersion>>,
     #[cfg(any(target_os = "macos", windows))]
     sync_rows: Rc<VecModel<ui::ProfileSyncFile>>,
     #[cfg(any(target_os = "macos", windows))]
@@ -338,6 +342,10 @@ impl Editor {
             drafts: RefCell::new(InstanceDrafts::new(path)),
             left_rows: Rc::new(VecModel::default()),
             right_rows: Rc::new(VecModel::default()),
+            #[cfg(target_os = "macos")]
+            software: _live_deployment.then(crate::software_updates::Service::new),
+            #[cfg(target_os = "macos")]
+            software_rows: Rc::new(VecModel::default()),
             #[cfg(any(target_os = "macos", windows))]
             sync_rows: Rc::new(VecModel::default()),
             #[cfg(any(target_os = "macos", windows))]
@@ -403,6 +411,23 @@ impl Editor {
         }
         #[cfg(target_os = "macos")]
         {
+            editor
+                .window
+                .set_software_versions(ModelRc::from(editor.software_rows.clone()));
+            if _live_deployment {
+                crate::macos::listen_software_updates();
+            }
+            let weak = Rc::downgrade(&editor);
+            editor.window.on_maintain_software(move |action| {
+                if let Some(editor) = weak.upgrade()
+                    && editor.live_deployment
+                    && let Some(action) = crate::software_updates::Action::parse(action.as_str())
+                {
+                    crate::software_updates::request(action);
+                    editor.refresh_software();
+                }
+            });
+            editor.refresh_software();
             editor.window.set_mono_font("Menlo".into());
             editor
                 .window
@@ -478,6 +503,7 @@ impl Editor {
                 move || {
                     if let Some(editor) = weak.upgrade() {
                         editor.refresh_deployment();
+                        editor.refresh_software();
                     }
                 },
             );
@@ -576,6 +602,7 @@ impl Editor {
         if self.sync_operation.borrow().is_some()
             || self.deployment_operation.borrow().is_some()
             || self.window.get_dual_busy()
+            || self.window.get_software_busy()
         {
             return;
         }
@@ -876,7 +903,8 @@ impl Editor {
         }
         // Mark the operation pending before spawning so even two clicks in the
         // same event-loop turn cannot start two workers.
-        if self.deployment_operation.borrow().is_some()
+        if self.window.get_software_busy()
+            || self.deployment_operation.borrow().is_some()
             || self.sync_operation.borrow().is_some()
             || deployment_status().busy
         {
@@ -899,6 +927,46 @@ impl Editor {
             *self.deployment_error.borrow_mut() = Some("无法开始部署操作，请重试。".into());
         }
         self.refresh_deployment();
+    }
+
+    #[cfg(target_os = "macos")]
+    fn refresh_software(&self) {
+        let Some(service) = &self.software else {
+            return;
+        };
+        if self.deployment_operation.borrow().is_none()
+            && self.sync_operation.borrow().is_none()
+            && !deployment_status().busy
+            && service.poll_requests()
+        {
+            self.window.set_settings_page(1);
+            self.window.set_dual_scroll_y(0.0);
+        }
+        let snapshot = service.snapshot();
+        self.window.set_software_busy(snapshot.busy);
+        self.window.set_software_error(snapshot.error);
+        self.window.set_software_message(snapshot.message.into());
+        self.window.set_software_notice(snapshot.notice.into());
+        let rows: Vec<_> = snapshot
+            .rows
+            .into_iter()
+            .map(|row| ui::SoftwareVersion {
+                name: row.name.into(),
+                current: row.current.into(),
+                target: row.target.into(),
+                message: row.message.into(),
+                error: row.error,
+            })
+            .collect();
+        if self.software_rows.row_count() != rows.len() {
+            self.software_rows.set_vec(rows);
+        } else {
+            for (index, row) in rows.into_iter().enumerate() {
+                if self.software_rows.row_data(index).as_ref() != Some(&row) {
+                    self.software_rows.set_row_data(index, row);
+                }
+            }
+        }
     }
 
     #[cfg(any(target_os = "macos", windows))]
@@ -1282,7 +1350,16 @@ pub fn run() -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     crate::macos::prepare_editor().map_err(std::io::Error::other)?;
     let editor = Editor::new(path).map_err(std::io::Error::other)?;
-    editor.window.window().on_close_requested(|| {
+    let weak = Rc::downgrade(&editor);
+    editor.window.window().on_close_requested(move || {
+        if let Some(editor) = weak.upgrade()
+            && editor.window.get_software_busy()
+        {
+            editor
+                .window
+                .set_software_notice("正在处理版本操作，请等待结果后再关闭设置。".into());
+            return slint::CloseRequestResponse::KeepWindowShown;
+        }
         let _ = slint::quit_event_loop();
         slint::CloseRequestResponse::HideWindow
     });

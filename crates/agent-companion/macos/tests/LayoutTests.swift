@@ -29,6 +29,16 @@ func fixtureUsageEvent(_ json: UnsafePointer<CChar>) -> UnsafeMutablePointer<CCh
 
 @_cdecl("agent_companion_update_panel_open")
 func fixtureUpdatePanelOpen() {}
+
+enum FixtureSoftwareActionRequests {
+    static var actions: [String] = []
+}
+@_cdecl("agent_companion_request_software_update")
+func fixtureSoftwareAction(_ action: UnsafePointer<CChar>) {
+    precondition(Thread.isMainThread, "Software actions must enter Rust on the main thread")
+    FixtureSoftwareActionRequests.actions.append(String(cString: action))
+}
+
 @_cdecl("agent_companion_update_snapshot_json")
 func fixtureUpdateSnapshot() -> UnsafeMutablePointer<CChar>? {
     guard let path = ProcessInfo.processInfo.environment["AGENT_COMPANION_TEST_UPDATE_SNAPSHOT"],
@@ -92,6 +102,7 @@ struct LayoutTests {
     @MainActor private static func runChecks(output: URL) throws {
         let suites: [(String, () throws -> Void)] = [
             ("--menu-lifecycle", { MenuBarPlacementTests.run(); MenuBarLifecycleTests.run() }),
+            ("--software-actions", { SoftwareActionTests.run() }),
             ("--menu-bar", { try MenuBarUsageTests.run(output: output) }),
             ("--subscription-usage", { try SubscriptionUsageTests.run(output: output) }),
             ("--instance-quotas", { try InstanceQuotaTests.run(output: output) }),

@@ -4,8 +4,15 @@ import { StatusComponent } from "status-component.slint";
 import { SettingsColors, SettingsCard, SettingsButton, SettingsTextField } from "settings-common.slint";
 import { StatusBarSettings } from "statusbar-settings.slint";
 import { ProfileSyncFile, ProfileSyncSettings } from "profile-sync.slint";
+import { SoftwareVersion, SoftwareUpdates } from "software-updates.slint";
 
 export component MacSettings inherits Rectangle {
+    in property <[SoftwareVersion]> software-versions;
+    in property <bool> software-busy;
+    in property <bool> software-error;
+    in property <string> software-message;
+    in property <string> software-notice;
+    callback maintain-software(string);
     in property <int> usage-refresh-minutes: 5;
     in property <string> usage-settings-message;
     callback set-usage-refresh-minutes(string);
@@ -185,6 +192,14 @@ export component MacSettings inherits Rectangle {
                             wrap: word-wrap;
                         }
                     }
+                    SoftwareUpdates {
+                        versions: root.software-versions;
+                        busy: root.software-busy || root.dual-busy || root.sync-busy;
+                        error: root.software-error;
+                        message: root.software-message;
+                        notice: root.software-notice;
+                        maintain(action) => { root.maintain-software(action); }
+                    }
                     SettingsCard {
                         vertical-stretch: 0;
                         VerticalLayout {
@@ -227,7 +242,7 @@ export component MacSettings inherits Rectangle {
                                 spacing: 12px;
                                 SettingsButton {
                                     text: root.dual-busy ? "处理中…" : root.dual-app-installed ? "检查并同步" : "安装 Dodex App";
-                                    enabled: !root.dual-busy;
+                                    enabled: !root.dual-busy && !root.software-busy;
                                     primary: true;
                                     accessible-label: root.dual-app-installed ? "从本机 Codex 检查并同步 Dodex App" : "从本机 Codex 安装 Dodex App";
                                     clicked => { root.deploy-dual(); }
@@ -257,7 +272,7 @@ export component MacSettings inherits Rectangle {
                                 }
                                 Switch {
                                     checked: root.dual-enabled;
-                                    enabled: !root.dual-busy && (root.dual-tui-available || root.dual-enabled);
+                                    enabled: !root.dual-busy && !root.software-busy && (root.dual-tui-available || root.dual-enabled);
                                     accessible-label: "在 Companion 中接入 Dodex 副账号";
                                     toggled => { root.toggle-dual(self.checked); }
                                 }
@@ -279,7 +294,7 @@ export component MacSettings inherits Rectangle {
                             spacing: 8px;
                             Text { text: "副账号与 TUI"; font-size: 13px; font-weight: 600; color: SettingsColors.text; }
                             Text {
-                                text: "Dodex App 与已有 TUI 共用副账号目录、登录和会话。TUI 单独安装和更新。";
+                                text: "Dodex App 与 TUI 共用副账号目录、登录和会话。版本管理分别对齐 App 与完整 TUI 安装包。";
                                 font-size: 12px;
                                 color: SettingsColors.secondary;
                                 wrap: word-wrap;
@@ -311,7 +326,7 @@ export component MacSettings inherits Rectangle {
                                 wrap: word-wrap;
                             }
                             Text {
-                                text: root.dual-tui-available ? "已检测到副账号 CLI 程序。" : "未检测到副账号 CLI 程序；本页只安装或更新 App。";
+                                text: root.dual-tui-available ? "已检测到副账号 CLI 程序。" : "未检测到副账号 CLI 程序；请先接入现有 Dodex 环境，再进行版本对齐。";
                                 font-size: 12px;
                                 color: SettingsColors.secondary;
                                 wrap: word-wrap;
@@ -324,7 +339,7 @@ export component MacSettings inherits Rectangle {
                         primary-label: "Codex（主账号）";
                         secondary-label: "Dodex（副账号）";
                         files: root.sync-files;
-                        busy: root.dual-busy || root.sync-busy;
+                        busy: root.dual-busy || root.sync-busy || root.software-busy;
                         status: root.sync-status;
                         error: root.sync-error;
                         sync(file, to-secondary) => { root.sync-profile(file, to-secondary); }

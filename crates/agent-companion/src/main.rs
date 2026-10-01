@@ -29,6 +29,8 @@ mod macos_deployment;
 #[cfg(target_os = "macos")]
 mod macos_primary_app;
 mod out;
+#[cfg(target_os = "macos")]
+mod software_updates;
 #[cfg(any(target_os = "macos", windows))]
 mod update_service;
 #[cfg(any(target_os = "macos", windows))]
@@ -80,7 +82,12 @@ enum Command {
     #[cfg(windows)]
     Dodex(DodexArgs),
     /// Open the standalone Codex CLI status bar editor. Apply, close, then restart Codex.
-    CodexTui,
+    CodexTui {
+        /// Open Codex dual-instance settings and align or update Codex/Dodex.
+        #[cfg(target_os = "macos")]
+        #[arg(long, value_enum)]
+        software_action: Option<software_updates::Action>,
+    },
     /// Show Codex tasks and usage in the menu bar.
     #[cfg(target_os = "macos")]
     MenuBar,
@@ -231,7 +238,16 @@ fn main() -> ExitCode {
         None | Some(Command::MenuBar) => macos::run_menu_bar(),
         #[cfg(all(not(windows), not(target_os = "macos")))]
         None => codex_tui::run(),
-        Some(Command::CodexTui) => codex_tui::run(),
+        Some(Command::CodexTui {
+            #[cfg(target_os = "macos")]
+            software_action,
+        }) => {
+            #[cfg(target_os = "macos")]
+            if let Some(action) = software_action {
+                software_updates::request(action);
+            }
+            codex_tui::run()
+        }
         #[cfg(windows)]
         Some(Command::Headless(args)) => headless::run(&args),
         #[cfg(windows)]

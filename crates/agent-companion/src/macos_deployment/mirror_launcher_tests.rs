@@ -215,6 +215,45 @@ fn assert_fallback(app: &Path, data: &Path, home: &Path, diagnostic: &[u8]) {
 }
 
 #[test]
+fn bootstrap_forwards_only_an_existing_project_and_keeps_the_secondary_profile() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().canonicalize().unwrap();
+    let app = root.join("Public Dodex.app");
+    let workspace = root.join("project with spaces");
+    fs::create_dir(&workspace).unwrap();
+    bundle(
+        &app,
+        "CurrentNative",
+        None,
+        json!({"CODEX_HOME": root.join("same-second"), "CODEX_ELECTRON_USER_DATA_PATH": root.join("same-desktop")}),
+        b"#!/bin/sh\nprintf '%s\\0' \"$@\" \"$CODEX_HOME\"\n",
+    );
+    let output = launcher(&app)
+        .arg("--open-project")
+        .arg(&workspace)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        fields(&output.stdout),
+        [
+            format!("--user-data-dir={}", root.join("same-desktop").display()),
+            "--open-project".into(),
+            workspace.display().to_string(),
+            root.join("same-second").display().to_string(),
+        ]
+    );
+    for invalid in ["relative", "/nonexistent-synthetic-project"] {
+        let output = launcher(&app)
+            .args(["--open-project", invalid])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(64));
+        assert!(output.stdout.is_empty());
+    }
+}
+
+#[test]
 fn bootstrap_starts_current_native_when_updater_fails() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().canonicalize().unwrap();

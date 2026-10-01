@@ -86,9 +86,11 @@ dodex -C C:\projects\demo
 
 **macOS 双开**：设置 → Codex 双开 → 安装 Dodex App。从本机签名有效的官方 `Codex.app` 或保留 Codex 身份的 `ChatGPT.app` 创建独立名称、图标和本地签名的公开 App，不修改官方 App。已有账号目录与 TUI 保持不变；新环境首次使用需登录。官方 App 更新后，下次启动 Dodex 会自动检查并同步；版本与构建号一致时直接启动，更新失败时继续使用现有版本。也可退出 Dodex 后点击“检查并同步”，或运行 `agent-companion dodex-app --sync`。已有镜像需先手动同步一次以启用启动检查；实际升级可能再次触发 macOS 钥匙串授权。详见 [Dodex App 说明](docs/macos-dual-instance.md)。
 
+**macOS 版本管理**：右键菜单栏读数，或设置 → Codex 双开，选择 **对齐 Codex/Dodex 版本**（以本机 Codex 为准，不联网）或 **全部更新到最新**（检查官方稳定版，更新 Codex 后分别对齐双方 App、TUI）。较新的 Dodex 不会被降级。打开设置只读取本机版本；操作中显示四项当前/目标版本及进度、错误。替换前须自行退出相关 App 和 TUI，不会自动结束会话或重启。TUI 对齐目前要求官方完整 standalone 安装和已有的兼容 Dodex 入口：先备份入口，再复制包括附属程序与资源的完整包，沿用副账号登录、会话、SQLite 和日志目录；不会迁移 npm/Homebrew 安装。右键菜单也提供 **Exit**。[版本管理细节](docs/macos-dual-instance.md#explicit-version-maintenance)
+
 macOS 重新打开 Agent Companion 会显示弹窗的 Tasks 页。刘海、悬停展开、显示器选择与独立 Dock 入口已移除；旧版入口偏好不会隐藏菜单栏，已保存的菜单栏位置继续保留。设置从弹窗底部打开。详见[菜单栏说明](docs/MACOS_MENU_BAR.md)。
 
-**双开隔离与停用**：两个平台的新环境均使用独立文件凭证、历史、数据库和个人配置，不复制原实例的账号数据。已有环境只有通过兼容性和隔离校验才会接入，冲突时停止且不覆盖。停用只关闭 Companion 对第二实例的监控，不退出 Dodex、不删除环境。macOS Dodex App 在启动时同步本机官方应用；已有 TUI 与 Windows 运行程序沿用各自的更新方式。暂不提供卸载功能。
+**双开隔离与停用**：两个平台的新环境均使用独立文件凭证、历史、数据库和个人配置，不复制原实例的账号数据。已有环境只有通过兼容性和隔离校验才会接入，冲突时停止且不覆盖。停用只关闭 Companion 对第二实例的监控，不退出 Dodex、不删除环境。macOS Dodex App 在启动时同步本机官方应用；TUI 仅通过明确操作更新，Windows 运行程序沿用原更新方式。暂不提供卸载功能。
 
 **升级**：先退出旧程序及设置窗口，再替换文件；已安装 Windows hooks 的用户需重新执行安装命令。Codex 配置、账号和双开环境会保留。
 
@@ -177,9 +179,11 @@ The app is not Apple-notarized. If the first launch is blocked, follow [Apple's 
 
 **macOS second instance**: Settings → Codex 双开 → 安装 Dodex App. Creates a public App with its own name, icon and local signature from the validly signed official `Codex.app` or Codex-identified `ChatGPT.app` installed on this Mac, leaving the official App untouched. Existing profile directories and TUI stay unchanged; fresh environments require login. After the official App updates, the next Dodex startup checks and syncs it automatically. Matching versions and builds launch directly; failed updates leave the existing App usable. Manual sync remains available after quitting Dodex through “检查并同步” or `agent-companion dodex-app --sync`. Existing mirrors need one manual sync to enable startup checks; actual upgrades may prompt for macOS Keychain access again. See the [Dodex App guide](docs/macos-dual-instance.md).
 
+**macOS version maintenance**: right-click the menu-bar readout or open Settings → Codex 双开. **对齐 Codex/Dodex 版本** aligns against local Codex without a network request; **全部更新到最新** checks official stable releases, updates Codex, then aligns each App and TUI pair. Newer Dodex versions are retained. Opening Settings only reads local versions. Close affected Apps and terminals before replacement; existing sessions are never terminated or restarted automatically. TUI alignment currently requires the full official standalone package and a compatible existing Dodex adapter. It backs up the adapter and preserves the complete package, auxiliary programs, resources and existing secondary account/session/SQLite/log paths; npm and Homebrew installations are not migrated. The context menu also includes **Exit**. See [maintenance details](docs/macos-dual-instance.md#explicit-version-maintenance).
+
 On macOS, reopening Agent Companion shows the popup's Tasks page. The notch, hover expansion, display selection and separate Dock entry have been removed. Legacy entry preferences cannot hide the menu bar, and its saved position is retained. Open Settings from the popup footer. See the [menu-bar guide](docs/MACOS_MENU_BAR.md).
 
-**Isolation and disabling**: on both platforms, a fresh environment has separate file credentials, history, databases and personal settings, without copying account data from the original instance. Existing environments are adopted only after compatibility and isolation checks; conflicts stop without overwriting. Disabling integration stops Companion monitoring the second instance without quitting Dodex or deleting its environment. macOS Dodex App syncs from the local official App at startup; existing TUI and Windows runtimes retain their own update behavior. Uninstall is not included.
+**Isolation and disabling**: on both platforms, a fresh environment has separate file credentials, history, databases and personal settings, without copying account data from the original instance. Existing environments are adopted only after compatibility and isolation checks; conflicts stop without overwriting. Disabling integration stops Companion monitoring the second instance without quitting Dodex or deleting its environment. macOS Dodex App syncs from the local official App at startup; TUI maintenance requires an explicit action, and Windows retains its existing update behavior. Uninstall is not included.
 
 **Upgrade**: quit the old app and its Settings window, then replace the files. If you installed Windows hooks, rerun the installation command. Codex configuration, accounts and the second-instance environment are retained.
 

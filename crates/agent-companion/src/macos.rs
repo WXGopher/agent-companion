@@ -35,6 +35,26 @@ pub fn primary_home() -> io::Result<std::path::PathBuf> {
 unsafe extern "C" {
     fn agent_companion_run_menu_bar() -> i32;
     fn agent_companion_reopen_menu();
+    fn agent_companion_listen_software_updates();
+}
+
+pub fn listen_software_updates() {
+    // The native listener is registered on the editor's main thread and emits
+    // a PID-scoped readiness notification before the menu forwards a request.
+    unsafe { agent_companion_listen_software_updates() }
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn agent_companion_request_software_update(pointer: *const c_char) {
+    if pointer.is_null() {
+        return;
+    }
+    // SAFETY: Swift borrows a NUL-terminated action string for this call.
+    if let Ok(value) = unsafe { CStr::from_ptr(pointer) }.to_str()
+        && let Some(action) = crate::software_updates::Action::parse(value)
+    {
+        crate::software_updates::request(action);
+    }
 }
 
 /// Configure Slint before it creates its AppKit event loop, including when

@@ -61,8 +61,9 @@ not sources. Companion copies the official App, sets the Dodex bundle identity,
 name, icon and explicit instance environment, then signs the local copy. The
 vendor executable's code and `app.asar` are not patched. A small native entry
 inside the same bundle uses `exec` to start the original executable with the
-selected desktop-data directory. It accepts no extra launch arguments, so they
-cannot override that directory; Companion task navigation uses Apple events.
+selected desktop-data directory. Only a validated `--open-project` directory
+is forwarded; launch arguments cannot override the profile. Companion task
+navigation uses Apple events.
 The native executable and outer bundle receive local ad-hoc signatures. The
 modified bundle does not retain the source App's original signature.
 
@@ -81,12 +82,13 @@ For the original installation these are `~/.codex-second`,
 and the existing TUI continue to share that profile, including its configuration,
 login and session history. App synchronization does not rewrite its files.
 
-The TUI command wrappers, manager, aliases and hidden runtime stay in place.
-The old manager's desktop subcommands are unchanged; open the new public App
-through Finder, Dock or Companion for its native entry and startup synchronization.
-An existing Companion monitoring record also keeps its original CLI path and
-profile. Only the in-memory desktop navigation target changes to the public
-Dodex App, so opening an App from a task does not bypass its instance settings.
+App synchronization alone leaves the TUI command, manager and hidden runtime in
+place. Explicit TUI maintenance below can replace the compatible terminal entry
+after backing it up, while retaining its account and session directories. The
+saved legacy monitoring record remains intact; in-memory runtime descriptors,
+quota queries and copied resume commands then use the validated managed CLI.
+`dodex app [PATH]` opens the current public App with the original adapter's
+workspace argument rules, including when the App is already running.
 The App mirror has its own record inside
 `Contents/Resources/agent-companion-mirror.json`.
 
@@ -99,6 +101,39 @@ monitoring until a compatible CLI is available.
 
 The support switch controls Companion monitoring. Disabling it does not quit
 Dodex or remove files. Updating an existing App preserves this preference.
+
+## Explicit version maintenance
+
+Right-click the menu-bar readout, or use **版本管理** in Settings → **Codex 双开**:
+
+- **对齐 Codex/Dodex 版本** compares installed versions without contacting a server. Codex is the reference for its TUI and App separately. A newer Dodex is retained with a suggestion to check official updates; alignment never downgrades it.
+- **全部更新到最新** fetches official stable CLI release metadata and the official App feed. It updates the primary standalone CLI with its own updater, verifies the downloaded App's OpenAI signature and exact version/build, and then aligns Dodex. App and CLI version numbers remain independent.
+
+Opening Settings reads local version metadata only. Four rows show current and
+target versions; failures and partial updates remain visible and never imply
+that both instances are current. Existing Apps and TUI processes must be closed
+by the user before replacement. Maintenance does not quit or restart them.
+Concurrent settings windows and App synchronization share filesystem locks.
+
+TUI alignment currently supports the complete official standalone package with
+`codex-package.json`, plus the known existing Dodex terminal adapter. Other
+package managers and unknown adapters are rejected before updates; they are not
+silently converted. The entire versioned package is copied, including
+`codex-code-mode-host`, `codex-path` and `codex-resources`. The original adapter is
+retained under `~/Library/Application Support/AgentCompanion/Tui/original-dodex`;
+complete packages stay under `Tui/packages`. Native terminal arguments, exit
+status, PID and existing profile, session, SQLite and log paths are preserved.
+The adopted `dodex update` command opens Companion's explicit update operation.
+No credentials, personal configuration or session files are copied or rewritten.
+The legacy hidden runtime and deployment metadata remain for existing validation
+and rollback; removing them manually is not part of this migration.
+
+The primary App retains a sibling backup before replacement, and Dodex uses its
+existing mirror backup mechanism. An interrupted or failed step reports its
+actual installed versions; completed updates remain installed and can be retried.
+The isolated tests cover paths, arguments, account separation and native launcher
+forwarding; they do not claim a real-account interactive conversation was sent
+or resumed during automated verification.
 
 ## Publication, backup and Dock
 
@@ -211,3 +246,10 @@ animation and cached quota updates. The `macos_editor`
 integration executable exercises the actual Slint window with synthetic
 configurations and deployment states. None of these tests deploy the local
 Dodex environment.
+
+For an installed standalone runtime, the opt-in command
+`python3 -B scripts/test-managed-dodex-session.py --codex /path/to/bin/codex`
+runs the generated Dodex wrapper with a synthetic older session. It verifies
+native app-server list, read and resume against the original rollout and shared
+secondary paths. The fixture denies network access and real account directories;
+it neither starts a model turn nor modifies the installed runtime.

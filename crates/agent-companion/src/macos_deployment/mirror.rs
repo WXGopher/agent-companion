@@ -5,7 +5,7 @@ use super::*;
 use serde_json::{Map, Value, json};
 
 const MIRROR_SCHEMA: u32 = 1;
-const PACKAGING_REVISION: u32 = 1;
+const PACKAGING_REVISION: u32 = 2;
 const BUNDLE_ID: &str = "local.agent-companion.dodex";
 const LAUNCHER_EXECUTABLE: &str = "DodexLauncher";
 const LAUNCHER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/DodexLauncher"));
@@ -111,6 +111,16 @@ pub(super) fn deployed_app(layout: &Layout) -> Option<PathBuf> {
 
 pub(super) fn is_deployed(layout: &Layout) -> bool {
     deployed_app(layout).is_some()
+}
+
+pub(super) fn packaging_current(layout: &Layout) -> bool {
+    let Some(app) = deployed_app(layout) else {
+        return false;
+    };
+    let Ok(manifest) = read_manifest(&app) else {
+        return false;
+    };
+    updater_executable().is_ok_and(|updater| current_packaging(&manifest, &updater))
 }
 
 /// Cheap settings-only observation of a completed mirror. Do not call `check`
@@ -695,7 +705,9 @@ fn read_manifest(app: &Path) -> Result<MirrorManifest, String> {
     }
     match (manifest.packaging_revision, &manifest.updater_executable) {
         (0, None) => {}
-        (PACKAGING_REVISION, Some(updater)) if updater.is_absolute() => {}
+        // Revision 1 is the installed launch-time updater without workspace
+        // forwarding. Keep it readable so synchronization can migrate it to 2.
+        (1..=PACKAGING_REVISION, Some(updater)) if updater.is_absolute() => {}
         _ => return Err("Dodex App 启动更新记录版本不兼容。".into()),
     }
     Ok(manifest)
@@ -1731,7 +1743,7 @@ mod tests {
 
     #[test]
     fn legacy_packaging_and_a_moved_updater_are_rebuilt_once() {
-        for legacy in [true, false] {
+        for revision in [0, 1, PACKAGING_REVISION] {
             let fixture = Fixture::new(false);
             let profile = MirrorProfile::fresh(&fixture.layout);
             let installed = sync_with(
@@ -1745,7 +1757,7 @@ mod tests {
             let app = installed.instance.runtime_app;
             let mut manifest: Value = read_json(&app.join(MIRROR_MANIFEST)).unwrap();
             let mut plist = read_plist(&app).unwrap();
-            if legacy {
+            if revision == 0 {
                 manifest
                     .as_object_mut()
                     .unwrap()
@@ -1758,6 +1770,8 @@ mod tests {
                     .as_object_mut()
                     .unwrap()
                     .remove("DodexUpdaterExecutable");
+            } else if revision == 1 {
+                manifest["packaging_revision"] = json!(1);
             } else {
                 manifest["updater_executable"] = json!("/previous/agent-companion");
                 plist["DodexUpdaterExecutable"] = json!("/previous/agent-companion");
@@ -1775,10 +1789,8 @@ mod tests {
             let ops = FakeOps::default();
             let old = validate_app(&fixture.layout, &app, &app, &ops).unwrap();
             assert_eq!(old.schema, MIRROR_SCHEMA);
-            assert_eq!(
-                old.packaging_revision,
-                if legacy { 0 } else { PACKAGING_REVISION }
-            );
+            assert_eq!(old.packaging_revision, revision);
+            assert!(!current_packaging(&old, &std::env::current_exe().unwrap()));
             sync_with(&fixture.layout, &profile, &fixture.source, &ops, |_, _| {}).unwrap();
             let updated = validate_app(&fixture.layout, &app, &app, &ops).unwrap();
             assert!(current_packaging(

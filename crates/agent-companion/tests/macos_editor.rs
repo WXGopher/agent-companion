@@ -18,6 +18,10 @@ mod macos_deployment;
 mod macos_primary_app;
 #[cfg(target_os = "macos")]
 #[allow(dead_code, unused_imports)]
+#[path = "../src/software_updates.rs"]
+mod software_updates;
+#[cfg(target_os = "macos")]
+#[allow(dead_code, unused_imports)]
 #[path = "../src/update_service.rs"]
 mod update_service;
 #[cfg(target_os = "macos")]
@@ -52,7 +56,7 @@ fn check_editor_startup() {
     let started = Instant::now();
     eprintln!("[editor-fixture] startup at {:?}", started.elapsed());
 
-    // The fixture has 32 validated phases. The watchdog measures a stalled
+    // The fixture has 34 validated phases. The watchdog measures a stalled
     // startup or phase, not their cumulative render and filesystem work.
     let (finished, deadline) = mpsc::channel::<Option<usize>>();
     let watchdog = std::thread::spawn(move || {
@@ -209,6 +213,8 @@ fn check_editor_startup() {
                         "dual-app-only-light",
                         "dual-app-disabled-light",
                         "dual-app-enabled-dark",
+                        "software-progress-dark",
+                        "software-error-light",
                     ][phase]
                 ))
             };
@@ -428,7 +434,7 @@ fn check_editor_startup() {
                 assert!(window.get_preview().contains("~/agent-companion"));
                 window.invoke_toggle("git-branch".into(), true);
                 assert!(window.get_dirty());
-                window.set_dual_scroll_y(-1000.0);
+                window.set_dual_scroll_y(-10000.0);
                 window.invoke_sync_profile("instructions".into(), true);
             }
             22 => {
@@ -459,7 +465,7 @@ fn check_editor_startup() {
                 window.global::<ui::Palette>().set_color_scheme(ColorScheme::Light);
             }
             24 => {
-                assert!(window.get_dual_scroll_y() > -1000.0 && window.get_dual_scroll_y() < 0.0,
+                assert!(window.get_dual_scroll_y() > -10000.0 && window.get_dual_scroll_y() < 0.0,
                         "The Dual page scrolled beyond its actual content");
                 window.invoke_sync_profile("instructions".into(), true);
                 assert!(!window.get_sync_busy());
@@ -517,10 +523,31 @@ fn check_editor_startup() {
                 window.set_dual_message("Companion 已接入副账号 CLI。".into());
                 window.global::<ui::Palette>().set_color_scheme(ColorScheme::Dark);
             }
-            _ => {
+            31 => {
                 assert!(window.get_dual_enabled() && window.get_dual_tui_available());
                 assert!(window.get_dual_app_installed());
                 assert_eq!(window.get_dual_app_path(), "/Applications/Dodex.app");
+                window.set_software_versions(slint::ModelRc::new(slint::VecModel::from(vec![
+                    ui::SoftwareVersion { name: "Codex TUI".into(), current: "0.159.3".into(), target: "0.160.0".into(), message: "目标：官方稳定版".into(), error: false },
+                    ui::SoftwareVersion { name: "Dodex TUI".into(), current: "0.155.0-alpha.16.4".into(), target: "0.160.0".into(), message: "保留已有副账号会话与完整原生安装包".into(), error: false },
+                    ui::SoftwareVersion { name: "Codex App".into(), current: "26.924.22138 (11645)".into(), target: "26.928.31416 (12553)".into(), message: "正在验证官方签名".into(), error: false },
+                    ui::SoftwareVersion { name: "Dodex App".into(), current: "26.924.22138 (11645)".into(), target: "26.928.31416 (12553)".into(), message: "等待主应用更新完成后同步".into(), error: false },
+                ])));
+                window.set_software_busy(true);
+                window.set_software_message("正在下载并验证官方稳定版；Codex / Dodex 的 App 与 TUI 使用各自版本，账号目录、SQLite、会话和日志均保持原样。请保持相关程序关闭。".into());
+                window.set_dual_scroll_y(0.0);
+            }
+            32 => {
+                assert!(window.get_software_busy());
+                assert_eq!(window.get_software_versions().row_count(), 4);
+                window.set_software_busy(false);
+                window.set_software_error(true);
+                window.set_software_message("操作未全部完成：Codex / Dodex 的 App 或 TUI 仍在运行。请自行退出相关应用和终端会话，再点击重试。已完成的更新会保留，尚未更新的项目不会标记为最新。".into());
+                window.set_software_notice("已有操作正在等待或进行中；重复请求已忽略。请等待结果后再操作。".into());
+                window.global::<ui::Palette>().set_color_scheme(ColorScheme::Light);
+            }
+            _ => {
+                assert!(window.get_software_error() && !window.get_software_busy());
                 completed_check.set(true);
                 slint::quit_event_loop().unwrap();
             }

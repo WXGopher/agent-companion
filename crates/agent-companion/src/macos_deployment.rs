@@ -304,7 +304,24 @@ pub fn settings_presentation() -> SettingsPresentation {
         return SettingsPresentation::default();
     };
     let instance = settings_state().instance;
-    settings_presentation_for(&layout, instance.as_ref())
+    let mut presentation = settings_presentation_for(&layout, instance.as_ref());
+    // The terminal may have explicitly adopted a complete standalone package;
+    // its availability no longer depends on the legacy bundled executable.
+    presentation.tui_available |= crate::software_updates::managed_cli().is_some();
+    presentation
+}
+
+/// Metadata only, including disabled instances. Maintenance validates these
+/// paths before use and never falls back to the primary account's environment.
+pub(crate) fn maintenance_instance() -> Option<InstanceConfig> {
+    let layout = Layout::current().ok()?;
+    settings_state()
+        .instance
+        .or_else(|| mirror::installed_presentation(&layout).map(|(instance, _)| instance))
+}
+
+pub(crate) fn maintenance_app_needs_sync() -> bool {
+    Layout::current().is_ok_and(|layout| !mirror::packaging_current(&layout))
 }
 
 fn settings_presentation_for(
@@ -346,21 +363,27 @@ pub fn active_instance() -> Option<InstanceConfig> {
         .enabled
         .then(|| state.instance.clone())
         .flatten()?;
+    drop(state);
     Some(desktop_navigation_instance(
         instance,
         Layout::current()
             .ok()
             .and_then(|layout| mirror::deployed_app(&layout)),
+        crate::software_updates::managed_cli(),
     ))
 }
 
 fn desktop_navigation_instance(
     mut instance: InstanceConfig,
     app: Option<PathBuf>,
+    managed_cli: Option<PathBuf>,
 ) -> InstanceConfig {
     if let Some(app) = app {
         instance.runtime_app = app.clone();
         instance.launcher_app = app;
+    }
+    if let Some(cli) = managed_cli {
+        instance.cli_path = cli;
     }
     instance
 }
