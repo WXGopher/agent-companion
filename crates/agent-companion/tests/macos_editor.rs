@@ -17,6 +17,9 @@ mod macos_deployment;
 #[path = "../src/macos_primary_app.rs"]
 mod macos_primary_app;
 #[cfg(target_os = "macos")]
+#[path = "../src/managed_tui.rs"]
+mod managed_tui;
+#[cfg(target_os = "macos")]
 #[allow(dead_code, unused_imports)]
 #[path = "../src/software_updates.rs"]
 mod software_updates;

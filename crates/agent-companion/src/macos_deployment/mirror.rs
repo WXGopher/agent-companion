@@ -223,6 +223,7 @@ fn sync_on_launch_with(
             .ok_or("未找到已安装的官方 Codex App；保留现有 Dodex。")?
             .app;
     let (version, build) = source_version(&source)?;
+    require_no_downgrade(&manifest.source.build, &build)?;
     let updater = updater_executable()?;
     if manifest.source.version == version
         && manifest.source.build == build
@@ -247,6 +248,18 @@ fn updater_executable() -> Result<PathBuf, String> {
 fn current_packaging(manifest: &MirrorManifest, updater: &Path) -> bool {
     manifest.packaging_revision == PACKAGING_REVISION
         && manifest.updater_executable.as_deref() == Some(updater)
+}
+
+fn require_no_downgrade(installed_build: &str, source_build: &str) -> Result<(), String> {
+    if crate::software_updates::compare_app_builds(installed_build, source_build)?
+        == std::cmp::Ordering::Greater
+    {
+        return Err(
+            "Dodex App 比本机 Codex 更新，已保留当前 App；请使用「全部更新到最新」，不会自动降级。"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 pub(super) fn check(layout: &Layout) -> Result<MirrorStatus, String> {
@@ -970,6 +983,9 @@ fn sync_with_caller(
         }
         None
     };
+    if let Some(existing) = &existing {
+        require_no_downgrade(&existing.source.build, &fingerprint.build)?;
+    }
     if let Some(existing) = &existing
         && existing.source == fingerprint
         && &existing.profile == profile
@@ -1645,6 +1661,55 @@ mod tests {
                 assert_eq!(fs::read(path).unwrap(), b"existing shared profile and TUI");
             }
         }
+    }
+
+    #[test]
+    fn newer_dodex_is_preserved_by_launch_and_explicit_sync_including_old_packaging() {
+        for revision in [1, PACKAGING_REVISION] {
+            let fixture = Fixture::new(false);
+            let profile = fixture.legacy();
+            let installed = sync_with(
+                &fixture.layout,
+                &profile,
+                &fixture.source,
+                &FakeOps::default(),
+                |_, _| {},
+            )
+            .unwrap();
+            let app = installed.instance.runtime_app;
+            let mut manifest = read_manifest(&app).unwrap();
+            manifest.packaging_revision = revision;
+            fs::write(
+                app.join(MIRROR_MANIFEST),
+                serde_json::to_vec(&manifest).unwrap(),
+            )
+            .unwrap();
+            let before = fs::read(app.join(MIRROR_MANIFEST)).unwrap();
+            fixture.change_release("CFBundleVersion", "11644");
+            let launch = launch_ops(&app);
+            assert!(
+                sync_on_launch_with(&fixture.layout, &app, 123, &launch)
+                    .unwrap_err()
+                    .contains("不会自动降级")
+            );
+            assert_eq!(launch.copies.load(Ordering::SeqCst), 0);
+            assert_eq!(launch.source_verifications.load(Ordering::SeqCst), 0);
+            let explicit = FakeOps::default();
+            assert!(
+                sync_with(
+                    &fixture.layout,
+                    &profile,
+                    &fixture.source,
+                    &explicit,
+                    |_, _| {}
+                )
+                .unwrap_err()
+                .contains("不会自动降级")
+            );
+            assert_eq!(explicit.copies.load(Ordering::SeqCst), 0);
+            assert_eq!(fs::read(app.join(MIRROR_MANIFEST)).unwrap(), before);
+        }
+        assert!(require_no_downgrade("unknown", "11646").is_err());
     }
 
     #[test]

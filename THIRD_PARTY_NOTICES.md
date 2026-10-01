@@ -25,6 +25,10 @@ dashboard. It does not bundle Open Island's other agents, pets or plugins.
 Other dependencies retain their respective licenses. Rust dependency versions
 are recorded in `Cargo.lock`; no third-party Swift packages are bundled.
 
+The resume terminal's additional Rust dependency licenses are reproduced in
+[docs/terminal-dependency-licenses.md](docs/terminal-dependency-licenses.md),
+which is included in both platform packages.
+
 ## HTTPS update checks
 
 The background GitHub release check uses `ureq` and the following additional
@@ -738,4 +742,45 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
+```
+
+## codex-auto runtime overlay and explicit-session recovery
+
+Source: <https://github.com/xhyqaq/codex-auto>
+Pinned revision: `d737abb4a3db2f95c043e5666b9455dccadb6e5f`.
+
+The managed original-home resource links, initialization of persistent history
+files, and explicit session-ID regression scenarios in
+`crates/agent-companion-core/src/resume/` were adapted from the ideas and
+tests in `src/lib/runtime.ts`, `tests/runtime/runtime.test.ts`, and
+`tests/session/session.test.ts`. The implementation is native Rust; authentication
+is linked to the selected account (not copied), the original native writer-lock
+directory and SQLite home are shared, and unsupported combinations fail closed.
+No automatic account rotation, terminal transcript logging, or summary-based
+recovery is included.
+
+Upstream `LICENSE`:
+
+```text
+MIT License
+
+Copyright (c) 2026 xhyqaq
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```

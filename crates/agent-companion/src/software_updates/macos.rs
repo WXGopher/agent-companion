@@ -1,5 +1,5 @@
 use super::{Operations, Release, Target, Version, numeric_version};
-use serde::{Deserialize, Serialize};
+use crate::managed_tui::{self, Binding, no_redirects, read_limited, render_wrapper};
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
@@ -7,7 +7,7 @@ use std::{
         fd::AsRawFd,
         unix::fs::{OpenOptionsExt, PermissionsExt},
     },
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
@@ -15,8 +15,6 @@ use std::{
 const CLI_RELEASE: &str = "https://api.github.com/repos/openai/codex/releases/latest";
 const APP_FEED: &str = "https://persistent.oaistatic.com/codex-app-prod/appcast.xml";
 const OFFICIAL_REQUIREMENT: &str = "=anchor apple generic and identifier \"com.openai.codex\" and certificate leaf[subject.OU] = \"2DC432GLL2\"";
-const WRAPPER_MARKER: &str = "# agent-companion-dodex: ";
-const WRAPPER: &str = include_str!("dodex-wrapper.py");
 const MAX_METADATA: u64 = 4 * 1024 * 1024;
 
 #[cfg(test)]
@@ -36,20 +34,6 @@ impl Drop for Lock {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct Binding {
-    package: PathBuf,
-    entry: PathBuf,
-    app: PathBuf,
-    profile_home: PathBuf,
-    sqlite_home: PathBuf,
-    desktop_data: PathBuf,
-    log_dir: PathBuf,
-    original: PathBuf,
-    companion: PathBuf,
-    version: String,
-}
-
 impl System {
     pub fn new() -> Result<Self, String> {
         let home = PathBuf::from(std::env::var_os("HOME").ok_or("无法定位用户目录。")?);
@@ -67,15 +51,9 @@ impl System {
         let Some(binding) = self.managed_binding()? else {
             return Ok(None);
         };
-        let executable = binding.package.join("bin/codex");
-        if fs::metadata(&executable)
-            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-        {
-            Ok(Some(executable))
-        } else {
-            Err("托管 Dodex TUI 程序缺失。".into())
-        }
+        binding.executable().map(Some)
     }
+
     fn primary_app(&self) -> Result<PathBuf, String> {
         crate::macos_primary_app::discover(
             Path::new("/Applications"),
@@ -107,22 +85,7 @@ impl System {
         Ok(instance)
     }
     fn command(&self, name: &str) -> Option<PathBuf> {
-        let candidates = [
-            self.home.join(".local/bin").join(name),
-            PathBuf::from("/opt/homebrew/bin").join(name),
-            PathBuf::from("/usr/local/bin").join(name),
-        ];
-        candidates
-            .into_iter()
-            .chain(
-                std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-                    .map(|path| path.join(name)),
-            )
-            .find(|path| {
-                fs::metadata(path).is_ok_and(|metadata| {
-                    metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
-                })
-            })
+        managed_tui::command(&self.home, name)
     }
     fn primary_cli(&self) -> Result<PathBuf, String> {
         self.command("codex")
@@ -133,46 +96,15 @@ impl System {
             .unwrap_or_else(|| self.home.join(".local/bin/dodex"))
     }
     fn managed_binding(&self) -> Result<Option<Binding>, String> {
-        let entry = self.dodex_entry();
-        if !entry.is_file() {
-            return Ok(None);
-        }
-        let bytes = read_limited(&entry, 128 * 1024)?;
-        let text = String::from_utf8_lossy(&bytes);
-        let Some(line) = text
-            .lines()
-            .find_map(|line| line.strip_prefix(WRAPPER_MARKER))
-        else {
+        let Some(binding) = managed_tui::read_binding(&self.home, &self.dodex_entry())? else {
             return Ok(None);
         };
-        let binding: Binding =
-            serde_json::from_str(line).map_err(|_| "Dodex 托管入口元数据无效。")?;
-        if binding.entry != entry
-            || !binding
-                .package
-                .starts_with(self.support.join("Tui/packages"))
-            || !binding.original.starts_with(self.support.join("Tui"))
-            || render_wrapper(&binding)? != bytes
-        {
-            return Err("Dodex 托管入口已发生变化，请检查后重试。".into());
-        }
-        for path in [
-            &binding.package,
-            &binding.profile_home,
-            &binding.sqlite_home,
-            &binding.desktop_data,
-            &binding.log_dir,
-        ] {
-            no_redirects(path)?;
-        }
         let profile = self.secondary()?;
-        if binding.profile_home != profile.codex_home
-            || binding.sqlite_home != profile.database_dir
-            || binding.desktop_data != profile.desktop_user_data
-            || binding.log_dir != profile.desktop_user_data.join("logs")
-        {
-            return Err("Dodex 托管入口与当前副账号目录不一致；未修改程序。".into());
-        }
+        binding.validate_profile(
+            &profile.codex_home,
+            &profile.database_dir,
+            &profile.desktop_user_data,
+        )?;
         Ok(Some(binding))
     }
     fn cli_version(&self, path: &Path, profile: &Path) -> Result<Version, String> {
@@ -593,14 +525,6 @@ fn validate_package(root: &Path, expected: &Version) -> Result<(), String> {
     }
     Ok(())
 }
-fn render_wrapper(binding: &Binding) -> Result<Vec<u8>, String> {
-    let json = serde_json::to_string(binding).map_err(|_| "无法生成隔离入口。")?;
-    let literal = serde_json::to_string(&json).map_err(|_| "无法编码隔离入口。")?;
-    Ok(WRAPPER
-        .replace("# __BINDING_MARKER__", &format!("{WRAPPER_MARKER}{json}"))
-        .replace("__BINDING_JSON__", &literal)
-        .into_bytes())
-}
 fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
     let parent = path.parent().ok_or("入口目录无效。")?;
     no_redirects(parent)?;
@@ -629,44 +553,11 @@ fn publish_with_backup(staged: &Path, destination: &Path, backup: &Path) -> Resu
     }
     Ok(())
 }
-fn no_redirects(path: &Path) -> Result<(), String> {
-    if !path.is_absolute()
-        || path
-            .components()
-            .any(|part| matches!(part, Component::ParentDir | Component::CurDir))
-    {
-        return Err("安装路径必须是规范的绝对路径。".into());
-    }
-    let mut current = PathBuf::new();
-    for part in path.components() {
-        current.push(part);
-        match fs::symlink_metadata(&current) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err("安装或账号目录包含重定向；未修改程序。".into());
-            }
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                return Err("无法验证安装目录。".into());
-            }
-            _ => {}
-        }
-    }
-    Ok(())
-}
 fn private_directory(path: &Path) -> Result<(), String> {
     no_redirects(path)?;
     fs::create_dir_all(path).map_err(|_| "无法创建更新目录。")?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))
         .map_err(|_| "无法设置更新目录权限。".into())
-}
-fn read_limited(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
-    let mut data = Vec::new();
-    File::open(path)
-        .and_then(|file| file.take(limit + 1).read_to_end(&mut data))
-        .map_err(|_| "无法读取安装元数据。")?;
-    if data.len() as u64 > limit {
-        return Err("安装元数据过大。".into());
-    }
-    Ok(data)
 }
 fn isolated_command(program: &Path, profile: &Path) -> Command {
     let mut command = Command::new(program);

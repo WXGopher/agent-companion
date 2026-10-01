@@ -17,6 +17,7 @@
 
 #[cfg(windows)]
 mod app;
+mod cli_install;
 #[cfg(windows)]
 mod codex;
 mod codex_tui;
@@ -28,7 +29,10 @@ mod macos;
 mod macos_deployment;
 #[cfg(target_os = "macos")]
 mod macos_primary_app;
+#[cfg(target_os = "macos")]
+mod managed_tui;
 mod out;
+mod resume_cli;
 #[cfg(target_os = "macos")]
 mod software_updates;
 #[cfg(any(target_os = "macos", windows))]
@@ -68,6 +72,10 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Continue an original Codex or Dodex session using a chosen quota account.
+    Resume(resume_cli::Args),
+    /// Install user-level acomp and agent-companion terminal commands.
+    InstallCli,
     /// Check Dodex App; --sync copies the locally installed official Codex App.
     #[cfg(target_os = "macos")]
     DodexApp {
@@ -203,6 +211,11 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     let result = match cli.command {
+        Some(Command::Resume(args)) => match resume_cli::run(&args) {
+            Ok(code) => std::process::exit(code),
+            Err(error) => Err(error),
+        },
+        Some(Command::InstallCli) => cli_install::run(),
         #[cfg(target_os = "macos")]
         Some(Command::DodexApp {
             repair,

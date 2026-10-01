@@ -11,6 +11,8 @@ mod macos;
 mod macos_deployment;
 #[path = "../src/macos_primary_app.rs"]
 mod macos_primary_app;
+#[path = "../src/managed_tui.rs"]
+mod managed_tui;
 #[path = "../src/software_updates.rs"]
 mod software_updates;
 #[path = "../src/update_service.rs"]

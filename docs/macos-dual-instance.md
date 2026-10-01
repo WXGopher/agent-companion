@@ -87,6 +87,9 @@ place. Explicit TUI maintenance below can replace the compatible terminal entry
 after backing it up, while retaining its account and session directories. The
 saved legacy monitoring record remains intact; in-memory runtime descriptors,
 quota queries and copied resume commands then use the validated managed CLI.
+The `acomp resume` console entry uses the same validated managed runtime for
+Dodex while retaining the saved history and SQLite paths, even with monitoring
+disabled. The original deployment record is preserved.
 `dodex app [PATH]` opens the current public App with the original adapter's
 workspace argument rules, including when the App is already running.
 The App mirror has its own record inside
@@ -131,6 +134,8 @@ and rollback; removing them manually is not part of this migration.
 The primary App retains a sibling backup before replacement, and Dodex uses its
 existing mirror backup mechanism. An interrupted or failed step reports its
 actual installed versions; completed updates remain installed and can be retried.
+The existing startup and manual App synchronization also preserve a newer Dodex
+instead of copying an older primary App over it.
 The isolated tests cover paths, arguments, account separation and native launcher
 forwarding; they do not claim a real-account interactive conversation was sent
 or resumed during automated verification.

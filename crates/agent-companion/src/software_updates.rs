@@ -92,7 +92,7 @@ impl Version {
     }
     fn compare(&self, other: &Self) -> Result<Ordering, String> {
         match (&self.build, &other.build) {
-            (Some(left), Some(right)) => Ok(numeric_version(left)?.cmp(&numeric_version(right)?)),
+            (Some(left), Some(right)) => compare_app_builds(left, right),
             (None, None) => {
                 let parse = |value: &str| {
                     semver::Version::parse(value)
@@ -103,6 +103,9 @@ impl Version {
             _ => Err("版本类型不匹配；未替换程序。".into()),
         }
     }
+}
+pub(crate) fn compare_app_builds(left: &str, right: &str) -> Result<Ordering, String> {
+    Ok(numeric_version(left)?.cmp(&numeric_version(right)?))
 }
 fn numeric_version(value: &str) -> Result<Vec<u64>, String> {
     let mut result = value

@@ -13,6 +13,8 @@ pub mod install;
 pub mod pipe;
 pub mod protocol;
 pub mod questions;
+#[cfg(feature = "resume")]
+pub mod resume;
 #[cfg(all(windows, feature = "server"))]
 pub mod server;
 pub mod state;

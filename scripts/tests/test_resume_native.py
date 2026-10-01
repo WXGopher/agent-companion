@@ -1,0 +1,728 @@
+"""Opt-in native Codex contract tests using disposable state and a loopback server.
+
+Run with ACOMP_TEST_CODEX_BINARY=/absolute/path/to/codex python3 -m unittest
+discover -s scripts/tests -p test_resume_native.py -v. The expected version is
+0.159.3; upgrades must pass these contracts before changing the runtime gate.
+No real credentials are read, and all model/auth responses are deterministic
+fixtures. These tests establish native persistence/auth plumbing, not billing.
+Additionally set ACOMP_TEST_ACOMP_BINARY to an absolute production acomp binary
+on macOS for its denied-preflight cleanup smoke (requires sandbox-exec).
+"""
+
+import base64
+import datetime
+import http.server
+import json
+import os
+from pathlib import Path
+import queue
+import subprocess
+import struct
+import sys
+import tempfile
+import threading
+import time
+import unittest
+import zlib
+
+
+NATIVE = os.environ.get("ACOMP_TEST_CODEX_BINARY")
+ACOMP = os.environ.get("ACOMP_TEST_ACOMP_BINARY")
+VERSION = "codex-cli 0.159.3"
+
+
+def fake_token(account, marker="initial"):
+    def encode(value):
+        return base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=")
+
+    return ".".join([
+        encode({"alg": "none"}),
+        encode({
+            "exp": int(time.time()) + 86400,
+            "email": account + "@example.invalid",
+            "fixture": marker,
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": account,
+                "chatgpt_user_id": account + "-user",
+                "chatgpt_plan_type": "plus",
+            },
+        }),
+        "not-a-real-signature",
+    ])
+
+
+def fake_auth(account):
+    token = fake_token(account)
+    return {
+        "auth_mode": "chatgpt",
+        "tokens": {
+            "id_token": token,
+            "access_token": token,
+            "refresh_token": "fixture-refresh-" + account,
+            "account_id": account,
+        },
+        "last_refresh": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+
+
+def directory_link(target, link):
+    if os.name == "nt":
+        # Junctions require no elevation and work on the same disposable volume.
+        # Keep paths out of command text: user/temp paths can contain &, %, !,
+        # spaces or parentheses, which cmd.exe would otherwise reinterpret.
+        environment = os.environ.copy()
+        environment["ACOMP_NATIVE_JUNCTION_LINK"] = str(link)
+        environment["ACOMP_NATIVE_JUNCTION_TARGET"] = str(target)
+        powershell = (Path(os.environ["SystemRoot"]) / "System32" / "WindowsPowerShell" /
+                      "v1.0" / "powershell.exe")
+        result = subprocess.run(
+            [str(powershell), "-NoProfile", "-NonInteractive", "-Command",
+             "New-Item -ItemType Junction -Path $env:ACOMP_NATIVE_JUNCTION_LINK "
+             "-Value $env:ACOMP_NATIVE_JUNCTION_TARGET -ErrorAction Stop | Out-Null"],
+            capture_output=True, text=True, check=False, env=environment,
+        )
+        if result.returncode:
+            raise RuntimeError(result.stderr)
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+def file_link(target, link):
+    if os.name == "nt":
+        os.link(target, link)
+    else:
+        link.symlink_to(target)
+
+
+class LoopbackServer:
+    def __init__(self):
+        self.requests = []
+        self.responses = []
+        self.refresh_account = "selected-account"
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.hold_next_response = False
+        fixture = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_CONNECT(self):
+                # The production-acomp negative smoke uses this as a denying
+                # proxy. Never tunnel fixture credentials to the public service.
+                fixture.requests.append((self.path, dict(self.headers), None))
+                self.send_error(403, "External network is disabled in native contract tests")
+
+            def do_GET(self):
+                fixture.requests.append((self.path, dict(self.headers), None))
+                if "accounts/check" in self.path:
+                    self.reply({"accounts": [{
+                        "id": account,
+                        "workspace_backend_origin": "https://chatgpt.com",
+                        "account_routing_override": "NO_CONSTRAINT",
+                    } for account in {"source-account", "selected-account", fixture.refresh_account}]})
+                elif "models" in self.path:
+                    self.reply({"models": []})
+                else:
+                    self.reply({})
+
+            def do_POST(self):
+                raw = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                try:
+                    body = json.loads(raw)
+                except (ValueError, UnicodeError):
+                    body = {"unparsed": raw.decode("utf-8", errors="replace")}
+                fixture.requests.append((self.path, dict(self.headers), body))
+                if self.path == "/oauth/token":
+                    token = fake_token(fixture.refresh_account, "refreshed")
+                    self.reply({"id_token": token, "access_token": token,
+                                "refresh_token": "fixture-rotated-refresh"})
+                    return
+                if not self.path.endswith("/responses"):
+                    self.reply({})
+                    return
+                if fixture.hold_next_response:
+                    fixture.hold_next_response = False
+                    fixture.started.set()
+                    fixture.release.wait(timeout=30)
+                index = len(fixture.model_requests())
+                items = (fixture.responses.pop(0) if fixture.responses else [{
+                    "type": "message", "role": "assistant", "id": "message-" + str(index),
+                    "content": [{"type": "output_text", "text": "fixture-answer-" + str(index)}],
+                }])
+                events = [{"type": "response.created", "response": {"id": "response-" + str(index)}}]
+                events.extend({"type": "response.output_item.done", "item": item} for item in items)
+                events.append({"type": "response.completed", "response": {
+                    "id": "response-" + str(index),
+                    "usage": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12},
+                }})
+                data = "".join("event: " + event["type"] + "\ndata: " + json.dumps(event) + "\n\n"
+                               for event in events).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                try:
+                    self.wfile.write(data)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+
+            def reply(self, value):
+                data = json.dumps(value).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server.daemon_threads = True
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.url = "http://127.0.0.1:" + str(self.server.server_port)
+
+    def model_requests(self):
+        return [request for request in self.requests if request[0].endswith("/responses")]
+
+    def close(self):
+        self.release.set()
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+
+
+class AppServer:
+    def __init__(self, fixture, home, arguments=None):
+        self.messages = queue.Queue()
+        self.process = fixture.start(home, arguments or ["app-server"])
+        self.reader = threading.Thread(target=self.read, daemon=True)
+        self.reader.start()
+        self.call(1, "initialize", {
+            "clientInfo": {"name": "acomp_native_contract_test", "version": "1"},
+            "capabilities": {"experimentalApi": True},
+        })
+        self.send({"method": "initialized", "params": {}})
+
+    def read(self):
+        for line in self.process.stdout:
+            self.messages.put(json.loads(line))
+        self.messages.put(None)
+
+    def send(self, message):
+        self.process.stdin.write(json.dumps(message) + "\n")
+        self.process.stdin.flush()
+
+    def call(self, request_id, method, params):
+        self.send({"id": request_id, "method": method, "params": params})
+        end = time.monotonic() + 25
+        while time.monotonic() < end:
+            message = self.messages.get(timeout=max(0.01, end - time.monotonic()))
+            if message is None:
+                raise AssertionError("app-server exited before answering " + method)
+            if message.get("id") == request_id:
+                if "error" in message:
+                    raise AssertionError(message["error"])
+                return message["result"]
+        raise AssertionError("app-server did not answer " + method)
+
+    def close(self):
+        self.process.terminate()
+        self.process.wait(timeout=10)
+        self.reader.join(timeout=5)
+        self.process.stdin.close()
+        self.process.stdout.close()
+
+    def wait_notification(self, method):
+        end = time.monotonic() + 25
+        while time.monotonic() < end:
+            message = self.messages.get(timeout=max(0.01, end - time.monotonic()))
+            if message is None:
+                raise AssertionError("app-server exited before " + method)
+            if message.get("method") == method:
+                return message["params"]
+        raise AssertionError("app-server did not emit " + method)
+
+
+@unittest.skipUnless(NATIVE, "set ACOMP_TEST_CODEX_BINARY to opt in to isolated native contract tests")
+class NativeResumeContracts(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        path = Path(NATIVE)
+        if not path.is_absolute():
+            raise ValueError("ACOMP_TEST_CODEX_BINARY must be an absolute native executable path")
+        with path.open("rb") as executable:
+            magic = executable.read(4)
+        if magic not in (b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\x7fELF") and magic[:2] != b"MZ":
+            raise ValueError("Use the native binary: wrappers may reset the disposable CODEX_HOME")
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="acomp-native-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.source = self.root / "source"
+        self.selected = self.root / "selected"
+        self.overlay = self.root / "overlay"
+        self.project = self.root / "project"
+        for path in (self.source, self.selected, self.overlay, self.project):
+            path.mkdir()
+        self.server = LoopbackServer()
+        self.addCleanup(self.server.close)
+        self.stderr = tempfile.TemporaryFile(mode="w+")
+        self.addCleanup(self.stderr.close)
+        self.write_auth(self.source, "source-account")
+        self.write_auth(self.selected, "selected-account")
+        self.write_config(self.source)
+        self.write_config(self.selected)
+        version = self.run_native(self.source, ["--version"])
+        self.assertEqual(version.stdout.strip(), VERSION, "native runtime version has not been verified")
+
+    def write_auth(self, home, account):
+        (home / "auth.json").write_text(json.dumps(fake_auth(account)), encoding="utf-8")
+
+    def write_config(self, home):
+        (home / "config.toml").write_text("\n".join([
+            'model="gpt-5.2"',
+            'model_provider="fixture"',
+            'cli_auth_credentials_store="file"',
+            'approval_policy="never"',
+            'sandbox_mode="read-only"',
+            'web_search="disabled"',
+            'check_for_update_on_startup=false',
+            'chatgpt_base_url=' + json.dumps(self.server.url.replace("127.0.0.1", "localhost") + "/backend-api"),
+            '[model_providers.fixture]',
+            'name="Loopback native contract fixture"',
+            'base_url=' + json.dumps(self.server.url + "/v1"),
+            'wire_api="responses"',
+            'requires_openai_auth=true',
+            'supports_websockets=false',
+            '[features]',
+            'enable_request_compression=false',
+            'shell_snapshot=false',
+            'remote_control=false',
+            'daemon_auto_start=false',
+            '[analytics]',
+            'enabled=false',
+            '[feedback]',
+            'enabled=false',
+            '',
+        ]), encoding="utf-8")
+
+    def environment(self, home):
+        # Build a fresh environment: do not inherit auth, provider, daemon or
+        # agent-session variables from the real user running this test.
+        environment = {name: os.environ[name] for name in ("PATH", "SystemRoot", "WINDIR")
+                       if name in os.environ}
+        environment.update({
+            "HOME": str(self.root), "USERPROFILE": str(self.root),
+            "LOCALAPPDATA": str(self.root / "localappdata"),
+            "APPDATA": str(self.root / "appdata"),
+            "XDG_CONFIG_HOME": str(self.root / "xdg"),
+            "CODEX_HOME": str(home), "CODEX_SQLITE_HOME": str(self.source),
+            "CODEX_REFRESH_TOKEN_URL_OVERRIDE": self.server.url + "/oauth/token",
+            "HTTP_PROXY": "http://127.0.0.1:9", "HTTPS_PROXY": "http://127.0.0.1:9",
+            "NO_PROXY": "127.0.0.1,localhost", "TERM": "xterm-256color",
+        })
+        return environment
+
+    def run_native(self, home, arguments, input_text=None, check=True):
+        result = subprocess.run(
+            [NATIVE] + arguments, env=self.environment(home), cwd=self.project,
+            input=input_text, capture_output=True, text=True, timeout=40,
+        )
+        if check:
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        return result
+
+    def start(self, home, arguments):
+        return subprocess.Popen(
+            [NATIVE] + arguments, env=self.environment(home), cwd=self.project,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.stderr, text=True,
+        )
+
+    def make_overlay(self):
+        # The complete namespace, including its coordination lock, is shared.
+        for name in ("sessions", "archived_sessions", "thread-writer-locks", "memories"):
+            (self.source / name).mkdir(exist_ok=True)
+        for entry in self.source.iterdir():
+            if entry.name == "auth.json" or entry.name.startswith("state_"):
+                continue
+            if entry.is_dir():
+                directory_link(entry, self.overlay / entry.name)
+            else:
+                file_link(entry, self.overlay / entry.name)
+        file_link(self.selected / "auth.json", self.overlay / "auth.json")
+
+    def create_thread(self, prompt="first-user-marker", extra_args=None):
+        result = self.run_native(self.source, ["exec", "--skip-git-repo-check", "--json"]
+                                 + (extra_args or []) + [prompt])
+        events = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
+        thread_id = next(event["thread_id"] for event in events if event["type"] == "thread.started")
+        return thread_id
+
+    def test_native_file_save_preserves_symlink_and_hardlink_targets(self):
+        for kind in ("symlink", "hardlink"):
+            if kind == "symlink" and os.name == "nt":
+                continue
+            with self.subTest(link=kind):
+                directory = self.root / ("save-" + kind)
+                directory.mkdir()
+                (directory / "config.toml").write_text('cli_auth_credentials_store="file"\n')
+                target = self.selected / (kind + "-auth.json")
+                target.write_text('{}')
+                link = directory / "auth.json"
+                if kind == "symlink":
+                    link.symlink_to(target)
+                else:
+                    os.link(target, link)
+                before = target.stat()
+                self.run_native(directory, ["login", "--with-api-key"], "fixture-api-key\n")
+                self.assertEqual(json.loads(target.read_text())["OPENAI_API_KEY"], "fixture-api-key")
+                self.assertEqual((before.st_dev, before.st_ino), (target.stat().st_dev, target.stat().st_ino))
+                self.assertTrue(os.path.samefile(target, link))
+
+    def test_native_account_read_and_refresh_use_selected_link(self):
+        source_before = (self.source / "auth.json").read_bytes()
+        self.make_overlay()
+        target = self.selected / "auth.json"
+        before = target.stat()
+        app = AppServer(self, self.overlay)
+        self.addCleanup(app.close)
+        account = app.call(2, "account/read", {"refreshToken": True})
+        self.assertTrue(account["requiresOpenaiAuth"])
+        self.assertEqual(account["account"]["type"], "chatgpt")
+        self.assertEqual(account["account"]["email"], "selected-account@example.invalid")
+        self.assertEqual(account["workspaceRouting"]["chatgptAccountId"], "selected-account")
+        self.assertEqual(json.loads(target.read_text())["tokens"]["refresh_token"], "fixture-rotated-refresh")
+        self.assertEqual((before.st_dev, before.st_ino), (target.stat().st_dev, target.stat().st_ino))
+        self.assertTrue(os.path.samefile(target, self.overlay / "auth.json"))
+        self.assertEqual((self.source / "auth.json").read_bytes(), source_before)
+
+    def test_explicit_resume_reuses_paginated_history_and_selected_account(self):
+        (self.source / "AGENTS.md").write_text("global-instruction-marker\n")
+        (self.project / "AGENTS.md").write_text("project-instruction-marker\n")
+        thread_id = self.create_thread()
+        rollouts = list((self.source / "sessions").rglob("*.jsonl"))
+        self.assertEqual(len(rollouts), 1)
+        rollout = rollouts[0]
+        metadata = json.loads(rollout.read_text().splitlines()[0])["payload"]
+        self.assertEqual(metadata["id"], thread_id)
+        self.assertEqual(metadata["history_mode"], "paginated")
+        self.make_overlay()
+        second = self.run_native(self.overlay, ["exec", "resume", "--skip-git-repo-check", "--json",
+                                                thread_id, "second-user-marker"])
+        self.assertIn(thread_id, second.stdout)
+        request = self.server.model_requests()[-1]
+        body = json.dumps(request[2])
+        for marker in ("first-user-marker", "fixture-answer-1", "second-user-marker",
+                       "global-instruction-marker", "project-instruction-marker"):
+            self.assertIn(marker, body)
+        headers = {key.lower(): value for key, value in request[1].items()}
+        self.assertEqual(headers["chatgpt-account-id"], "selected-account")
+        selected_token = json.loads((self.selected / "auth.json").read_text())["tokens"]["access_token"]
+        self.assertEqual(headers["authorization"], "Bearer " + selected_token)
+        self.run_native(self.source, ["exec", "resume", "--skip-git-repo-check", "--json",
+                                     thread_id, "third-user-marker"])
+        final_body = json.dumps(self.server.model_requests()[-1][2])
+        for marker in ("first-user-marker", "second-user-marker", "third-user-marker", "fixture-answer-2"):
+            self.assertIn(marker, final_body)
+        self.assertEqual(list((self.source / "sessions").rglob("*.jsonl")), [rollout])
+        self.assertTrue(os.path.samefile(self.source / "sessions", self.overlay / "sessions"))
+        self.assertFalse(list(self.overlay.glob("state_*.sqlite")))
+
+    def test_native_writer_blocks_resume_across_shared_lock_directory(self):
+        thread_id = self.create_thread()
+        self.make_overlay()
+        self.server.hold_next_response = True
+        owner = self.start(self.source, ["exec", "resume", "--skip-git-repo-check", "--json",
+                                        thread_id, "writer-owner-marker"])
+        try:
+            self.assertTrue(self.server.started.wait(timeout=20), "native writer did not reach mock server")
+            other = self.run_native(self.overlay, ["exec", "resume", "--skip-git-repo-check", "--json",
+                                                   thread_id, "must-not-be-written"], check=False)
+            self.assertNotEqual(other.returncode, 0)
+            self.assertIn("active writer", other.stderr + other.stdout)
+            self.assertNotIn("must-not-be-written", json.dumps(self.server.model_requests()))
+        finally:
+            self.server.release.set()
+            owner.communicate(timeout=20)
+
+    def test_tool_results_and_image_attachment_survive_native_resume(self):
+        image = self.project / "fixture.png"
+
+        def chunk(kind, data):
+            return struct.pack("!I", len(data)) + kind + data + struct.pack("!I", zlib.crc32(kind + data))
+
+        image.write_bytes(b"\x89PNG\r\n\x1a\n" +
+                          chunk(b"IHDR", struct.pack("!2I5B", 1, 1, 8, 2, 0, 0, 0)) +
+                          chunk(b"IDAT", zlib.compress(b"\x00\xff\x00\x00")) + chunk(b"IEND", b""))
+        self.server.responses.append([{
+            "type": "function_call", "call_id": "fixture-tool-call", "name": "exec_command",
+            "arguments": json.dumps({"cmd": "printf native-tool-result", "yield_time_ms": 1000}),
+        }])
+        thread_id = self.create_thread("attachment-user-marker", ["--image", str(image), "--"])
+        initial_requests = self.server.model_requests()
+        self.assertEqual(len(initial_requests), 2)
+        tool_outputs = [item for item in initial_requests[-1][2]["input"]
+                        if item.get("type") == "function_call_output"]
+        self.assertEqual(len(tool_outputs), 1)
+        self.assertIn("native-tool-result", json.dumps(tool_outputs[0]))
+        initial_images = [part["image_url"] for item in initial_requests[0][2]["input"]
+                          for part in item.get("content", []) if part.get("type") == "input_image"]
+        self.assertEqual(len(initial_images), 1)
+        image.unlink()  # The persisted attachment must remain self-contained.
+        self.make_overlay()
+        self.run_native(self.overlay, ["exec", "resume", "--skip-git-repo-check", "--json",
+                                       thread_id, "after-image-marker"])
+        resumed = self.server.model_requests()[-1][2]
+        self.assertIn("native-tool-result", json.dumps(resumed))
+        self.assertIn("fixture-tool-call", json.dumps(resumed))
+        resumed_images = [part["image_url"] for item in resumed["input"]
+                          for part in item.get("content", []) if part.get("type") == "input_image"]
+        self.assertEqual(resumed_images, initial_images)
+
+    def test_fork_dependencies_remain_native_when_resuming_overlay(self):
+        parent_id = self.create_thread("parent-history-marker")
+        parent_rollout = next((self.source / "sessions").rglob("*.jsonl"))
+        parent_before = parent_rollout.read_bytes()
+        fork = self.run_native(self.source, ["exec", "fork", "--skip-git-repo-check", "--json",
+                                            parent_id, "fork-history-marker"])
+        fork_events = [json.loads(line) for line in fork.stdout.splitlines() if line.startswith("{")]
+        fork_id = next(event["thread_id"] for event in fork_events if event["type"] == "thread.started")
+        self.assertNotEqual(fork_id, parent_id)
+        self.make_overlay()
+        resumed = self.run_native(self.overlay, ["exec", "resume", "--skip-git-repo-check", "--json",
+                                                fork_id, "after-fork-marker"])
+        self.assertIn(fork_id, resumed.stdout)
+        body = json.dumps(self.server.model_requests()[-1][2])
+        for marker in ("parent-history-marker", "fork-history-marker", "after-fork-marker"):
+            self.assertIn(marker, body)
+        self.assertEqual(parent_rollout.read_bytes(), parent_before)
+        self.assertEqual(len(list((self.source / "sessions").rglob("*.jsonl"))), 2)
+
+    def test_encrypted_compaction_checkpoint_survives_native_resume(self):
+        config = self.source / "config.toml"
+        config.write_text(config.read_text().replace('name="Loopback native contract fixture"', 'name="OpenAI"'))
+        thread_id = self.create_thread("before-compaction-marker")
+        app = AppServer(self, self.source)
+        try:
+            resumed = app.call(2, "thread/resume", {"threadId": thread_id, "excludeTurns": True})
+            self.assertEqual(resumed["thread"]["id"], thread_id)
+            self.server.responses.append([{"type": "compaction",
+                                           "encrypted_content": "native-opaque-compaction-fixture"}])
+            app.call(3, "thread/compact/start", {"threadId": thread_id})
+            completed = app.wait_notification("turn/completed")
+            self.assertEqual(completed["turn"]["status"], "completed")
+        finally:
+            app.close()
+        self.make_overlay()
+        resumed = self.run_native(self.overlay, ["exec", "resume", "--skip-git-repo-check", "--json",
+                                                thread_id, "after-compaction-marker"])
+        self.assertIn(thread_id, resumed.stdout)
+        request = self.server.model_requests()[-1][2]
+        checkpoints = [item for item in request["input"] if item.get("type") == "compaction"]
+        self.assertEqual(len(checkpoints), 1)
+        self.assertEqual(checkpoints[0]["encrypted_content"], "native-opaque-compaction-fixture")
+        self.assertIn("after-compaction-marker", json.dumps(request))
+        self.assertEqual(len(list((self.source / "sessions").rglob("*.jsonl"))), 1)
+
+    def test_preflight_config_read_honors_project_trust_and_runtime_overrides(self):
+        (self.project / ".git").mkdir()
+        (self.project / ".codex").mkdir()
+        project_config = self.project / ".codex" / "config.toml"
+        project_config.write_text('model="gpt-5.1"\n')
+        self.make_overlay()
+        arguments = ["-c", 'cli_auth_credentials_store="file"',
+                     "-c", "sqlite_home=" + json.dumps(str(self.source)),
+                     "app-server", "--listen", "stdio://", "--strict-config"]
+        app = AppServer(self, self.overlay, arguments)
+        try:
+            untrusted = app.call(2, "config/read", {"includeLayers": True, "cwd": str(self.project)})
+            self.assertEqual(untrusted["config"]["model"], "gpt-5.2")
+            disabled = [layer for layer in untrusted["layers"] if layer.get("disabledReason")]
+            self.assertTrue(disabled, "untrusted project layer was not identified")
+        finally:
+            app.close()
+        with (self.source / "config.toml").open("a") as source_config:
+            source_config.write("[projects." + json.dumps(str(self.project)) + "]\ntrust_level=\"trusted\"\n")
+        app = AppServer(self, self.overlay, arguments)
+        try:
+            trusted = app.call(2, "config/read", {"includeLayers": True, "cwd": str(self.project)})
+            self.assertEqual(trusted["config"]["model"], "gpt-5.1")
+            self.assertEqual(trusted["config"]["sqlite_home"], str(self.source))
+            self.assertEqual(trusted["config"]["cli_auth_credentials_store"], "file")
+            self.assertEqual(trusted["origins"]["model"]["name"]["type"], "project")
+        finally:
+            app.close()
+
+    @unittest.skipUnless(os.name == "posix", "native Windows TUI needs ConPTY acceptance")
+    def test_native_tui_restores_history_uses_current_model_and_exits_cleanly(self):
+        import fcntl
+        import pty
+        import select
+        import termios
+
+        thread_id = self.create_thread("native-tui-history-marker")
+        config = self.source / "config.toml"
+        config.write_text(config.read_text().replace('model="gpt-5.2"', 'model="gpt-5.1"'))
+        with config.open("a") as source_config:
+            source_config.write("[projects." + json.dumps(str(self.project)) + "]\ntrust_level=\"trusted\"\n")
+        self.make_overlay()
+        master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 36, 120, 0, 0))
+        process = subprocess.Popen(
+            [NATIVE, "--no-daemon", "--no-alt-screen", "--strict-config", "-c", 'model="gpt-5.1"',
+             "-c", 'model_provider="fixture"', "-c", "sqlite_home=" + json.dumps(str(self.source)),
+             "resume", thread_id, "native-tui-resume-marker"],
+            cwd=self.project, env=self.environment(self.overlay), stdin=slave, stdout=slave,
+            stderr=slave, start_new_session=True,
+        )
+        os.close(slave)
+        transcript = b""
+        sent_exit = False
+        deadline = time.monotonic() + 30
+        try:
+            while process.poll() is None and time.monotonic() < deadline:
+                if select.select([master], [], [], 0.1)[0]:
+                    try:
+                        chunk = os.read(master, 65536)
+                    except OSError:
+                        break
+                    transcript += chunk
+                    # Answer native terminal capability probes; this is a real
+                    # PTY and real Codex TUI, with only its remote model mocked.
+                    if b"\x1b[6n" in chunk:
+                        os.write(master, b"\x1b[1;1R")
+                    if b"\x1b[c" in chunk:
+                        os.write(master, b"\x1b[?1;2c")
+                    if b"\x1b]11;?" in chunk:
+                        os.write(master, b"\x1b]11;rgb:0000/0000/0000\x1b\\")
+                if b"fixture-answer-2" in transcript and not sent_exit:
+                    os.write(master, b"\x04")
+                    sent_exit = True
+            self.assertTrue(sent_exit, "native TUI did not render its completed resumed turn")
+            process.wait(timeout=5)
+            self.assertEqual(process.returncode, 0)
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=10)
+            os.close(master)
+        self.assertIn(b"native-tui-history-marker", transcript)
+        self.assertIn(b"fixture-answer-1", transcript)
+        self.assertEqual(len(self.server.model_requests()), 2)
+        request = self.server.model_requests()[-1]
+        self.assertEqual(request[2]["model"], "gpt-5.1")
+        self.assertIn("native-tui-history-marker", json.dumps(request[2]))
+        self.assertIn("native-tui-resume-marker", json.dumps(request[2]))
+        headers = {key.lower(): value for key, value in request[1].items()}
+        self.assertEqual(headers["chatgpt-account-id"], "selected-account")
+        self.assertFalse((self.overlay / "daemon").exists())
+
+    @unittest.skipUnless(ACOMP and sys.platform == "darwin",
+                         "set ACOMP_TEST_ACOMP_BINARY on macOS for real CLI preflight smoke")
+    def test_acomp_native_preflight_denial_preserves_original_history_and_auth(self):
+        """Real prepare must clean up when native authenticated discovery fails.
+
+        A positive production launch needs a real backend-validated account.
+        This deliberately keeps the endpoint compatibility checks intact.
+        """
+        import pty
+        import select
+
+        acomp = Path(ACOMP)
+        self.assertTrue(acomp.is_absolute(), "ACOMP_TEST_ACOMP_BINARY must be absolute")
+        user = self.root / "synthetic-user"
+        self.source = user / ".codex"
+        self.source.mkdir(parents=True)
+        self.write_auth(self.source, "source-account")
+        self.write_config(self.source)
+        # App-server sessions are native interactive history. Exec sessions
+        # deliberately do not appear in the production session picker.
+        app = AppServer(self, self.source)
+        try:
+            started = app.call(2, "thread/start", {"cwd": str(self.project)})
+            thread_id = started["thread"]["id"]
+            app.call(3, "turn/start", {
+                "threadId": thread_id,
+                "input": [{"type": "text", "text": "production-preflight-history-marker"}],
+            })
+            completed = app.wait_notification("turn/completed")
+            self.assertEqual(completed["turn"]["status"], "completed")
+        finally:
+            app.close()
+        native_entry = self.source / "packages/standalone/current/bin/codex"
+        native_entry.parent.mkdir(parents=True)
+        native_entry.symlink_to(NATIVE)
+        support = user / "Library/Application Support/AgentCompanion"
+        support.mkdir(parents=True)
+        (support / "dual-instance.json").write_text(json.dumps({
+            "schema": 1, "enabled": False,
+            "instance": {"codex_home": str(self.selected), "database_dir": str(self.selected),
+                         "cli_path": NATIVE},
+        }))
+        # Both source and quota config are ordinary production-compatible
+        # configs. There is no custom endpoint, provider, or test-only bypass.
+        plain_config = ('model="gpt-5.2"\ncli_auth_credentials_store="file"\n'
+                        'approval_policy="never"\nsandbox_mode="read-only"\n'
+                        'check_for_update_on_startup=false\n[features]\n'
+                        'daemon_auto_start=false\nremote_control=false\nshell_snapshot=false\n'
+                        '[analytics]\nenabled=false\n[feedback]\nenabled=false\n')
+        (self.source / "config.toml").write_text(plain_config)
+        (self.selected / "config.toml").write_text(plain_config)
+        source_auth = (self.source / "auth.json").read_bytes()
+        selected_auth = (self.selected / "auth.json").read_bytes()
+        rollouts = {path: path.read_bytes() for path in (self.source / "sessions").rglob("*.jsonl")}
+        history_db = self.source / "thread_history_1.sqlite"
+
+        history_before = history_db.read_bytes()
+        environment = self.environment(self.source)
+        for key in ("CODEX_HOME", "CODEX_SQLITE_HOME", "CODEX_REFRESH_TOKEN_URL_OVERRIDE"):
+            environment.pop(key, None)
+        environment.update({"HOME": str(user), "USERPROFILE": str(user),
+                            "HTTP_PROXY": self.server.url, "HTTPS_PROXY": self.server.url,
+                            "http_proxy": self.server.url, "https_proxy": self.server.url})
+        # Even if a native HTTP client ignores proxy environment variables,
+        # macOS enforces that this subprocess tree can only connect to loopback.
+        sandbox = ('(version 1)(allow default)(deny network-outbound)'
+                   '(allow network-outbound (remote ip "localhost:*"))')
+        master, slave = pty.openpty()
+        process = subprocess.Popen(
+            ["/usr/bin/sandbox-exec", "-p", sandbox, str(acomp), "resume", thread_id,
+             "--source", "codex", "--account", "dodex"],
+            cwd=self.project, env=environment, stdin=slave, stdout=slave, stderr=slave,
+            start_new_session=True,
+        )
+        os.close(slave)
+        transcript = b""
+        deadline = time.monotonic() + 50
+        try:
+            while process.poll() is None and time.monotonic() < deadline:
+                if select.select([master], [], [], 0.1)[0]:
+                    try:
+                        transcript += os.read(master, 65536)
+                    except OSError:
+                        break
+            process.wait(timeout=5)
+            self.assertNotEqual(process.returncode, 0)
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=10)
+            os.close(master)
+        output = transcript.decode(errors="replace")
+        self.assertIn("account/read", output, output)
+        self.assertNotIn("Resume is disabled:", output, output)
+        self.assertNotIn("Resuming session", output)
+        self.assertTrue((support / "Resume/launch-locks").is_dir())
+        self.assertFalse(list((support / "Resume").glob("run-*")))
+        self.assertEqual((self.source / "auth.json").read_bytes(), source_auth)
+        self.assertEqual((self.selected / "auth.json").read_bytes(), selected_auth)
+        self.assertEqual({path: path.read_bytes() for path in (self.source / "sessions").rglob("*.jsonl")}, rollouts)
+        self.assertEqual(history_db.read_bytes(), history_before)
+        self.assertEqual(len(self.server.model_requests()), 1, "preflight must not start a model turn")
+        self.assertNotIn("fixture-refresh", output)
+
+
+if __name__ == "__main__":
+    unittest.main()
