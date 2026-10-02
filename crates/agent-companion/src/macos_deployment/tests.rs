@@ -711,6 +711,35 @@ fn preferences_are_separate_and_changes_have_distinct_generations() {
     assert_ne!(enabled.preference_stamp, disabled.preference_stamp);
     assert!(instance.launcher_app.exists());
 }
+
+#[test]
+fn monitor_visibility_requires_a_saved_opt_in_even_after_a_failed_enable() {
+    let fixture = Fixture::new();
+    assert!(monitor_instance_from_state(&read_saved_state(&fixture.layout)).is_none());
+    fixture.source();
+    let instance = deploy_fixture(&fixture, &FakeOps::default());
+    save_record(&fixture.layout, false, &instance).unwrap();
+    let mut state = read_saved_state(&fixture.layout);
+    assert!(monitor_instance_from_state(&state).is_none());
+    complete_monitor_validation(&mut state, Err("synthetic failed opt-in".into()));
+    assert!(monitor_instance_from_state(&state).is_none());
+
+    save_record(&fixture.layout, true, &instance).unwrap();
+    let mut state = read_saved_state(&fixture.layout);
+    assert_eq!(
+        monitor_instance_from_state(&state),
+        Some((instance.clone(), Some(state.status.message.clone())))
+    );
+    let stamp = state.preference_stamp;
+    save_record(&fixture.layout, false, &instance).unwrap();
+    assert!(!validation_is_current(
+        &mut state,
+        stamp,
+        preference_stamp(&fixture.layout)
+    ));
+    assert!(monitor_instance_from_state(&state).is_none());
+    assert!(monitor_instance_from_state(&read_saved_state(&fixture.layout)).is_none());
+}
 #[test]
 fn parallel_deployment_is_rejected_and_kernel_lock_releases_on_drop() {
     use std::sync::{Arc, Barrier};

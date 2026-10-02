@@ -441,6 +441,9 @@ fn command(source: &Source, executable: &Path) -> io::Result<Command> {
         // control for this owned process without changing persisted settings.
         .env("CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED", "1");
     command.args([
+        // This directly starts our stdio server; it never takes the separate
+        // daemon/proxy subcommand path. Do not inject daemon_auto_start: older
+        // bundled runtimes reject that newer feature under strict config.
         "app-server",
         "--listen",
         "stdio://",
@@ -449,8 +452,6 @@ fn command(source: &Source, executable: &Path) -> io::Result<Command> {
         "analytics.enabled=false",
         "-c",
         "features.remote_control=false",
-        "-c",
-        "features.daemon_auto_start=false",
     ]);
     let configuration = identity::configuration(source).map_err(io::Error::other)?;
     command.arg("-c").arg(format!(

@@ -5,6 +5,8 @@ discover -s scripts/tests -p test_resume_native.py -v. The expected version is
 0.159.3; upgrades must pass these contracts before changing the runtime gate.
 No real credentials are read, and all model/auth responses are deterministic
 fixtures. These tests establish native persistence/auth plumbing, not billing.
+The shared-usage contract also accepts the legacy bundled 0.155.0-alpha.16.4;
+select that one test explicitly when checking that runtime.
 Additionally set ACOMP_TEST_ACOMP_BINARY to an absolute production acomp binary
 on macOS for its denied-preflight cleanup smoke (requires sandbox-exec).
 """
@@ -291,12 +293,20 @@ class NativeResumeContracts(unittest.TestCase):
         self.write_config(self.source)
         self.write_config(self.selected)
         version = self.run_native(self.source, ["--version"])
-        self.assertEqual(version.stdout.strip(), VERSION, "native runtime version has not been verified")
+        versions = {VERSION}
+        if self._testMethodName == "test_shared_usage_worker_publishes_quota_before_slow_history_without_daemon":
+            versions.add("codex-cli 0.155.0-alpha.16.4")
+        self.assertIn(version.stdout.strip(), versions, "native runtime version has not been verified")
 
     def write_auth(self, home, account):
         (home / "auth.json").write_text(json.dumps(fake_auth(account)), encoding="utf-8")
 
     def test_shared_usage_worker_publishes_quota_before_slow_history_without_daemon(self):
+        # app-server --listen stdio:// is the direct server path, not daemon or
+        # proxy. Match production flags without the newer daemon_auto_start
+        # config key, which 0.155 rejects even when explicitly set to false.
+        config = self.selected / "config.toml"
+        config.write_text(config.read_text().replace("daemon_auto_start=false\n", ""))
         self.server.hold_usage_history = True
         self.addCleanup(self.server.usage_history_release.set)
         daemon = self.selected / "app-server-daemon"
@@ -306,7 +316,6 @@ class NativeResumeContracts(unittest.TestCase):
         auth_before = (self.selected / "auth.json").read_bytes()
         worker = AppServer(self, self.selected, ["app-server", "--listen", "stdio://", "--strict-config",
                                                "-c", "features.remote_control=false",
-                                               "-c", "features.daemon_auto_start=false",
                                                "-c", "sqlite_home=" + json.dumps(str(self.source))])
         self.addCleanup(worker.close)
         effective = worker.call(2, "config/read", {"includeLayers": False})["config"]

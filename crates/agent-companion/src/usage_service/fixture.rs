@@ -8,6 +8,15 @@ use std::{
 fn main() {
     let home = PathBuf::from(env::var_os("CODEX_HOME").unwrap());
     let arguments: Vec<_> = env::args().collect();
+    // Observed on the bundled 0.155 runtime: strict config rejects newer
+    // feature keys before the JSON-RPC handshake.
+    if fs::read_to_string(home.join("mode")).is_ok_and(|mode| mode == "legacy-strict")
+        && arguments
+            .iter()
+            .any(|arg| arg.starts_with("features.daemon_auto_start="))
+    {
+        std::process::exit(2);
+    }
     let setting = |name: &str| {
         arguments
             .iter()

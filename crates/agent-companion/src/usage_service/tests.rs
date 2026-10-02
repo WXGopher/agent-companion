@@ -206,6 +206,24 @@ fn write_identity(home: &Path, second: bool) {
 }
 
 #[test]
+fn strict_worker_supports_the_legacy_native_feature_set() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = source(directory.path(), "dodex");
+    fs::write(source.codex_home.join("mode"), "legacy-strict").unwrap();
+    let mut service = UsageService::with_settings_path(directory.path().join("usage.json"));
+    service.sync_sources(vec![source], agent_companion_core::now_unix_secs());
+    wait_for(&mut service, |service| {
+        !service.snapshot("dodex").unwrap().limits.loading
+    });
+    let snapshot = service.snapshot("dodex").unwrap();
+    assert!(
+        snapshot.limits.value.is_some(),
+        "{:?}",
+        snapshot.limits.error
+    );
+}
+
+#[test]
 fn same_path_account_switch_clears_both_snapshots_before_a_failed_read() {
     let directory = tempfile::tempdir().unwrap();
     let source = source(directory.path(), "codex");

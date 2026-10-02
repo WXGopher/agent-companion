@@ -102,6 +102,9 @@ type CompletedDeployment = (InstanceConfig, PreferenceStamp);
 struct State {
     status: DeploymentStatus,
     instance: Option<InstanceConfig>,
+    // The user's saved opt-in is distinct from permission to query/launch a
+    // deployment that has completed validation.
+    monitor_requested: bool,
     initialized: bool,
     preference_stamp: PreferenceStamp,
 }
@@ -186,6 +189,7 @@ fn read_saved_state(layout: &Layout) -> State {
         Ok(record) if record.schema == SCHEMA => {
             state.status.deployed = true;
             state.instance = Some(record.instance);
+            state.monitor_requested = record.enabled;
             if record.enabled {
                 state.status.busy = true;
                 state.status.phase = "checking".into();
@@ -225,20 +229,23 @@ fn refresh_from_disk() {
         if !validation_is_current(&mut state, stamp, current_stamp) {
             return;
         }
-        state.status.busy = false;
-        match result {
-            Ok(()) => {
-                state.status.enabled = true;
-                state.status.phase = "ready".into();
-                state.status.message = INSTRUCTIONS.into();
-            }
-            Err(error) => {
-                state.status.enabled = false;
-                state.status.phase = "failed".into();
-                state.status.message = error;
-            }
-        }
+        complete_monitor_validation(&mut state, result);
     });
+}
+fn complete_monitor_validation(state: &mut State, result: Result<(), String>) {
+    state.status.busy = false;
+    match result {
+        Ok(()) => {
+            state.status.enabled = true;
+            state.status.phase = "ready".into();
+            state.status.message = INSTRUCTIONS.into();
+        }
+        Err(error) => {
+            state.status.enabled = false;
+            state.status.phase = "failed".into();
+            state.status.message = error;
+        }
+    }
 }
 fn validation_is_current(
     state: &mut State,
@@ -248,6 +255,7 @@ fn validation_is_current(
     if state.preference_stamp != requested || current != requested {
         state.status.enabled = false;
         state.status.busy = false;
+        state.monitor_requested = false;
         state.initialized = false;
         return false;
     }
@@ -372,6 +380,30 @@ pub fn active_instance() -> Option<InstanceConfig> {
             .and_then(|layout| mirror::deployed_app(&layout)),
         crate::software_updates::managed_cli(),
     ))
+}
+
+/// A saved opt-in remains visible while checking or rejected. The error marks a
+/// presentation-only instance: callers must not scan its files or query its CLI.
+/// Runtime actions continue to use `active_instance`, which fails closed.
+pub fn monitor_instance() -> Option<(InstanceConfig, Option<String>)> {
+    refresh_from_disk();
+    let (instance, error) = {
+        let state = shared().lock().unwrap_or_else(|e| e.into_inner());
+        monitor_instance_from_state(&state)?
+    };
+    if error.is_none() {
+        return active_instance().map(|instance| (instance, None));
+    }
+    Some((instance, error))
+}
+
+fn monitor_instance_from_state(state: &State) -> Option<(InstanceConfig, Option<String>)> {
+    if !state.initialized || !state.monitor_requested {
+        return None;
+    }
+    let instance = state.instance.clone()?;
+    let error = (!state.status.enabled).then(|| state.status.message.clone());
+    Some((instance, error))
 }
 
 fn desktop_navigation_instance(
@@ -559,12 +591,14 @@ fn finish(result: Result<CompletedDeployment, String>) -> Result<DeploymentStatu
                 != stamp
             {
                 state.status.enabled = false;
+                state.monitor_requested = false;
                 state.initialized = false;
                 state.status.phase = "checking".into();
                 state.status.message = "正在同步双开设置…".into();
                 return Ok(state.status.clone());
             }
             state.instance = Some(instance);
+            state.monitor_requested = true;
             state.status.deployed = true;
             state.status.enabled = true;
             state.status.phase = "ready".into();
@@ -701,6 +735,7 @@ pub fn set_enabled(enabled: bool) -> Result<DeploymentStatus, String> {
         state.initialized = true;
     }
     state.status.enabled = false;
+    state.monitor_requested = false;
     state.status.phase = if state.status.deployed {
         "disabled"
     } else {
@@ -1269,9 +1304,11 @@ fn toml_string(path: &Path) -> String {
     serde_json::to_string(&path.to_string_lossy()).unwrap()
 }
 fn validate_config(path: &Path, instance: &InstanceConfig) -> Result<(), String> {
-    let bytes = read_limited(path, 2 * 1024 * 1024)?;
-    profile_sync::validate_isolated_config(
-        &bytes,
+    // Every accepted launcher binds CODEX_HOME and CODEX_SQLITE_HOME. Existing
+    // profiles may rely on those native defaults without rewriting user config.
+    // The parent can be a staging home while validating a fresh deployment.
+    profile_sync::validate_isolated_profile_with_runtime_defaults(
+        path.parent().ok_or("无法定位 Dodex 配置目录。")?,
         &IsolationPaths {
             sqlite_home: instance.database_dir.clone(),
             log_dir: instance.desktop_user_data.join("logs"),

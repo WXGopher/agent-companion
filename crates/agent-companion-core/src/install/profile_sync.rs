@@ -143,6 +143,14 @@ fn parse_config(bytes: &[u8]) -> io::Result<DocumentMut> {
 /// value: configuration may contain credentials or private service addresses.
 pub fn validate_isolated_config(bytes: &[u8], paths: &IsolationPaths) -> io::Result<()> {
     let document = parse_config(bytes)?;
+    validate_isolated_document(&document, paths, false)
+}
+
+fn validate_isolated_document(
+    document: &DocumentMut,
+    paths: &IsolationPaths,
+    runtime_defaults: bool,
+) -> io::Result<()> {
     fn check(key: &str, value: Option<&str>, paths: &IsolationPaths) -> io::Result<()> {
         if is_isolation(key) && value != Some(isolation_value(key, paths).as_str()) {
             return Err(io::Error::new(
@@ -164,6 +172,12 @@ pub fn validate_isolated_config(bytes: &[u8], paths: &IsolationPaths) -> io::Res
     }
 
     for key in ISOLATION_KEYS {
+        // A trusted launcher supplies CODEX_SQLITE_HOME and isolates CODEX_HOME
+        // (whose native log default is CODEX_HOME/log). Explicit settings still
+        // take precedence and must match the assigned paths.
+        if runtime_defaults && key != "cli_auth_credentials_store" && !document.contains_key(key) {
+            continue;
+        }
         check(key, document.get(key).and_then(Item::as_str), paths)?;
     }
     if let Some(profiles) = document.get("profiles") {
@@ -183,6 +197,63 @@ pub fn validate_isolated_config(bytes: &[u8], paths: &IsolationPaths) -> io::Res
 /// Read only an isolated regular config file, with the same link/size guards
 /// used for explicit profile synchronization.
 pub fn validate_isolated_profile(home: &Path, paths: &IsolationPaths) -> io::Result<()> {
+    validate_profile(home, paths, None)
+}
+
+/// Validate a profile used by a trusted launcher that sets CODEX_HOME to `home`
+/// and enforces CODEX_SQLITE_HOME (or the equivalent native override) to the
+/// assigned SQLite path. Such launchers may keep existing configurations without
+/// explicit SQLite/log settings when the system configuration does not override
+/// those defaults: native logs then stay under CODEX_HOME/log.
+/// Credential storage must remain explicit, and conflicting settings still fail.
+pub fn validate_isolated_profile_with_runtime_defaults(
+    home: &Path,
+    paths: &IsolationPaths,
+) -> io::Result<()> {
+    validate_profile(home, paths, Some(&system_config_path()?))
+}
+
+fn system_config_path() -> io::Result<PathBuf> {
+    #[cfg(windows)]
+    let root = {
+        use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+        use windows::Win32::System::Com::CoTaskMemFree;
+        use windows::Win32::UI::Shell::{
+            FOLDERID_ProgramData, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
+        };
+
+        // Match native Codex: the known folder is authoritative, regardless of
+        // any inherited ProgramData environment override.
+        let program_data =
+            unsafe { SHGetKnownFolderPath(&FOLDERID_ProgramData, KF_FLAG_DEFAULT, None) }
+                .ok()
+                .filter(|path| !path.is_null())
+                .map(|path| {
+                    // The API owns a null-terminated UTF-16 allocation; preserve Windows
+                    // path encoding and release it with its matching COM allocator.
+                    let directory = unsafe { OsString::from_wide(path.as_wide()) };
+                    unsafe { CoTaskMemFree(Some(path.0.cast())) };
+                    PathBuf::from(directory)
+                });
+        program_data
+            .unwrap_or_else(|| PathBuf::from("C:\\ProgramData"))
+            .join("OpenAI/Codex")
+    };
+    #[cfg(not(windows))]
+    // /etc is a built-in alias to /private/etc on macOS. Resolve that trusted
+    // system root, then retain all link guards on codex/config.toml beneath it.
+    let root = Path::new("/etc")
+        .canonicalize()
+        .map_err(|_| invalid("The system configuration directory cannot be verified."))?
+        .join("codex");
+    Ok(root.join("config.toml"))
+}
+
+fn validate_profile(
+    home: &Path,
+    paths: &IsolationPaths,
+    system_config: Option<&Path>,
+) -> io::Result<()> {
     for path in [home, paths.sqlite_home.as_path(), paths.log_dir.as_path()] {
         validate_path(path)?;
     }
@@ -202,7 +273,28 @@ pub fn validate_isolated_profile(home: &Path, paths: &IsolationPaths) -> io::Res
     }
     let bytes = read_optional(&home.join("config.toml"))?
         .ok_or_else(|| invalid("Dodex config.toml is missing; isolation cannot be verified."))?;
-    validate_isolated_config(&bytes, paths)
+    let mut document = parse_config(&bytes)?;
+    if let Some(system_config) = system_config {
+        let missing: Vec<_> = ["sqlite_home", "log_dir"]
+            .into_iter()
+            .filter(|key| !document.contains_key(key))
+            .collect();
+        if !missing.is_empty()
+            && let Some(bytes) = read_optional(system_config)?
+        {
+            let system = parse_config(&bytes)?;
+            for key in missing {
+                if let Some(value) = system.get(key) {
+                    document[key] = value.clone();
+                }
+            }
+        }
+    }
+    validate_isolated_document(&document, paths, system_config.is_some())?;
+    if system_config.is_some() && !document.contains_key("log_dir") {
+        validate_path(&home.join("log"))?;
+    }
+    Ok(())
 }
 
 /// Configuration options may appear after native subcommands. Validate the

@@ -728,7 +728,7 @@ fn prepare_profile(layout: &Layout, profile: &MirrorProfile, app: &Path) -> Resu
 }
 
 fn validate_profile_config(profile: &MirrorProfile) -> Result<(), String> {
-    profile_sync::validate_isolated_profile(
+    profile_sync::validate_isolated_profile_with_runtime_defaults(
         &profile.codex_home,
         &IsolationPaths {
             sqlite_home: profile.database_dir.clone(),
@@ -1278,7 +1278,9 @@ mod tests {
             }
             fs::write(
                 profile.codex_home.join("config.toml"),
-                config_text(&profile.instance(&app)),
+                // The original installation relies on the launcher's SQLite
+                // environment and the native log default under its own home.
+                "cli_auth_credentials_store='file'\nmodel='synthetic-personal-model'\n",
             )
             .unwrap();
             profile
@@ -1432,8 +1434,13 @@ mod tests {
         )
         .unwrap();
         let config = profile.codex_home.join("config.toml");
-        let original = fs::read_to_string(&config).unwrap();
+        let original = "cli_auth_credentials_store='file'\nmodel='synthetic-personal-model'\n";
+        fs::write(&config, original).unwrap();
         let app = installed.instance.runtime_app;
+        let ops = launch_ops(&app);
+        sync_on_launch_with(&fixture.layout, &app, 123, &ops).unwrap();
+        assert_eq!(fs::read_to_string(&config).unwrap(), original);
+        assert_eq!(ops.copies.load(Ordering::SeqCst), 0);
         for override_text in [
             "\n[profiles.work]\ncli_auth_credentials_store='keyring'\n",
             "\n[profiles.work]\nlog_dir='/synthetic/primary'\n",

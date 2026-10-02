@@ -69,6 +69,9 @@ struct CodexInstance: Decodable, Identifiable {
     var weekly: WeeklyUsage? = nil
     var error: String? = nil
     var id: String { instanceId }
+    // Blocked secondary descriptors retain their label/error but have no
+    // validated runtime path. A primary task-scan error is independent of quota.
+    var routingBlocked: Bool { instanceId != "codex" && executablePath == nil && error != nil }
     var usageSource: SubscriptionSource {
         SubscriptionSource(instanceID: instanceId, codexHome: codexHome,
                            executablePath: executablePath, databasePath: databasePath)
@@ -166,7 +169,7 @@ final class CompanionModel: ObservableObject {
         cachedWeeklyUsage(for: instance)?.usage
     }
     func cachedWeeklyUsage(for instance: CodexInstance) -> (usage: WeeklyUsage, readAt: Date)? {
-        usageCoordinator.cachedWeeklyUsage(for: instance.usageSource)
+        instance.routingBlocked ? nil : usageCoordinator.cachedWeeklyUsage(for: instance.usageSource)
     }
     var weeklyRemainingPercent: Int? { weeklyRemainingPercent(for: selectedInstance) }
     func weeklyRemainingPercent(for instance: CodexInstance) -> Int? {
@@ -218,6 +221,11 @@ final class CompanionModel: ObservableObject {
     }
 
     func receiveUsageSnapshot() {
+        if selectedInstance.routingBlocked, let error = selectedInstance.error {
+            subscriptionUsage = .failure(error)
+            usageLoading = false
+            return
+        }
         let state = usageCoordinator.state(for: selectedInstance.usageSource)
         subscriptionUsage = state?.usage ?? SubscriptionUsage()
         usageLoading = state?.limits.loading ?? false
@@ -242,6 +250,7 @@ final class CompanionModel: ObservableObject {
     }
 
     func refreshUsage() {
+        guard !selectedInstance.routingBlocked else { receiveUsageSnapshot(); return }
         usageCoordinator.refreshQuota(instanceID: selectedInstance.id)
         receiveUsageSnapshot()
     }

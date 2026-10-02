@@ -61,6 +61,132 @@ fn launch_validation_checks_defaults_and_profiles_but_not_mcp_parameters() {
 }
 
 #[test]
+fn trusted_runtime_defaults_accept_omitted_paths_but_reject_explicit_conflicts() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().canonicalize().unwrap();
+    let paths = IsolationPaths {
+        sqlite_home: home.join("sqlite"),
+        log_dir: home.join("desktop/logs"),
+    };
+    let config = home.join("config.toml");
+    let system = home.join("absent-system-config.toml");
+    let base = "cli_auth_credentials_store='file'\nmodel='synthetic-model'\n";
+    for explicit in [
+        vec![],
+        vec!["sqlite_home"],
+        vec!["log_dir"],
+        vec!["sqlite_home", "log_dir"],
+    ] {
+        let mut document: DocumentMut = base.parse().unwrap();
+        for key in explicit {
+            document[key] = toml_edit::value(isolation_value(key, &paths));
+        }
+        let contents = document.to_string();
+        fs::write(&config, &contents).unwrap();
+        validate_profile(&home, &paths, Some(&system)).unwrap();
+        assert_eq!(fs::read_to_string(&config).unwrap(), contents);
+    }
+    fs::write(&config, base).unwrap();
+    assert!(validate_isolated_profile(&home, &paths).is_err());
+
+    for extra in [
+        "sqlite_home='/primary/sqlite'\n",
+        "log_dir='/primary/log'\n",
+        "sqlite_home=42\n",
+        "log_dir=false\n",
+        "[profiles.work]\ncli_auth_credentials_store='keyring'\n",
+        "profiles={work={sqlite_home='/primary/sqlite'}}\n",
+        "[profiles.work]\nlog_dir='/primary/log'\n",
+    ] {
+        fs::write(&config, format!("{base}{extra}")).unwrap();
+        assert!(
+            validate_profile(&home, &paths, Some(&system)).is_err(),
+            "{extra}"
+        );
+    }
+    for contents in [
+        "model='synthetic-model'\n",
+        "cli_auth_credentials_store='keyring'\n",
+    ] {
+        fs::write(&config, contents).unwrap();
+        assert!(validate_profile(&home, &paths, Some(&system)).is_err());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn trusted_runtime_log_default_cannot_redirect_outside_the_profile() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let home = root.join("secondary");
+    let outside = root.join("primary-log");
+    fs::create_dir(&home).unwrap();
+    fs::create_dir(&outside).unwrap();
+    let paths = IsolationPaths {
+        sqlite_home: home.join("sqlite"),
+        log_dir: home.join("desktop/logs"),
+    };
+    fs::write(
+        home.join("config.toml"),
+        "cli_auth_credentials_store='file'\n",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(&outside, home.join("log")).unwrap();
+    assert!(
+        validate_profile(&home, &paths, Some(&root.join("absent-system-config.toml"))).is_err()
+    );
+    assert_eq!(fs::read_dir(outside).unwrap().count(), 0);
+}
+
+#[test]
+fn runtime_storage_defaults_account_for_the_effective_system_config() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let home = root.join("secondary");
+    fs::create_dir(&home).unwrap();
+    let config = home.join("config.toml");
+    let system = root.join("synthetic-system-config.toml");
+    let paths = IsolationPaths {
+        sqlite_home: home.join("sqlite"),
+        log_dir: home.join("desktop/logs"),
+    };
+    let base = "cli_auth_credentials_store='file'\nmodel='synthetic-model'\n";
+    fs::write(&config, base).unwrap();
+    // Both layers omit storage settings: the launcher's own home/SQLite apply.
+    validate_profile(&home, &paths, Some(&system)).unwrap();
+
+    let mut system_config = DocumentMut::new();
+    for key in ["sqlite_home", "log_dir"] {
+        system_config[key] = toml_edit::value(isolation_value(key, &paths));
+    }
+    fs::write(&system, system_config.to_string()).unwrap();
+    validate_profile(&home, &paths, Some(&system)).unwrap();
+    assert_eq!(fs::read_to_string(&config).unwrap(), base);
+
+    for key in ["sqlite_home", "log_dir"] {
+        let mut conflicting = system_config.clone();
+        conflicting[key] = toml_edit::value("/synthetic/primary");
+        let contents = conflicting.to_string();
+        fs::write(&system, &contents).unwrap();
+        let error = validate_profile(&home, &paths, Some(&system))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(key));
+        assert!(!error.contains("/synthetic/primary"));
+
+        // A correct explicit user value overrides the conflicting system layer.
+        let mut local: DocumentMut = base.parse().unwrap();
+        local[key] = toml_edit::value(isolation_value(key, &paths));
+        let local_contents = local.to_string();
+        fs::write(&config, &local_contents).unwrap();
+        validate_profile(&home, &paths, Some(&system)).unwrap();
+        assert_eq!(fs::read_to_string(&config).unwrap(), local_contents);
+        assert_eq!(fs::read_to_string(&system).unwrap(), contents);
+        fs::write(&config, base).unwrap();
+    }
+}
+
+#[test]
 fn launch_validation_parses_inline_and_quoted_profile_override_keys() {
     for raw in [
         "sqlite_home='/wrong'",

@@ -434,6 +434,64 @@ mod tests {
     use super::super::tests::{FakeOps, legacy_fixture};
     use super::*;
 
+    #[test]
+    fn enabled_repaired_legacy_monitor_accepts_runtime_storage_defaults_read_only() {
+        let (fixture, _) = legacy_fixture();
+        let ops = FakeOps {
+            legacy: true,
+            ..FakeOps::default()
+        };
+        let instance = repair_with(&fixture.layout, &ops).unwrap();
+        let config = instance.codex_home.join("config.toml");
+        let contents = b"# Existing personal settings\ncli_auth_credentials_store = 'file'\nmodel = 'synthetic-model'\n";
+        fs::write(&config, contents).unwrap();
+        let auth = instance.codex_home.join("auth.json");
+        fs::write(&auth, b"opaque synthetic auth; never opened by validation").unwrap();
+        save_record(&fixture.layout, true, &instance).unwrap();
+        let saved = fs::read(fixture.layout.settings()).unwrap();
+        let mut state = read_saved_state(&fixture.layout);
+        assert!(state.status.busy && !state.status.enabled);
+        assert_eq!(state.instance, Some(instance.clone()));
+
+        let result = validate_existing(&fixture.layout, &ops, &instance);
+        assert!(result.is_ok(), "{result:?}");
+        complete_monitor_validation(&mut state, result);
+        assert_eq!(monitor_instance_from_state(&state), Some((instance, None)));
+
+        assert_eq!(fs::read(config).unwrap(), contents);
+        assert_eq!(
+            fs::read(auth).unwrap(),
+            b"opaque synthetic auth; never opened by validation"
+        );
+        assert_eq!(fs::read(fixture.layout.settings()).unwrap(), saved);
+    }
+
+    #[test]
+    fn opted_in_legacy_monitor_reports_config_conflicts_without_enabling_access() {
+        let (fixture, _) = legacy_fixture();
+        let ops = FakeOps {
+            legacy: true,
+            ..FakeOps::default()
+        };
+        let instance = repair_with(&fixture.layout, &ops).unwrap();
+        let config = instance.codex_home.join("config.toml");
+        let contents =
+            b"cli_auth_credentials_store='file'\nsqlite_home='/synthetic/other/account'\n";
+        fs::write(&config, contents).unwrap();
+        save_record(&fixture.layout, true, &instance).unwrap();
+        let mut state = read_saved_state(&fixture.layout);
+        let result = validate_existing(&fixture.layout, &ops, &instance);
+        assert!(result.as_ref().unwrap_err().contains("sqlite_home"));
+        complete_monitor_validation(&mut state, result);
+        assert!(!state.status.enabled);
+        let (visible, error) = monitor_instance_from_state(&state).unwrap();
+        assert_eq!(visible, instance);
+        let error = error.unwrap();
+        assert!(error.contains("sqlite_home"));
+        assert!(!error.contains("/synthetic/other/account"));
+        assert_eq!(fs::read(config).unwrap(), contents);
+    }
+
     fn make_alias(layout: &Layout) {
         let entry = layout.system_applications.join("Dodex.app");
         let target = layout.system_applications.join("Codex B.app");

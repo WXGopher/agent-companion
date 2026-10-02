@@ -222,10 +222,10 @@ pub fn run_menu_bar() -> io::Result<()> {
             // Publish routing before scanning session history so account queries
             // can start independently, including on a large first task scan.
             *state.lock().unwrap_or_else(|error| error.into_inner()) =
-                dashboard.routing_snapshot(crate::macos_deployment::active_instance().as_ref());
+                dashboard.routing_snapshot(crate::macos_deployment::monitor_instance().as_ref());
             loop {
                 let snapshot = dashboard.poll(
-                    crate::macos_deployment::active_instance(),
+                    crate::macos_deployment::monitor_instance(),
                     agent_companion_core::now_unix_secs(),
                 );
                 *state.lock().unwrap_or_else(|error| error.into_inner()) = snapshot;
@@ -243,23 +243,7 @@ pub fn run_menu_bar() -> io::Result<()> {
             loop {
                 let sources = {
                     let snapshot = state.lock().unwrap_or_else(|error| error.into_inner());
-                    snapshot
-                        .instances
-                        .iter()
-                        .map(|snapshot| {
-                            let instance = &snapshot.instance;
-                            crate::usage_service::Source {
-                                instance_id: instance.instance_id.clone(),
-                                codex_home: instance.codex_home.clone().into(),
-                                executable_path: instance.executable_path.clone().map(Into::into),
-                                database_path: instance
-                                    .database_path
-                                    .clone()
-                                    .unwrap_or_else(|| instance.codex_home.clone())
-                                    .into(),
-                            }
-                        })
-                        .collect()
+                    usage_sources(&snapshot)
                 };
                 {
                     let now = agent_companion_core::now_unix_secs();
@@ -292,6 +276,34 @@ pub fn run_menu_bar() -> io::Result<()> {
     } else {
         Err(io::Error::other("could not start the macOS menu bar app"))
     }
+}
+
+fn usage_sources(snapshot: &Snapshot) -> Vec<crate::usage_service::Source> {
+    snapshot
+        .instances
+        .iter()
+        .filter(|snapshot| {
+            // A validated secondary always has an explicit native executable.
+            // Blocked presentation descriptors deliberately contain no routing.
+            // The primary may still discover its CLI after a task database error.
+            snapshot.instance.instance_id == "codex"
+                || snapshot.instance.executable_path.is_some()
+                || snapshot.error.is_none()
+        })
+        .map(|snapshot| {
+            let instance = &snapshot.instance;
+            crate::usage_service::Source {
+                instance_id: instance.instance_id.clone(),
+                codex_home: instance.codex_home.clone().into(),
+                executable_path: instance.executable_path.clone().map(Into::into),
+                database_path: instance
+                    .database_path
+                    .clone()
+                    .unwrap_or_else(|| instance.codex_home.clone())
+                    .into(),
+            }
+        })
+        .collect()
 }
 
 struct InstanceDashboards {
@@ -341,7 +353,7 @@ impl InstanceDashboards {
         )
     }
 
-    fn routing_snapshot(&self, enabled: Option<&InstanceConfig>) -> Snapshot {
+    fn routing_snapshot(&self, requested: Option<&(InstanceConfig, Option<String>)>) -> Snapshot {
         let pending = |instance: Instance| {
             Snapshot {
                 codex_home: instance.codex_home.clone(),
@@ -351,8 +363,11 @@ impl InstanceDashboards {
             .with_instance(instance)
         };
         let mut instances = vec![pending(self.primary_instance.clone())];
-        if let Some(config) = enabled {
-            instances.push(pending(Self::secondary_descriptor(config)));
+        if let Some((config, error)) = requested {
+            instances.push(match error {
+                Some(error) => Self::blocked_snapshot(config, error),
+                None => pending(Self::secondary_descriptor(config)),
+            });
         }
         Snapshot::merge(instances)
     }
@@ -368,7 +383,35 @@ impl InstanceDashboards {
         }
     }
 
-    fn poll(&mut self, enabled: Option<InstanceConfig>, now: u64) -> Snapshot {
+    fn blocked_snapshot(config: &InstanceConfig, error: &str) -> Snapshot {
+        Snapshot {
+            codex_home: config.codex_home.to_string_lossy().into_owned(),
+            error: Some(error.into()),
+            ..Snapshot::default()
+        }
+        .with_instance(Instance {
+            // A malformed saved record must not impersonate the primary and
+            // gain its automatic executable-discovery exception.
+            instance_id: "dodex".into(),
+            label: "Dodex".into(),
+            codex_home: config.codex_home.to_string_lossy().into_owned(),
+            // Metadata may be shown before validation; none of its paths may
+            // become a launch, database scan or account-query route.
+            app_path: None,
+            executable_path: None,
+            database_path: None,
+        })
+    }
+
+    fn poll(&mut self, requested: Option<(InstanceConfig, Option<String>)>, now: u64) -> Snapshot {
+        let blocked = requested.as_ref().and_then(|(config, error)| {
+            error
+                .as_ref()
+                .map(|error| Self::blocked_snapshot(config, error))
+        });
+        let enabled = requested
+            .filter(|(_, error)| error.is_none())
+            .map(|(config, _)| config);
         // Installing Codex or changing its database location should recover
         // while Companion stays open, including after a failed deployment retry.
         let (primary, database) = Self::primary_descriptor(&self.primary_home);
@@ -396,6 +439,9 @@ impl InstanceDashboards {
                     .poll_tasks(now)
                     .with_instance(Self::secondary_descriptor(config)),
             );
+        }
+        if let Some(blocked) = blocked {
+            snapshots.push(blocked);
         }
         Snapshot::merge(snapshots)
     }
@@ -508,7 +554,8 @@ mod tests {
             cli_path: second.join("Runtime.app/Contents/Resources/codex"),
         };
         let mut monitor = InstanceDashboards::new(home);
-        let routing = monitor.routing_snapshot(Some(&config));
+        let requested = (config.clone(), None);
+        let routing = monitor.routing_snapshot(Some(&requested));
         assert!(routing.loading && routing.tasks.is_empty());
         assert_eq!(routing.instances.len(), 2);
         assert_eq!(
@@ -521,7 +568,7 @@ mod tests {
         );
         assert_eq!(monitor.poll(None, 1000).instances.len(), 1);
         assert!(monitor.secondary.is_none() && !second.exists());
-        let enabled = monitor.poll(Some(config), 1001);
+        let enabled = monitor.poll(Some((config, None)), 1001);
         assert_eq!(enabled.instances.len(), 2);
         assert_eq!(enabled.instances[1].instance.instance_id, "dodex");
         assert!(monitor.secondary.is_some());
@@ -534,5 +581,83 @@ mod tests {
             !second.exists(),
             "monitoring must never create deployment files"
         );
+    }
+
+    #[test]
+    fn rejected_secondary_stays_visible_without_task_or_account_readers() {
+        let root = tempfile::tempdir().unwrap();
+        let second = root.path().join("unverified");
+        let config = rejected_config(root.path());
+        let mut monitor = InstanceDashboards::new(root.path().join("main"));
+        let error = "Dodex sqlite_home redirects outside its isolated directory.";
+        let blocked = (config.clone(), Some(error.into()));
+        for snapshot in [
+            monitor.routing_snapshot(Some(&blocked)),
+            monitor.poll(Some(blocked.clone()), 1000),
+        ] {
+            assert_eq!(
+                snapshot.instances.len(),
+                2,
+                "An opted-in failed deployment must remain visible"
+            );
+            let dodex = &snapshot.instances[1];
+            assert_eq!(dodex.instance.instance_id, "dodex");
+            assert_eq!(dodex.error.as_deref(), Some(error));
+            assert!(dodex.instance.executable_path.is_none());
+            assert!(dodex.instance.database_path.is_none());
+            assert_eq!(
+                usage_sources(&snapshot).len(),
+                1,
+                "No account source may use unverified routing"
+            );
+        }
+        assert!(
+            monitor.secondary.is_none(),
+            "No task reader may use unverified routing"
+        );
+        let valid = monitor.poll(Some((config, None)), 1001);
+        assert_eq!(usage_sources(&valid).len(), 2);
+        assert!(monitor.secondary.is_some());
+        let rejected = monitor.poll(Some(blocked), 1002);
+        assert_eq!(rejected.instances.len(), 2);
+        assert!(
+            monitor.secondary.is_none(),
+            "Revalidation failure must drop task caches"
+        );
+        assert_eq!(usage_sources(&rejected).len(), 1);
+        assert!(!second.exists());
+
+        let mut primary = rejected;
+        primary.instances[0].instance.executable_path = None;
+        primary.instances[0].error = Some("Task database unavailable".into());
+        assert_eq!(
+            usage_sources(&primary)[0].instance_id,
+            "codex",
+            "A primary database error cannot block independent quota discovery"
+        );
+        let mut forged_config = rejected_config(root.path());
+        forged_config.id = "codex".into();
+        forged_config.label = "Codex".into();
+        let rejected = monitor.poll(Some((forged_config, Some(error.into()))), 1003);
+        assert_eq!(rejected.instances[1].instance.instance_id, "dodex");
+        assert_eq!(
+            usage_sources(&rejected).len(),
+            1,
+            "An unverified record cannot impersonate primary routing"
+        );
+    }
+
+    fn rejected_config(root: &std::path::Path) -> InstanceConfig {
+        let second = root.join("unverified");
+        InstanceConfig {
+            id: "dodex".into(),
+            label: "Dodex".into(),
+            codex_home: second.clone(),
+            desktop_user_data: second.join("desktop"),
+            database_dir: second.join("sqlite"),
+            runtime_app: second.join("Runtime.app"),
+            launcher_app: second.join("Dodex.app"),
+            cli_path: second.join("Runtime.app/Contents/Resources/codex"),
+        }
     }
 }

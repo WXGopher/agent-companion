@@ -7,7 +7,8 @@
 
 - 不退出、重启或替换现存 Codex TUI 及其资源，不修改其登录状态。
 - 自动测试只使用临时目录、合成凭据、测试进程和本地服务。
-- 不连接或清理用户现有 daemon，不运行实际账号额度查询。
+- 自动测试不连接或清理用户现有 daemon，不运行实际账号额度查询；用户授权的
+  Companion 安装后正常监控观察单独记录。
 - 本地构建、交叉编译和打包不等于部署完成；Windows 交叉编译不等于 Windows 实机验收。
 - 真实账号读取可能触发原生客户端自动刷新凭据，因此集中到最终维护窗口。
   参见[官方认证说明](https://learn.chatgpt.com/docs/auth)。
@@ -18,19 +19,20 @@
 
 | 检查 | 实际结果 |
 | --- | --- |
-| 核心 `--all-features` | 264 项通过，2 项原有忽略 |
-| 主程序 `--all-features` | 155 项通过 |
+| 核心 `--all-features` | 267 项通过，2 项原有忽略（包含安装后兼容回归） |
+| 主程序 `--all-features` | 160 项通过（包含安装后兼容回归） |
 | `acomp` 单元测试 | 9 项通过 |
 | 便携 `windows_settings` 测试目标（在 macOS 执行） | 146 项通过；含导入的共有模块测试 |
 | 其他集成测试 | resume_command 5、windows_indicators 9、windows_updates 1、windows_usage 25 项通过 |
 | Python manager 测试 | 24 项通过 |
 | Python scripts/tests | 55 项通过，12 项原生测试默认跳过后单独执行 |
 | 原生 Codex 0.159.3 + 最新调试 `acomp` 合成账号契约 | 12 项全部通过，无原生项遗留跳过 |
+| 旧 Dodex 0.155.0-alpha.16.4 与 Codex 0.159.3 共用 worker 契约 | 两版各 1 项通过：额度先于慢历史返回、配置核验、合成凭据及 daemon 哨兵保持不变 |
 | 托管 Dodex wrapper 的原生 session/resume | 通过 |
 | `acomp` PTY 交互与退出 | 通过 |
 | Swift 终端恢复命令环境隔离 | 先复现失败再修复通过；真实 shell 子进程验证 14 类覆盖变量清理及沙箱/网络/代理保留 |
 | Slint/AppKit 真实编辑器 | 34 个阶段通过；测试显式请求重绘以覆盖锁屏后的后台帧调度 |
-| Swift 原生 UI 解锁后完整复测 | 10 个原生套件全部通过；Rust 验收目标 1 passed / 0 failed，耗时 137.32 秒 |
+| Swift 原生 UI 解锁后完整复测 | 10 个原生套件全部通过；兼容修复后的最终 Rust 验收目标 1 passed / 0 failed，耗时 140.80 秒 |
 | macOS workspace 全目标 Clippy `-D warnings` | 通过 |
 | Windows GNU workspace 全目标 Clippy `-D warnings` | 通过；包含 Windows 专属测试的编译检查 |
 | macOS release 两个应用/终端入口 | 构建通过 |
@@ -55,11 +57,11 @@ Swift 分组输出为 `/tmp/acomp-native-selected.log`、`/tmp/acomp-terminal-is
 
 ### 本地构建产物
 
-- macOS 最终包：`dist/codex-dodex-20261002-macos-final/agent-companion-v0.3.23-macos-arm64.zip`。
+- macOS 最终包：`dist/codex-dodex-20261002-macos-legacy-fix/agent-companion-v0.3.23-macos-arm64.zip`。
   已解包、验证严格 ad-hoc 签名，并实际运行包内 `agent-companion --version` 和
   `acomp --version`，两者均为 0.3.23。校验和位于同目录 `SHA256SUMS-macos-arm64.txt`。
 - Windows 编译验证包：
-  `dist/codex-dodex-20261002-windows-validation/agent-companion-v0.3.23-windows-x86_64-gnu-validation.zip`。
+  `dist/codex-dodex-20261002-windows-legacy-fix/agent-companion-v0.3.23-windows-x86_64-gnu-legacy-fix-validation.zip`。
   四个程序均为 x86-64 PE，ZIP CRC 和解包后逐文件哈希通过；包内明确标注 GNU debug
   验证构建，未执行 Windows 程序。校验和位于同目录 `SHA256SUMS-windows-validation.txt`。
 
@@ -70,13 +72,46 @@ Windows 验证包仅在工作区生成，未发布或安装；macOS Companion �
 - 用户明确授权后，先完成解锁状态下的完整原生 UI 验收，再仅退出 Agent Companion。
 - 将最终包同卷暂存，核验签名、完整文件树和 `--version` 后，通过 `renamex_np(RENAME_SWAP)`
   原子交换 `/Applications/Agent Companion.app`，随后用 LaunchServices 重新打开。
-- 已验证安装内容与最终构建一致、签名有效，新进程 PID 为 65747。显示版本仍为 0.3.23；
-  本次构建的主程序 SHA-256 为 `34e72acabdb3ba12a2c1419d98215447b45c41b366cade8f22c053a5e82dc62a`。
-- 恢复记录：`/Applications/.AgentCompanion-install-20261002-ucwtjyh6/record.json`；
+- 已验证最终兼容修复的安装内容与构建一致、签名有效，新进程 PID 为 81019。显示版本仍为 0.3.23；
+  本次构建的主程序 SHA-256 为 `779b29c960254f8aa4d97cda4cf9ae82d60c2b9cea6d707e8608f2b2eab33a2e`。
+- 最终修复的恢复记录：`/Applications/.AgentCompanion-install-20261002-w4bad9tn/record.json`；
   旧版应用保留在同目录 `swap.app`。需要回退时，先退出新 Companion，再用同目录
   `companion_swap.py rollback record.json`（传入记录的绝对路径）。
+  初次替换前的更早版本仍保留在 `/Applications/.AgentCompanion-install-20261002-ucwtjyh6/swap.app`。
 - 没有修改 Codex/Dodex 程序、命令入口或配置；受保护的 5 个程序/入口再次核验未变化，
   现存 Codex 进程保持运行。只替换 Companion 无需重启 Codex TUI。
+
+### 本机安装后发现的旧 Dodex 兼容回归
+
+初次替换 Companion 后，用户报告 Usage 面板只剩 Codex。只读检查确认 Dodex 的监控
+仍然开启，安装和账号文件仍在；不是用户关闭监控或删除了副实例。
+
+- 旧安装的配置显式指定文件认证，但允许 SQLite 和日志目录使用隔离启动器提供的路径
+  及原生默认值。新的严格校验误把这两个缺省项当作冲突，导致已开启的 Dodex 从面板消失。
+- 旧 Dodex 内置 CLI 为 `0.155.0-alpha.16.4`，不接受 `features.daemon_auto_start`。
+  在严格配置模式下，该参数会使 Companion 的 stdio worker 启动失败。移除这个版本专属
+  参数后，仍通过显式 stdio transport 和禁用 remote control 保持独立 worker。
+- 回归修复保留真正冲突配置的拒绝行为，不改写个人配置；已开启但校验失败的实例保留
+  可见错误卡片，同时不创建其账号查询或历史读取器。
+
+旧版原生验证使用临时 HOME、合成凭据和本地 HTTP 服务，不读取真实账号。
+修复先通过 Rust 路由回归、Swift Usage 模型回归和严格配置 worker fixture 复现失败，
+再验证修复通过。定向验证包括核心配置 18 项、macOS 部署 77 项、路由 6 项、旧版 worker
+1 项及 Swift 双实例额度套件；Rust 定向项已计入上方整体结果。
+后续复测输出为 `/tmp/acomp-dodex-final-rust.log`、
+`/tmp/acomp-dodex-ui-green.log`、`/tmp/acomp-dodex-native-0155.log` 和
+`/tmp/acomp-dodex-native-0159.log`。
+
+最终解锁后的完整原生 UI 测试通过，输出为
+`/tmp/acomp-dodex-final-native-ui-unlocked.log`。macOS/Windows 全目标 Clippy、
+两平台编译链接和 macOS 打包校验均再次通过；Windows 独立 `config-edit` 特性也通过
+编译检查，系统配置目录使用与原生程序一致的 Known Folder API。
+
+本机最终包的只读校验接受现存 Dodex 配置后完成原子替换。实际 Tasks 页恢复 Codex/Dodex
+双卡，Usage 页可分别选择两实例，两侧额度均有成功读取时间；Dodex 手动刷新经历查询中
+状态后更新成功时间，历史也正常显示。复查受保护的 5 个程序/入口不变、原有 Codex 进程
+继续运行。本项仅验收此次卡片消失与旧 CLI 查询兼容回归，不代替换号、登出及成对升级矩阵。
+公共记录不保存真实账号标识、额度明细或认证响应。
 
 ## 本轮改动
 
@@ -131,7 +166,8 @@ Windows 验证包仅在工作区生成，未发布或安装；macOS Companion �
    独立 TUI 包更新和失败后重试；填写实际版本、系统版本和结果。
 
 只有版本、入口路由、账号归属和真实刷新全部通过，才标记对应平台功能验收完成。
-目前真实双账号验收、现存安装迁移和 Windows 实机验收均未完成。
+目前两实例正常额度读取和 Dodex 手动刷新已观察通过；完整换号/登出矩阵、现存安装迁移
+和 Windows 实机验收仍未完成。
 
 ### 实机记录（维护窗口填写）
 
@@ -141,7 +177,7 @@ Windows 验证包仅在工作区生成，未发布或安装；macOS Companion �
 | Codex App / Dodex App 实际版本 | 待更新后核验 | 待更新后核验 |
 | Codex TUI / Dodex TUI 实际版本 | 待更新后核验 | 待更新后核验 |
 | 四入口、项目打开、账号与历史关联 | 未验收 | 未验收 |
-| 两账号真实额度、换号与登出 | 未验收 | 未验收 |
+| 两账号真实额度、换号与登出 | 正常读取及 Dodex 手动刷新通过；换号与登出未验收 | 未验收 |
 | 成对升级、二次运行、失败恢复 | 未验收 | 未验收 |
 | 授权 / Store 策略阻断及错误 | 待填写 | 待填写 |
 

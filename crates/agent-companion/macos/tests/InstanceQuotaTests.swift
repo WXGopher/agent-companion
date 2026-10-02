@@ -16,6 +16,7 @@ import SwiftUI
 
     static func run(output: URL) throws {
         verifyReadIsolation()
+        try verifyBlockedInstance(output: output)
         try verifyCards(instances: [primary, secondary], values: ["75%", "20%"],
                         name: "dual-quota-popup", navigation: true, output: output)
         var missing = primary
@@ -28,6 +29,50 @@ import SwiftUI
                         name: "single-quota", output: output)
         try verifyMenuPopover(output: output)
         print("Instance quota cards: simultaneous Codex/Dodex, missing/expired readings, exact navigation, isolated caches and removal passed")
+    }
+
+    private static func verifyBlockedInstance(output: URL) throws {
+        let bridge = FixtureUsageBridge()
+        bridge.set(official(58), for: secondary.usageSource)
+        let model = CompanionModel(usageBridge: bridge)
+        defer { model.stop() }
+        var blocked = secondary
+        blocked.appPath = nil
+        blocked.executablePath = nil
+        blocked.databasePath = nil
+        blocked.weekly = nil
+        blocked.error = "Dodex configuration redirects sqlite_home outside its isolated directory."
+        model.snapshot = CodexSnapshot(loading: false, instances: [primary, blocked])
+        model.isPresented = true
+        model.refreshUsageSnapshot()
+        model.showUsage(for: "dodex")
+        precondition(model.instances.count == 2 && model.selectedInstanceID == "dodex")
+        precondition(model.weeklyText == "—" && model.subscriptionUsage.limits == nil)
+        precondition(model.subscriptionUsage.error == blocked.error,
+                     "A blocked deployment disappeared into an empty Usage page")
+        model.refreshUsage()
+        model.refreshUsageSnapshot()
+        precondition(bridge.events.isEmpty, "An unverified instance requested account data")
+        let fixture = PopupTestWindow(model: model)
+        defer { fixture.panel.close() }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.08))
+        let bitmap = fixture.host.bitmapImageRepForCachingDisplay(in: fixture.host.bounds)!
+        fixture.host.cacheDisplay(in: fixture.host.bounds, to: bitmap)
+        try bitmap.representation(using: .png, properties: [:])!.write(to:
+            output.appendingPathComponent("dual-quota-blocked-usage.png"))
+        try verifyCards(instances: [primary, blocked], values: ["75%", "—"],
+                        name: "dual-quota-blocked-tasks", output: output)
+
+        // A primary history scan error does not invalidate its independent account source.
+        var primaryScanError = primary
+        primaryScanError.executablePath = nil
+        primaryScanError.error = "Task database is unavailable."
+        bridge.set(official(39), for: primary.usageSource)
+        model.snapshot.instances = [primaryScanError, secondary]
+        model.showUsage(for: "codex")
+        model.refreshUsageSnapshot()
+        precondition(model.weeklyText == "61%" && model.subscriptionUsage.error == nil)
+        precondition(bridge.events == [.history("codex")])
     }
 
     private static func official(_ used: Int, readAt: Date = Date(), resetsAt: TimeInterval = 4_000_000_000) -> SubscriptionUsage {

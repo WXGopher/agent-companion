@@ -10,7 +10,7 @@ description = "Shared types and logic for Agent Companion: agent session monitor
 default = []
 # The named-pipe server pulls in tokio. `agent-companion-hook` turns it off so the hook
 # binary stays tiny and starts in single-digit milliseconds.
-config-edit = ["dep:toml_edit", "dep:tempfile"]
+config-edit = ["dep:toml_edit", "dep:tempfile", "dep:windows"]
 desktop-history = ["dep:rusqlite"]
 resume = ["config-edit", "desktop-history", "dep:base64", "dep:same-file", "dep:libc", "dep:junction", "dep:windows"]
 server = ["config-edit", "desktop-history", "dep:tokio", "dep:base64"]

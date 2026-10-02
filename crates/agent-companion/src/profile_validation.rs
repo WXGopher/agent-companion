@@ -15,7 +15,8 @@ pub(crate) struct Args {
 }
 
 pub(crate) fn run(args: Args) -> io::Result<()> {
-    profile_sync::validate_isolated_profile(
+    // The managed adapter supplies all isolation settings as native overrides.
+    profile_sync::validate_isolated_profile_with_runtime_defaults(
         &args.home,
         &IsolationPaths {
             sqlite_home: args.sqlite,

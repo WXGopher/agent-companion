@@ -104,7 +104,7 @@ final class SubscriptionUsageCoordinator {
     }
 
     func reading(for instance: CodexInstance) -> MenuBarUsage.Reading? {
-        guard let state = state(for: instance.usageSource) else { return nil }
+        guard !instance.routingBlocked, let state = state(for: instance.usageSource) else { return nil }
         return .init(usage: Self.weekly(state.usage)?.usage, stale: state.limits.error != nil,
                      readAt: state.usage.readAt, error: state.limits.error)
     }
