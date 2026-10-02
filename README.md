@@ -6,12 +6,16 @@
 
 在 Windows 任务栏或 macOS 菜单栏查看 Codex 的任务状态与订阅用量。
 
-### v0.3.23 更新
+### v0.3.24 更新
 
-- macOS Dodex 改为本机官方 App 的独立镜像，保留固定的公开入口、自有名称与图标；原生入口让启动后仍使用同一个 Dock 图标，不修改官方 App。
-- 启动时轻量比较官方 App 的版本与构建号；一致时直接启动，有更新时验证并原子替换，失败则继续打开现有 App。同一构建不重复复制或签名；实际升级后 macOS 仍可能再次请求钥匙串授权。
-- 保留已有 TUI 的运行程序、命令与第二账号配置；App 同步不会覆盖账号、个人配置或会话历史。
-- 设置页分开显示 Dodex App、Companion 接入和副账号与 TUI。打开页面只显示安装信息和保存的路径；点击“安装 Dodex App”或“检查并同步”才触发该页的 App 校验与同步。[发布说明](docs/releases/v0.3.23.md)
+- 额度与历史绑定实际账号、工作区和认证来源；换号、登出或身份无法确认时清除旧读数，拒绝晚到结果。正常 token 轮换保留缓存，慢历史查询不阻塞额度。
+- 恢复旧 Dodex 配置与内置 CLI 的兼容性；macOS 已启用实例校验失败时保留卡片并显示原因，暂停该实例读取。
+- 统一 App、TUI、额度与更新进程的环境隔离，修复 `--` 后提示文本及选项值转发；`dodex app` 和项目跳转进入公共 Dodex App。
+- 两平台增加成对维护：分别对齐 Codex/Dodex App 与 TUI，迁移已知旧入口，同版本也检查入口修订；未知修改不覆盖，较新版本不降级。Windows 桌面通过 WinGet 更新，TUI 使用独立完整包。
+- 新增 `acomp resume`，按当前目录发现原会话并选择本次额度账号。macOS 原生恢复目前仅支持通过校验的 Codex CLI 0.159.3 文件登录组合；Windows 恢复启动仍禁用。[支持边界](docs/RESUME.md)
+- macOS 菜单面板在切回其他应用时自动收起；修复用户级 CLI 安装锁释放及 Windows 启动参数测试。[发布说明](docs/releases/v0.3.24.md)
+
+macOS 双实例额度读取、Dodex 手动刷新和 App/TUI 启动已观察通过；Windows GUI、完整换号/登出及成对升级的实机验收仍未完成。[验收记录](docs/CODEX_DODEX_VALIDATION.md)
 
 ### v0.3.22 更新
 
@@ -42,11 +46,11 @@
 
 订阅用量复用对应实例的 Codex CLI ChatGPT 登录，无需 API Key。macOS 与 Windows 共用 Rust 查询服务：启动、定时到期和用户主动打开面板时查询所有已启用实例；手动刷新仅查询当前实例。默认每 5 分钟自动查询，设置中的“额度自动刷新间隔（分钟）”支持 1–60 分钟整数，所有实例共用。保存到应用配置目录的独立 `usage.json`，运行中生效并重新计时，不立即查询。
 
-每次额度刷新只进行必要握手和一次 `account/rateLimits/read` 业务调用，20 秒超时，不预查登录、不附带历史查询、不创建模型任务、不消耗推理 Token；CLI 内部 HTTP 次数不作保证。结果到达即发布并结束临时进程。额度和历史 Token 统计各自独立，同一实例同类请求合并；成功或失败后均重新等待设定间隔，不额外重试。休眠恢复后最多补查一次。
+每次额度刷新在身份、原生配置核验和必要握手后进行一次 `account/rateLimits/read` 业务调用，不附带历史查询、不创建模型任务、不消耗推理 Token；CLI 内部 HTTP 次数不作保证。同一认证目录的额度与历史复用 Companion 自建原生 worker，分别使用独立请求、20 秒超时和结果发布；额度不等待历史。同一实例同类请求合并，成功或失败后均重新等待设定间隔，不额外重试。休眠恢复后最多补查一次。
 
 切页、切实例、任务活动、界面绘制、额度重置和 Windows 悬停预览均不触发额度查询。历史 Token 统计仅在进入 Usage 页或切换该页实例时独立加载，成功和失败均从完成时缓存 5 分钟；停留页面不自动轮询，额度刷新按钮不刷新历史统计。关闭面板不取消额度请求。
 
-普通数值始终表示最后成功查询值；仅最近一次额度查询失败后保留旧值并加 `*`，再次查询中保持该状态，成功后清除。首次无结果或成功响应未包含对应额度窗口时显示 `—`。时间经过或跨过重置时间不会加星号，也不会推算为 100%；详情会提示“已到重置时间，等待下次查询”。悬停与 Usage 页显示最后成功时间和失败原因。账号查询结果不落盘，本地会话日志不再更新 GUI 额度；Claude 和 headless 模式保持原行为。
+普通数值表示已核验的同一账号最后成功查询值；换号、登出或身份无法确认时清除旧额度和历史。仅同账号最近一次额度查询失败后保留旧值并加 `*`，再次查询中保持该状态，成功后清除。首次无结果或成功响应未包含对应额度窗口时显示 `—`。时间经过或跨过重置时间不会加星号，也不会推算为 100%；详情会提示“已到重置时间，等待下次查询”。悬停与 Usage 页显示最后成功时间和失败原因。账号查询结果不落盘，本地会话日志不再更新 GUI 额度；Claude 和 headless 模式保持原行为。
 
 ### 安装
 
@@ -72,7 +76,7 @@ dodex exec "检查当前项目"
 dodex -C C:\projects\demo
 ```
 
-普通参数直接传给 Codex CLI，`--help` 和 `--version` 也由 Codex 处理。仅以 `--check` 或 `--deploy` 开头时进入环境管理：`dodex --check` 只检查官方运行程序；`dodex --deploy` 部署或校验环境并修复 shell 支持。升级旧版命令时，从新版程序运行 `.\agent-companion.exe dodex --deploy`。独立环境位于 `%LOCALAPPDATA%\AgentCompanion\Dodex`，已有账号、会话和个人配置继续使用。
+普通参数直接传给 Codex CLI，`--help` 和 `--version` 也由 Codex 处理；`dodex app [PATH]` 打开隔离桌面，`dodex update` 进入统一维护流程。以 `--check` 或 `--deploy` 开头时进入环境管理：`dodex --check` 只检查官方运行程序；`dodex --deploy` 部署或校验环境并修复 shell 支持。升级旧版命令时，从新版程序运行 `.\agent-companion.exe dodex --deploy`。独立环境位于 `%LOCALAPPDATA%\AgentCompanion\Dodex`，已有账号、会话和个人配置继续使用。
 
 桌面版仍可通过任务栏或托盘菜单的 **打开 Dodex**，或 `.\agent-companion.exe dodex` 打开，使用同一份第二实例配置。
 
@@ -85,13 +89,13 @@ dodex -C C:\projects\demo
 
 应用尚未经过 Apple 公证；首次打开若被拦截，可按 [Apple 官方说明](https://support.apple.com/102445)在“系统设置 → 隐私与安全性”中选择“仍要打开”。
 
-**macOS 双开**：设置 → Codex 双开 → 安装 Dodex App。从本机签名有效的官方 `Codex.app` 或保留 Codex 身份的 `ChatGPT.app` 创建独立名称、图标和本地签名的公开 App，不修改官方 App。已有账号目录与 TUI 保持不变；新环境首次使用需登录。官方 App 更新后，下次启动 Dodex 会自动检查并同步；版本与构建号一致时直接启动，更新失败时继续使用现有版本。也可退出 Dodex 后点击“检查并同步”，或运行 `agent-companion dodex-app --sync`。已有镜像需先手动同步一次以启用启动检查；实际升级可能再次触发 macOS 钥匙串授权。详见 [Dodex App 说明](docs/macos-dual-instance.md)。
+**macOS 双开**：设置 → Codex 双开 → 安装 Dodex App。从本机签名有效的官方 `Codex.app` 或保留 Codex 身份的 `ChatGPT.app` 创建独立名称、图标和本地签名的公开 App，不修改官方 App。已有账号目录与 TUI 保持不变；新环境首次使用需登录。官方 App 更新后，下次启动 Dodex 会自动检查并同步；版本、构建号和启动器修订一致且隔离校验通过时直接启动；同步或校验失败时停止启动并显示原因，保留已有文件供恢复。也可退出 Dodex 后点击“检查并同步”，或运行 `agent-companion dodex-app --sync`。已有镜像需先手动同步一次以启用启动检查；实际升级可能再次触发 macOS 钥匙串授权。详见 [Dodex App 说明](docs/macos-dual-instance.md)。
 
 **macOS 版本管理**：右键菜单栏读数，或设置 → Codex 双开，选择 **对齐 Codex/Dodex 版本**（以本机 Codex 为准，不联网）或 **全部更新到最新**（检查官方稳定版，更新 Codex 后分别对齐双方 App、TUI）。较新的 Dodex 不会被降级。打开设置只读取本机版本；操作中显示四项当前/目标版本及进度、错误。替换前须自行退出相关 App 和 TUI，不会自动结束会话或重启。TUI 对齐目前要求官方完整 standalone 安装和已有的兼容 Dodex 入口：先备份入口，再复制包括附属程序与资源的完整包，沿用副账号登录、会话、SQLite 和日志目录；不会迁移 npm/Homebrew 安装。右键菜单也提供 **Exit**。[版本管理细节](docs/macos-dual-instance.md#explicit-version-maintenance)
 
 macOS 重新打开 Agent Companion 会显示弹窗的 Tasks 页。刘海、悬停展开、显示器选择与独立 Dock 入口已移除；旧版入口偏好不会隐藏菜单栏，已保存的菜单栏位置继续保留。设置从弹窗底部打开。详见[菜单栏说明](docs/MACOS_MENU_BAR.md)。
 
-**双开隔离与停用**：两个平台的新环境均使用独立文件凭证、历史、数据库和个人配置，不复制原实例的账号数据。已有环境只有通过兼容性和隔离校验才会接入，冲突时停止且不覆盖。停用只关闭 Companion 对第二实例的监控，不退出 Dodex、不删除环境。macOS Dodex App 在启动时同步本机官方应用；TUI 仅通过明确操作更新，Windows 运行程序沿用原更新方式。暂不提供卸载功能。
+**双开隔离与停用**：两个平台的新环境均使用独立文件凭证、历史、数据库和个人配置，不复制原实例的账号数据。已有环境只有通过兼容性和隔离校验才会接入，冲突时停止且不覆盖。停用只关闭 Companion 对第二实例的监控，不退出 Dodex、不删除环境。macOS Dodex App 在启动时同步本机官方应用；两平台的成对维护均须明确发起；Windows 桌面通过精确 Store 产品 ID 调用 WinGet，重新定位和验签后同步 Dodex，TUI 独立维护完整包。暂不提供卸载功能。
 
 **升级**：先退出旧程序及设置窗口，再替换文件；已安装 Windows hooks 的用户需重新执行安装命令。Codex 配置、账号和双开环境会保留。
 
@@ -101,12 +105,16 @@ See Codex tasks and subscription usage in the Windows taskbar or macOS menu bar.
 
 `acomp resume` searches original Codex / Dodex sessions in the exact current directory and shows history, settings, and quota-account provenance. Install user-level commands with `agent-companion install-cli`. Unverified or incompatible combinations are disabled with a reason; see [resume usage and validation boundaries](docs/RESUME.md).
 
-### New in v0.3.23
+### New in v0.3.24
 
-- macOS Dodex is now a local mirror of the official App with a stable public entry, its own name and icon, and a native entry that keeps the running App on the same Dock icon. The official App is untouched.
-- Startup compares the official App's version and build. Matching builds launch directly; changed builds are verified and replaced atomically, with the existing App retained on failure. Matching builds are not copied or signed again; actual upgrades may prompt for macOS Keychain access again.
-- Preserve the existing TUI executable, commands and second-account profile. App synchronization does not overwrite accounts, personal settings or session history.
-- Settings separates Dodex App, Companion monitoring, and the second account and TUI. Opening the page displays installation metadata and saved paths; App verification and synchronization on that page begin only through the install or sync button. [Release notes](docs/releases/v0.3.23.md)
+- Bind quota and history to the verified account, workspace and authentication source. Account changes, logout or unverifiable identity clear old readings and reject late results; ordinary token rotation preserves the cache. Slow history requests no longer delay quota.
+- Restore compatibility with older Dodex profiles and bundled CLIs. On macOS, an enabled instance that fails validation keeps its card and shows the reason while its readers remain disabled.
+- Isolate App, TUI, quota and updater environments consistently, and preserve prompt text after `--` and option values. `dodex app` and project navigation use the public Dodex App.
+- Add paired maintenance on both platforms: align the Codex/Dodex App and TUI pairs separately, migrate known old entries even at matching versions, preserve unknown modifications and avoid downgrades. Windows desktop updates use WinGet; TUI uses a separate complete package.
+- Add `acomp resume` to find original sessions in the current directory and choose the account for this run. Native resume on macOS currently requires a verified Codex CLI 0.159.3 file-login combination; Windows resume launch remains disabled. [Support boundaries](docs/RESUME.md)
+- Dismiss the macOS menu popup when returning to another app, and fix user-level CLI installer lock release and Windows launch-argument tests. [Release notes](docs/releases/v0.3.24.md)
+
+macOS checks observed both instances' quota, Dodex manual refresh, and Dodex App/TUI startup. Windows GUI, the full account-switch/logout matrix and end-to-end paired upgrades remain unverified on real installations. [Validation record](docs/CODEX_DODEX_VALIDATION.md)
 
 ### New in v0.3.22
 
@@ -135,11 +143,11 @@ See Codex tasks and subscription usage in the Windows taskbar or macOS menu bar.
 
 Subscription usage uses each instance's Codex CLI ChatGPT login, with no API key. macOS and Windows share one Rust service. Startup, a due timer, and actively opening the panel query every enabled instance; manual refresh queries only the selected instance. Automatic refresh defaults to five minutes. Settings accepts an integer from 1 to 60 minutes, shared by all instances and stored in the application configuration directory's separate `usage.json`. Saving restarts the interval without an immediate query.
 
-Each quota refresh performs the required handshake and exactly one `account/rateLimits/read` business call, with a 20-second timeout. It does not precheck the login, fetch history, create a model task or spend inference tokens; this does not guarantee a single HTTP request inside the CLI. Quota is published as soon as it arrives and the temporary process ends. Quota and history have separate in-flight requests and state. Overlapping requests of the same type and instance merge. Success and failure both restart the interval, with no extra retries; waking from sleep triggers at most one overdue query.
+After identity and native configuration checks and the required handshake, each quota refresh makes one `account/rateLimits/read` business call. It does not fetch history, create a model task or spend inference tokens; this does not guarantee a single HTTP request inside the CLI. Quota and history for one authentication directory share a Companion-owned native worker, with independent requests, 20-second deadlines and result publication. Quota does not wait for history. Overlapping requests of the same type and instance merge. Success and failure both restart the interval, with no extra retries; waking from sleep triggers at most one overdue query.
 
 Page or instance switches, task activity, rendering, quota resets and Windows hover previews do not query quota. Historical token statistics load independently only on entering Usage or switching its instance, with a separate five-minute cache from completion for both success and failure. Remaining on Usage does not poll history; the refresh button only refreshes quota. Closing the panel does not cancel quota requests.
 
-Ordinary readings always show the last successful query. Only a failed quota query adds `*` to a retained value; querying again preserves that state until success clears it. Before the first result, or when a successful response omits a window, the value is `—`. Age and reset times never add a star or imply 100% remaining; after a reset the detail says it is waiting for the next query. Hover text and Usage show the last success time and failure reason. Account results are never persisted, and local session logs no longer feed GUI quota. Claude and headless behavior is unchanged.
+Ordinary readings show the last successful query for the same verified account. Account changes, logout or unverifiable identity clear old quota and history. Only a failed query for the same account adds `*` to a retained value; querying again preserves that state until success clears it. Before the first result, or when a successful response omits a window, the value is `—`. Age and reset times never add a star or imply 100% remaining; after a reset the detail says it is waiting for the next query. Hover text and Usage show the last success time and failure reason. Account results are never persisted, and local session logs no longer feed GUI quota. Claude and headless behavior is unchanged.
 
 Opening the full panel checks for a newer stable GitHub release in the background, at most once every 24 hours across restarts. A newer version shows its version number and a button to open its GitHub Release page. Checks do not delay the panel, and network failures quietly retain any known update. Hover previews do not check for updates; the app does not download or install them automatically.
 
@@ -167,7 +175,7 @@ dodex exec "Inspect this project"
 dodex -C C:\projects\demo
 ```
 
-Regular arguments pass directly to Codex CLI, including `--help` and `--version`. Only a leading `--check` or `--deploy` selects deployment management: `dodex --check` checks the official runtime; `dodex --deploy` deploys or validates the environment and repairs shell support. To upgrade an older command, run `.\agent-companion.exe dodex --deploy` from the new release. The isolated environment lives under `%LOCALAPPDATA%\AgentCompanion\Dodex`; existing account data, sessions and personal settings stay in use.
+Regular arguments pass directly to Codex CLI, including `--help` and `--version`. `dodex app [PATH]` opens the isolated desktop; `dodex update` enters paired maintenance. A leading `--check` or `--deploy` selects deployment management: `dodex --check` checks the official runtime; `dodex --deploy` deploys or validates the environment and repairs shell support. To upgrade an older command, run `.\agent-companion.exe dodex --deploy` from the new release. The isolated environment lives under `%LOCALAPPDATA%\AgentCompanion\Dodex`; existing account data, sessions and personal settings stay in use.
 
 For the desktop app, choose **打开 Dodex** from the taskbar or tray menu, or run `.\agent-companion.exe dodex`. It uses the same second-instance profile.
 
@@ -180,13 +188,13 @@ The command is installed in a supported user command directory already on the cu
 
 The app is not Apple-notarized. If the first launch is blocked, follow [Apple's instructions](https://support.apple.com/102445) to choose **Open Anyway** in System Settings → Privacy & Security.
 
-**macOS second instance**: Settings → Codex 双开 → 安装 Dodex App. Creates a public App with its own name, icon and local signature from the validly signed official `Codex.app` or Codex-identified `ChatGPT.app` installed on this Mac, leaving the official App untouched. Existing profile directories and TUI stay unchanged; fresh environments require login. After the official App updates, the next Dodex startup checks and syncs it automatically. Matching versions and builds launch directly; failed updates leave the existing App usable. Manual sync remains available after quitting Dodex through “检查并同步” or `agent-companion dodex-app --sync`. Existing mirrors need one manual sync to enable startup checks; actual upgrades may prompt for macOS Keychain access again. See the [Dodex App guide](docs/macos-dual-instance.md).
+**macOS second instance**: Settings → Codex 双开 → 安装 Dodex App. Creates a public App with its own name, icon and local signature from the validly signed official `Codex.app` or Codex-identified `ChatGPT.app` installed on this Mac, leaving the official App untouched. Existing profile directories and TUI stay unchanged; fresh environments require login. After the official App updates, the next Dodex startup checks and syncs it automatically. Matching versions, builds and launcher revisions launch directly after isolation checks. Failed synchronization or validation stops launch with a reason and preserves the existing files for recovery. Manual sync remains available after quitting Dodex through “检查并同步” or `agent-companion dodex-app --sync`. Existing mirrors need one manual sync to enable startup checks; actual upgrades may prompt for macOS Keychain access again. See the [Dodex App guide](docs/macos-dual-instance.md).
 
 **macOS version maintenance**: right-click the menu-bar readout or open Settings → Codex 双开. **对齐 Codex/Dodex 版本** aligns against local Codex without a network request; **全部更新到最新** checks official stable releases, updates Codex, then aligns each App and TUI pair. Newer Dodex versions are retained. Opening Settings only reads local versions. Close affected Apps and terminals before replacement; existing sessions are never terminated or restarted automatically. TUI alignment currently requires the full official standalone package and a compatible existing Dodex adapter. It backs up the adapter and preserves the complete package, auxiliary programs, resources and existing secondary account/session/SQLite/log paths; npm and Homebrew installations are not migrated. The context menu also includes **Exit**. See [maintenance details](docs/macos-dual-instance.md#explicit-version-maintenance).
 
 On macOS, reopening Agent Companion shows the popup's Tasks page. The notch, hover expansion, display selection and separate Dock entry have been removed. Legacy entry preferences cannot hide the menu bar, and its saved position is retained. Open Settings from the popup footer. See the [menu-bar guide](docs/MACOS_MENU_BAR.md).
 
-**Isolation and disabling**: on both platforms, a fresh environment has separate file credentials, history, databases and personal settings, without copying account data from the original instance. Existing environments are adopted only after compatibility and isolation checks; conflicts stop without overwriting. Disabling integration stops Companion monitoring the second instance without quitting Dodex or deleting its environment. macOS Dodex App syncs from the local official App at startup; TUI maintenance requires an explicit action, and Windows retains its existing update behavior. Uninstall is not included.
+**Isolation and disabling**: on both platforms, a fresh environment has separate file credentials, history, databases and personal settings, without copying account data from the original instance. Existing environments are adopted only after compatibility and isolation checks; conflicts stop without overwriting. Disabling integration stops Companion monitoring the second instance without quitting Dodex or deleting its environment. macOS Dodex App syncs from the local official App at startup; paired maintenance requires an explicit action on both platforms. Windows uses the exact Store product ID with WinGet, rediscovers and verifies the desktop signature before synchronizing Dodex, and maintains the complete TUI package separately. Uninstall is not included.
 
 **Upgrade**: quit the old app and its Settings window, then replace the files. If you installed Windows hooks, rerun the installation command. Codex configuration, accounts and the second-instance environment are retained.
 
