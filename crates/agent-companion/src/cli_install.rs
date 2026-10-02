@@ -12,6 +12,35 @@ use std::{fs::File, io::Read};
 const OWNER: &str = "agent-companion/terminal-cli";
 const MARKER: &str = ".agent-companion-cli.json";
 
+struct InstallLock {
+    file: fs::File,
+}
+
+impl InstallLock {
+    fn acquire(path: &Path) -> io::Result<Self> {
+        if is_link(path)? {
+            return Err(io::Error::other("CLI install lock is redirected"));
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?;
+        file.try_lock()
+            .map_err(|_| io::Error::other("Another CLI installation is in progress"))?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for InstallLock {
+    fn drop(&mut self) {
+        // A concurrent fork can retain the open-file description until exec.
+        // Closing only our handle leaves its lock alive in that interval.
+        let _ = self.file.unlock();
+    }
+}
+
 #[derive(Default, Serialize, Deserialize)]
 struct Ownership {
     schema: u32,
@@ -92,17 +121,7 @@ fn install(directory: &Path, sources: &[(String, PathBuf)]) -> io::Result<()> {
     }
     fs::create_dir_all(directory)?;
     let lock_path = directory.join(".agent-companion-cli.lock");
-    if is_link(&lock_path)? {
-        return Err(io::Error::other("CLI install lock is redirected"));
-    }
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(lock_path)?;
-    lock.try_lock()
-        .map_err(|_| io::Error::other("Another CLI installation is in progress"))?;
+    let _lock = InstallLock::acquire(&lock_path)?;
     let marker = directory.join(MARKER);
     let mut ownership = read_ownership(&marker)?;
     let mut desired = Vec::new();
@@ -394,6 +413,26 @@ fn register_user_path(directory: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn installation_lock_releases_while_an_inherited_descriptor_remains_open() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("install.lock");
+        let lock = InstallLock::acquire(&path).unwrap();
+        // dup and fork retain the same open-file description. A concurrent
+        // spawn can hold this description until exec, even with CLOEXEC set.
+        let inherited = lock.file.try_clone().unwrap();
+        assert!(InstallLock::acquire(&path).is_err());
+        drop(lock);
+        let next = InstallLock::acquire(&path)
+            .expect("completed installation must release its lock before a forked child execs");
+        drop(inherited);
+        assert!(InstallLock::acquire(&path).is_err());
+        drop(next);
+        InstallLock::acquire(&path).unwrap();
+    }
+
     #[test]
     fn installation_preserves_unrelated_entries_and_can_be_repeated() {
         let temporary = tempfile::tempdir().unwrap();

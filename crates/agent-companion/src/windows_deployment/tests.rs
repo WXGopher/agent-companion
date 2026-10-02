@@ -194,7 +194,39 @@ fn cli_launch_keeps_native_arguments_terminal_io_working_directory_and_exit_stat
     ];
     let blank = cli_command(&instance, &[]);
     assert_eq!(blank.get_program(), instance.cli_path.as_os_str());
-    assert_eq!(blank.get_args().count(), 0);
+    let owned_arguments: Vec<OsString> = blank.get_args().map(OsString::from).collect();
+    assert_eq!(owned_arguments.len(), 6);
+    let settings: Vec<_> = owned_arguments
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| {
+            assert_eq!(pair[0], "-c");
+            let (key, value) = pair[1].to_str().unwrap().split_once('=').unwrap();
+            (
+                key.to_owned(),
+                serde_json::from_str::<String>(value).unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        settings,
+        vec![
+            ("cli_auth_credentials_store".into(), "file".into()),
+            (
+                "sqlite_home".into(),
+                instance.database_dir.to_string_lossy().into_owned(),
+            ),
+            (
+                "log_dir".into(),
+                instance
+                    .desktop_user_data
+                    .join("logs")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+        ]
+    );
     assert_eq!(blank.get_current_dir(), None);
     for name in ["TERM", "COLORTERM", "WT_SESSION", "NO_COLOR", "LANG"] {
         let actual = blank
@@ -219,7 +251,11 @@ fn cli_launch_keeps_native_arguments_terminal_io_working_directory_and_exit_stat
     );
     let actual = fs::read_to_string(output).unwrap();
     let wide = |value: &std::ffi::OsStr| value.encode_wide().collect::<Vec<_>>();
-    let expected_arguments: Vec<_> = arguments.iter().map(|value| wide(value)).collect();
+    let expected_arguments: Vec<_> = owned_arguments
+        .iter()
+        .chain(&arguments)
+        .map(|value| wide(value))
+        .collect();
     let directory = wide(std::env::current_dir().unwrap().as_os_str());
     assert!(actual.contains(&format!("arguments={expected_arguments:?}\n")));
     assert!(actual.contains(&format!("directory={directory:?}\n")));
