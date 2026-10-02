@@ -574,7 +574,7 @@ mod tests {
         assert_eq!(
             paths,
             vec![
-                display_path(&root.path().join("repo/AGENTS.md")),
+                display_path(&root.path().join("repo").join("AGENTS.md")),
                 display_path(&session.cwd.join("AGENTS.override.md"))
             ]
         );
