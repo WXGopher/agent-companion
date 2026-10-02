@@ -372,6 +372,15 @@ pub(super) fn mirror_message(status: &mirror::MirrorStatus) -> String {
 pub fn sync_desktop() -> Result<String, String> {
     let layout = Layout::current()?;
     private_directory(&layout.support)?;
+    let _maintenance = DeploymentLock::acquire(&layout.support.join("software-updates.lock"))?;
+    sync_desktop_under_maintenance_lock()
+}
+
+/// The paired updater already holds software-updates.lock. All public entry
+/// points acquire maintenance first and deployment second, including startup.
+pub(crate) fn sync_desktop_under_maintenance_lock() -> Result<String, String> {
+    let layout = Layout::current()?;
+    private_directory(&layout.support)?;
     let _lock = DeploymentLock::acquire(&layout.support.join("deployment.lock"))?;
     if let Some(record) = existing_monitor_record(&layout)? {
         validate_record_for_app_sync(&layout, &record)?;
@@ -385,6 +394,8 @@ pub fn sync_desktop() -> Result<String, String> {
 pub fn sync_desktop_on_launch(app: &Path) -> Result<(), String> {
     let layout = Layout::current()?;
     private_directory(&layout.support)?;
+    let _maintenance =
+        DeploymentLock::acquire_waiting(&layout.support.join("software-updates.lock"))?;
     let _lock = DeploymentLock::acquire_waiting(&layout.support.join("deployment.lock"))?;
     mirror::sync_on_launch(&layout, app)
 }
@@ -408,6 +419,7 @@ pub fn desktop_entry(repair: bool) -> Result<String, String> {
     }
     require_desktop_stopped(&layout)?;
     private_directory(&layout.support)?;
+    let _maintenance = DeploymentLock::acquire(&layout.support.join("software-updates.lock"))?;
     let _lock = DeploymentLock::acquire(&layout.support.join("deployment.lock"))?;
     let instance = repair_saved_with(&layout, &SystemOps)?;
     Ok(format!(

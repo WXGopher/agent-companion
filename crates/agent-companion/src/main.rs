@@ -32,8 +32,9 @@ mod macos_primary_app;
 #[cfg(target_os = "macos")]
 mod managed_tui;
 mod out;
+mod profile_validation;
 mod resume_cli;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 mod software_updates;
 #[cfg(any(target_os = "macos", windows))]
 mod update_service;
@@ -72,6 +73,14 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    #[command(hide = true)]
+    DodexValidateProfile(profile_validation::Args),
+    /// Run paired Codex/Dodex maintenance and report the verified result.
+    #[cfg(any(target_os = "macos", windows))]
+    SoftwareMaintenance {
+        #[arg(value_enum)]
+        action: software_updates::Action,
+    },
     /// Continue an original Codex or Dodex session using a chosen quota account.
     Resume(resume_cli::Args),
     /// Install user-level acomp and agent-companion terminal commands.
@@ -92,7 +101,7 @@ enum Command {
     /// Open the standalone Codex CLI status bar editor. Apply, close, then restart Codex.
     CodexTui {
         /// Open Codex dual-instance settings and align or update Codex/Dodex.
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         #[arg(long, value_enum)]
         software_action: Option<software_updates::Action>,
     },
@@ -191,6 +200,48 @@ fn main() -> ExitCode {
     let cli = if standalone_dodex {
         let arguments: Vec<_> = std::env::args_os().skip(1).collect();
         if !is_dodex_management(&arguments) {
+            use agent_companion_core::codex_args::{self, Action};
+            let action = std::env::current_dir()
+                .map_err(|error| error.to_string())
+                .and_then(|cwd| codex_args::route(&arguments, &cwd));
+            match action {
+                Ok(Action::App(workspace)) => {
+                    return match windows_deployment::launch_project(workspace.as_deref()) {
+                        Ok(_) => ExitCode::SUCCESS,
+                        Err(error) => {
+                            errln!("dodex: {error}");
+                            ExitCode::FAILURE
+                        }
+                    };
+                }
+                Ok(Action::Update) => {
+                    software_updates::request(software_updates::Action::UpdateAll);
+                    return match codex_tui::run() {
+                        Ok(()) => ExitCode::SUCCESS,
+                        Err(error) => {
+                            errln!("dodex: {error}");
+                            ExitCode::FAILURE
+                        }
+                    };
+                }
+                Ok(Action::AppHelp) => {
+                    out::outln!(
+                        "Usage: dodex app [PATH] [-C DIRECTORY]\nOpen the isolated public Dodex App."
+                    );
+                    return ExitCode::SUCCESS;
+                }
+                Ok(Action::UpdateHelp) => {
+                    out::outln!(
+                        "Usage: dodex update\nOpen Companion's paired App and TUI maintenance controls."
+                    );
+                    return ExitCode::SUCCESS;
+                }
+                Err(error) => {
+                    errln!("dodex: {error}");
+                    return ExitCode::FAILURE;
+                }
+                Ok(Action::Native) => {}
+            }
             match windows_deployment::launch_cli(&arguments) {
                 // ExitCode only accepts u8; Windows child exit codes use all
                 // 32 bits, including Ctrl+C and application-specific errors.
@@ -211,6 +262,16 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     let result = match cli.command {
+        Some(Command::DodexValidateProfile(args)) => profile_validation::run(args),
+        #[cfg(any(target_os = "macos", windows))]
+        Some(Command::SoftwareMaintenance { action }) => software_updates::run_action(action)
+            .map(|snapshot| {
+                for row in snapshot.rows {
+                    out::outln!("{}: {} — {}", row.name, row.current, row.message);
+                }
+                out::outln!("{}", snapshot.message);
+            })
+            .map_err(std::io::Error::other),
         Some(Command::Resume(args)) => match resume_cli::run(&args) {
             Ok(code) => std::process::exit(code),
             Err(error) => Err(error),
@@ -252,10 +313,10 @@ fn main() -> ExitCode {
         #[cfg(all(not(windows), not(target_os = "macos")))]
         None => codex_tui::run(),
         Some(Command::CodexTui {
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             software_action,
         }) => {
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             if let Some(action) = software_action {
                 software_updates::request(action);
             }

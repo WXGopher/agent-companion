@@ -34,6 +34,10 @@ struct Ownership {
     // During replacement both hashes are accepted, so interruption between the
     // two atomic writes can be repaired without claiming an unrelated file.
     hashes: Vec<String>,
+    #[serde(default)]
+    entry_revision: u32,
+    #[serde(default)]
+    update_route: String,
 }
 
 struct Environment {
@@ -162,6 +166,43 @@ pub(super) fn ensure() -> Result<Registration, String> {
     Ok(registration)
 }
 
+pub(super) fn check_owned() -> Result<(), String> {
+    let environment = Environment::read()?;
+    let names = command_names(&environment.extensions);
+    for directory in std::iter::once(environment.current_directory.clone())
+        .chain(environment.entries(&environment.path))
+        .chain(environment.candidates().into_iter().map(|(path, _)| path))
+    {
+        check_directory(&directory, &names)?;
+    }
+    Ok(())
+}
+
+pub(super) fn is_current() -> Result<bool, String> {
+    let environment = Environment::read()?;
+    let source = std::env::current_exe().map_err(|_| "无法定位 Companion 程序。")?;
+    let mut staged = tempfile::NamedTempFile::new().map_err(|_| "无法验证当前入口修订。")?;
+    fs::copy(&source, staged.path()).map_err(|_| "无法验证当前入口修订。")?;
+    make_console_launcher(staged.as_file_mut()).map_err(|_| "无法验证当前入口修订。")?;
+    let expected = file_hash(staged.path())?;
+    for directory in environment
+        .entries(&environment.path)
+        .into_iter()
+        .chain(environment.candidates().into_iter().map(|(path, _)| path))
+    {
+        let entry = directory.join("dodex.exe");
+        if !entry.exists() {
+            continue;
+        }
+        let owner = ownership(&directory)?.ok_or_else(|| conflict(&entry))?;
+        return Ok(owner.schema == 2
+            && owner.entry_revision == 2
+            && owner.update_route == "companion"
+            && file_hash(&entry)? == expected);
+    }
+    Ok(false)
+}
+
 fn same_path(a: &Path, b: &Path) -> bool {
     let key = |path: &Path| {
         path.to_string_lossy()
@@ -187,7 +228,8 @@ fn ownership(directory: &Path) -> Result<Option<Ownership>, String> {
         return Ok(None);
     }
     let owner: Ownership = read_json(&marker).map_err(|_| conflict(&marker))?;
-    if owner.schema != 1
+    if !matches!(owner.schema, 1 | 2)
+        || owner.schema == 2 && (owner.entry_revision != 2 || owner.update_route != "companion")
         || owner.owner != OWNER
         || owner.hashes.is_empty()
         || owner.hashes.len() > 2
@@ -328,9 +370,11 @@ fn save_ownership(directory: &Path, hashes: Vec<String>, existing: bool) -> Resu
     serde_json::to_writer(
         &mut stage,
         &Ownership {
-            schema: 1,
+            schema: 2,
             owner: OWNER.into(),
             hashes,
+            entry_revision: 2,
+            update_route: "companion".into(),
         },
     )
     .map_err(|_| "无法保存 dodex 命令登记。")?;
@@ -374,6 +418,11 @@ fn install_command(source: &Path, directory: &Path) -> Result<(), String> {
     if previous_hash.as_ref() == Some(&new_hash) {
         // The console conversion is idempotent. In particular, dodex --deploy
         // must not replace its running self or rewrite its ownership marker.
+        if owner.as_ref().is_some_and(|owner| {
+            owner.schema != 2 || owner.entry_revision != 2 || owner.update_route != "companion"
+        }) {
+            save_ownership(directory, vec![new_hash], true)?;
+        }
         return Ok(());
     }
     let mut hashes = vec![new_hash.clone()];

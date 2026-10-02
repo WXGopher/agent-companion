@@ -10,6 +10,7 @@ use std::{
 
 const MARKER: &str = "# agent-companion-dodex: ";
 const WRAPPER: &str = include_str!("software_updates/dodex-wrapper.py");
+const LEGACY_WRAPPER: &str = include_str!("software_updates/dodex-wrapper-v1.py");
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Binding {
@@ -86,7 +87,7 @@ pub(crate) fn read_binding(home: &Path, entry: &Path) -> Result<Option<Binding>,
     if binding.entry != entry
         || !binding.package.starts_with(support.join("packages"))
         || !binding.original.starts_with(&support)
-        || render_wrapper(&binding)? != bytes
+        || (render_wrapper(&binding)? != bytes && render_legacy_wrapper(&binding)? != bytes)
     {
         return Err("Dodex 托管入口已发生变化，请检查后重试。".into());
     }
@@ -104,9 +105,24 @@ pub(crate) fn read_binding(home: &Path, entry: &Path) -> Result<Option<Binding>,
 }
 
 pub(crate) fn render_wrapper(binding: &Binding) -> Result<Vec<u8>, String> {
-    let json = serde_json::to_string(binding).map_err(|_| "无法生成隔离入口。")?;
+    let mut metadata = serde_json::to_value(binding).map_err(|_| "无法生成隔离入口。")?;
+    metadata["schema"] = 2.into();
+    metadata["entry_revision"] = 2.into();
+    metadata["update_route"] = "companion".into();
+    let json = serde_json::to_string(&metadata).map_err(|_| "无法生成隔离入口。")?;
+    render(WRAPPER, &json)
+}
+
+pub(crate) fn render_legacy_wrapper(binding: &Binding) -> Result<Vec<u8>, String> {
+    render(
+        LEGACY_WRAPPER,
+        &serde_json::to_string(binding).map_err(|_| "无法生成隔离入口。")?,
+    )
+}
+
+fn render(template: &str, json: &str) -> Result<Vec<u8>, String> {
     let literal = serde_json::to_string(&json).map_err(|_| "无法编码隔离入口。")?;
-    Ok(WRAPPER
+    Ok(template
         .replace("# __BINDING_MARKER__", &format!("{MARKER}{json}"))
         .replace("__BINDING_JSON__", &literal)
         .into_bytes())

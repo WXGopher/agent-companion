@@ -12,10 +12,31 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[path = "entries.rs"]
+pub(crate) mod entries;
+
 const CLI_RELEASE: &str = "https://api.github.com/repos/openai/codex/releases/latest";
 const APP_FEED: &str = "https://persistent.oaistatic.com/codex-app-prod/appcast.xml";
 const OFFICIAL_REQUIREMENT: &str = "=anchor apple generic and identifier \"com.openai.codex\" and certificate leaf[subject.OU] = \"2DC432GLL2\"";
 const MAX_METADATA: u64 = 4 * 1024 * 1024;
+const APP_PENDING: &str = "software-updates-app-pending.json";
+const CLI_PENDING: &str = "software-updates-cli-pending.json";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PrimaryEntryPublication {
+    schema: u32,
+    entry: PathBuf,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct AppPublication {
+    schema: u32,
+    destination: PathBuf,
+    staged: PathBuf,
+    backup: PathBuf,
+    original: Version,
+    target: Version,
+}
 
 #[cfg(test)]
 #[path = "macos_tests.rs"]
@@ -91,6 +112,24 @@ impl System {
         self.command("codex")
             .ok_or_else(|| "未找到 codex 终端命令。".into())
     }
+    fn primary_native(&self) -> Result<PathBuf, String> {
+        let native = entries::primary_native(&self.home, &self.primary_cli()?)?;
+        let package = package_root(&native)?;
+        let value: serde_json::Value = serde_json::from_slice(&read_limited(
+            &package.join("codex-package.json"),
+            64 * 1024,
+        )?)
+        .map_err(|_| "官方 TUI 清单无效。")?;
+        let expected = Version {
+            version: value["version"]
+                .as_str()
+                .ok_or("官方 TUI 版本无效。")?
+                .into(),
+            build: None,
+        };
+        validate_package(&package, &expected)?;
+        Ok(native)
+    }
     fn dodex_entry(&self) -> PathBuf {
         self.command("dodex")
             .unwrap_or_else(|| self.home.join(".local/bin/dodex"))
@@ -122,10 +161,7 @@ impl System {
             );
         }
         let profile = self.secondary()?;
-        let primary = self.primary_cli()?;
-        let native = primary
-            .canonicalize()
-            .map_err(|_| "无法定位 Codex TUI 程序。")?;
+        let native = self.primary_native()?;
         let source = package_root(&native)?;
         validate_package(&source, expected)?;
         let old_binding = self.managed_binding()?;
@@ -138,11 +174,7 @@ impl System {
                 )?;
                 // Only the audited adapter has a fixed manager path and can be
                 // relocated without changing its app / workspace semantics.
-                let text = String::from_utf8_lossy(&bytes);
-                if !text.contains("Dodex: B's native CLI by default; isolate the desktop and updater entry points.")
-                    || !text.contains("MANAGER_PATH = Path(") {
-                    return Err("现有 dodex 入口类型未知，无法保证原生 app 行为；未替换入口。".into());
-                }
+                entries::legacy_adapter(&self.home, &bytes)?;
                 self.support.join("Tui/original-dodex")
             }
         };
@@ -183,28 +215,113 @@ impl System {
             version: expected.version.clone(),
         };
         self.require_stopped()?;
-        atomic_write(&entry, &render_wrapper(&binding)?, 0o755)?;
+        let wrapper = render_wrapper(&binding)?;
+        // Make the package durable before the entry can reference it. A crash
+        // may leave an unused immutable package, never a dangling live entry.
+        let _ = staged.keep();
+        atomic_write(&entry, &wrapper, 0o755)?;
         // Publication is the commit point. Earlier failures clean up the full
         // staged package; a verified original-entry backup is reusable on retry.
-        let _ = staged.keep();
         Ok(())
     }
-    fn update_cli(&self, _release: &Release) -> Result<(), String> {
+    fn update_cli(&self, release: &Release) -> Result<(), String> {
         let entry = self.primary_cli()?;
-        let native = entry
-            .canonicalize()
-            .map_err(|_| "无法定位官方 TUI 安装位置。")?;
+        let native = self.primary_native()?;
         let primary_home = self.home.join(".codex");
+        if self
+            .cli_version(&native, &primary_home)?
+            .compare(&release.version)?
+            != std::cmp::Ordering::Less
+        {
+            return Ok(());
+        }
         if native.starts_with(primary_home.join("packages/standalone/releases")) {
+            let wrapped = !fs::symlink_metadata(&entry)
+                .map_err(|_| "无法检查官方 TUI 入口。")?
+                .file_type()
+                .is_symlink()
+                && entry != native;
+            if wrapped {
+                atomic_write(
+                    &self.support.join(CLI_PENDING),
+                    &serde_json::to_vec(&PrimaryEntryPublication {
+                        schema: 1,
+                        entry: entry.clone(),
+                    })
+                    .map_err(|_| "无法保存主账号入口恢复记录。")?,
+                    0o600,
+                )?;
+            }
             // Preserve the vendor's complete package/resource layout and updater.
-            run(
-                isolated_command(&entry, &primary_home).arg("update"),
+            let result = run(
+                isolated_command(&native, &primary_home).arg("update"),
                 Duration::from_secs(1200),
-            )?;
+            );
+            // A successful updater can replace our known wrapper with its
+            // official link. Restore account isolation even on partial failure.
+            if wrapped {
+                self.recover_primary_entry()?;
+            }
+            result?;
         } else {
             return Err("当前版本管理要求官方 standalone 安装；不会自动迁移 npm、Homebrew 或其他安装管理器。".into());
         }
         Ok(())
+    }
+
+    fn recover_primary_entry(&self) -> Result<(), String> {
+        let journal = self.support.join(CLI_PENDING);
+        if !journal.exists() {
+            return Ok(());
+        }
+        no_redirects(&journal)?;
+        let pending: PrimaryEntryPublication =
+            serde_json::from_slice(&read_limited(&journal, 8192)?)
+                .map_err(|_| "主账号入口恢复记录无效。")?;
+        if pending.schema != 1
+            || ![
+                self.home.join(".local/bin/codex"),
+                PathBuf::from("/usr/local/bin/codex"),
+                PathBuf::from("/opt/homebrew/bin/codex"),
+            ]
+            .contains(&pending.entry)
+        {
+            return Err("主账号入口恢复路径不受支持；未覆盖文件。".into());
+        }
+        let native = if pending.entry.exists() {
+            entries::primary_native(&self.home, &pending.entry)?
+        } else {
+            entries::primary_native(
+                &self.home,
+                &self
+                    .home
+                    .join(".codex/packages/standalone/current/bin/codex"),
+            )?
+        };
+        let package = package_root(&native)?;
+        let metadata: serde_json::Value = serde_json::from_slice(&read_limited(
+            &package.join("codex-package.json"),
+            64 * 1024,
+        )?)
+        .map_err(|_| "官方 TUI 清单无效。")?;
+        let expected = Version {
+            version: metadata["version"]
+                .as_str()
+                .ok_or("官方 TUI 版本无效。")?
+                .into(),
+            build: None,
+        };
+        validate_package(&package, &expected)?;
+        if self.cli_version(&native, &self.home.join(".codex"))? != expected {
+            return Err("主账号入口恢复时的实际原生版本与包清单不符。".into());
+        }
+        self.require_stopped()?;
+        atomic_write(
+            &pending.entry,
+            &entries::render_primary_wrapper(&self.home)?,
+            0o755,
+        )?;
+        fs::remove_file(journal).map_err(|_| "主账号隔离入口已恢复；恢复记录仍保留。".into())
     }
     fn update_app(&self, release: &Release) -> Result<(), String> {
         let destination = self.primary_app()?;
@@ -261,28 +378,107 @@ impl System {
         let backup = parent.join(format!(
             ".{}-before-companion-{}",
             destination.file_name().unwrap().to_string_lossy(),
-            std::process::id()
+            release.version.build.as_deref().ok_or("App 缺少构建号。")?
         ));
         if fs::symlink_metadata(&backup).is_ok() {
             return Err("App 更新备份已存在，未覆盖。".into());
         }
-        publish_with_backup(staged, &destination, &backup)?;
+        let original = app_version(&destination)?.ok_or("原 App 不可用。")?;
+        if original.compare(&release.version)? == std::cmp::Ordering::Greater {
+            return Err("本机 App 在暂存期间已更新到更高版本；已保留，未降级。".into());
+        }
+        let pending = AppPublication {
+            schema: 1,
+            destination: destination.clone(),
+            staged: staged.clone(),
+            backup,
+            original,
+            target: release.version.clone(),
+        };
+        let _ = work.keep();
+        atomic_write(
+            &self.support.join(APP_PENDING),
+            &serde_json::to_vec(&pending).map_err(|_| "无法保存 App 恢复记录。")?,
+            0o600,
+        )?;
+        resume_app_publication(&pending, verify_app)?;
+        fs::remove_file(self.support.join(APP_PENDING))
+            .map_err(|_| "App 已更新；恢复记录保留，将在下次维护时核验。")?;
         Ok(())
+    }
+
+    fn recover_app(&self) -> Result<(), String> {
+        let path = self.support.join(APP_PENDING);
+        if !path.exists() {
+            return Ok(());
+        }
+        no_redirects(&path)?;
+        let pending: AppPublication = serde_json::from_slice(&read_limited(&path, 64 * 1024)?)
+            .map_err(|_| "App 恢复记录无效；未修改现有安装。")?;
+        validate_app_publication(&pending, &self.home)?;
+        let _deployment = acquire_lock(&self.support.join("deployment.lock"))?;
+        self.require_stopped()?;
+        let output = run(
+            Command::new("/bin/ps").args(["-axww", "-o", "comm="]),
+            Duration::from_secs(10),
+        )?;
+        if process_matches(
+            &output,
+            &[
+                pending.destination.clone(),
+                pending.staged.clone(),
+                pending.backup.clone(),
+            ],
+        ) {
+            return Err("App 恢复目录中的程序仍在运行；请退出后重试。".into());
+        }
+        resume_app_publication(&pending, verify_app)?;
+        fs::remove_file(path).map_err(|_| "无法清理已验证的 App 恢复记录。".into())
     }
 }
 
 impl Operations for System {
+    fn recover(&self) -> Result<(), String> {
+        self.recover_app()?;
+        self.recover_primary_entry()
+    }
+    fn cli_needs_sync(&self) -> bool {
+        let Ok(Some(binding)) = self.managed_binding() else {
+            return true;
+        };
+        let Some(app) = crate::macos_deployment::settings_presentation().app_path else {
+            return true;
+        };
+        let Ok(companion) = std::env::current_exe() else {
+            return true;
+        };
+        entries::needs_migration(&binding, &app, &companion)
+    }
     fn app_needs_sync(&self) -> bool {
         crate::macos_deployment::maintenance_app_needs_sync()
     }
     fn installed(&self, target: Target) -> Result<Option<Version>, String> {
         match target {
-            Target::CodexTui => self
-                .command("codex")
-                .map(|path| self.cli_version(&path, &self.home.join(".codex")))
-                .transpose(),
+            Target::CodexTui => {
+                if self.command("codex").is_none() {
+                    Ok(None)
+                } else {
+                    self.cli_version(&self.primary_native()?, &self.home.join(".codex"))
+                        .map(Some)
+                }
+            }
             Target::DodexTui => {
                 if let Some(binding) = self.managed_binding()? {
+                    if !binding.package.join("bin/codex").is_file() {
+                        return Ok(None);
+                    }
+                    validate_package(
+                        &binding.package,
+                        &Version {
+                            version: binding.version.clone(),
+                            build: None,
+                        },
+                    )?;
                     return self
                         .cli_version(&binding.package.join("bin/codex"), &binding.profile_home)
                         .map(Some);
@@ -330,20 +526,14 @@ impl Operations for System {
     fn preflight(&self, cli: bool, app: bool) -> Result<(), String> {
         self.secondary()?;
         if cli {
-            let native = self
-                .primary_cli()?
-                .canonicalize()
-                .map_err(|_| "无法定位完整 TUI 包。")?;
+            let native = self.primary_native()?;
             let package = package_root(&native)?;
             let current = self.cli_version(&native, &self.home.join(".codex"))?;
             validate_package(&package, &current)?;
             if self.managed_binding()?.is_none() {
                 let entry = self.dodex_entry();
                 let bytes = read_limited(&entry, 128 * 1024)?;
-                let text = String::from_utf8_lossy(&bytes);
-                if !text.contains("Dodex: B's native CLI by default; isolate the desktop and updater entry points.") || !text.contains("MANAGER_PATH = Path(") {
-                    return Err("现有 dodex 入口类型未知，无法保证原生行为；未更新任一 TUI。".into());
-                }
+                entries::legacy_adapter(&self.home, &bytes)?;
             }
         }
         if app {
@@ -368,7 +558,7 @@ impl Operations for System {
         }
         if let Ok(entry) = self.primary_cli() {
             paths.push(entry.clone());
-            if let Ok(real) = entry.canonicalize() {
+            if let Ok(real) = self.primary_native() {
                 if let Ok(package) = package_root(&real) {
                     paths.push(package);
                 }
@@ -379,7 +569,7 @@ impl Operations for System {
             paths.push(binding.package);
         }
         let output = run(
-            Command::new("/bin/ps").args(["-axo", "comm="]),
+            Command::new("/bin/ps").args(["-axww", "-o", "comm="]),
             Duration::from_secs(10),
         )?;
         if process_matches(&output, &paths) {
@@ -396,7 +586,7 @@ impl Operations for System {
     }
     fn align_secondary(&self, app: bool, expected: &Version) -> Result<(), String> {
         if app {
-            crate::macos_deployment::sync_desktop().map(|_| ())
+            crate::macos_deployment::sync_desktop_under_maintenance_lock().map(|_| ())
         } else {
             self.align_cli(expected)
         }
@@ -511,6 +701,7 @@ fn validate_package(root: &Path, expected: &Version) -> Result<(), String> {
         || !root.join("bin/codex-code-mode-host").is_file()
         || !root.join("codex-resources").is_dir()
         || !root.join("codex-path").is_dir()
+        || !root.join("codex-path/rg").is_file()
     {
         return Err("官方 TUI 安装包布局或版本不兼容；未发布不完整的 Dodex TUI。".into());
     }
@@ -538,10 +729,12 @@ fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
         .map_err(|_| "无法写入隔离入口。")?;
     file.persist(path)
         .map_err(|_| "无法发布隔离入口；原入口保留。")?;
+    sync_directory(parent)?;
     Ok(())
 }
 fn publish_with_backup(staged: &Path, destination: &Path, backup: &Path) -> Result<(), String> {
     fs::rename(destination, backup).map_err(|_| "无法备份原 Codex App；未替换。")?;
+    sync_directory(destination.parent().ok_or("App 安装路径无效。")?)?;
     if fs::rename(staged, destination).is_err() {
         if fs::rename(backup, destination).is_err() {
             return Err(format!(
@@ -551,7 +744,97 @@ fn publish_with_backup(staged: &Path, destination: &Path, backup: &Path) -> Resu
         }
         return Err("App 发布失败，已恢复原 App。".into());
     }
+    sync_directory(destination.parent().ok_or("App 安装路径无效。")?)?;
     Ok(())
+}
+
+fn sync_directory(path: &Path) -> Result<(), String> {
+    File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| "无法持久保存更新切换；恢复记录与备份保留。".into())
+}
+
+fn verify_app(path: &Path, expected: &Version) -> Result<(), String> {
+    no_redirects(path)?;
+    run(
+        Command::new("/usr/bin/codesign")
+            .args(["--verify", "--deep", "--strict", "-R", OFFICIAL_REQUIREMENT])
+            .arg(path),
+        Duration::from_secs(180),
+    )?;
+    if app_version(path)?.as_ref() != Some(expected) {
+        return Err("App 恢复目录的版本与记录不符；未覆盖程序。".into());
+    }
+    Ok(())
+}
+
+fn validate_app_publication(pending: &AppPublication, home: &Path) -> Result<(), String> {
+    let parent = pending.destination.parent().ok_or("App 恢复路径无效。")?;
+    let stage_root = pending
+        .staged
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("App 暂存路径无效。")?;
+    let build = pending
+        .target
+        .build
+        .as_deref()
+        .ok_or("App 恢复版本无效。")?;
+    numeric_version(build)?;
+    let name = pending
+        .destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("App 恢复路径无效。")?;
+    if pending.schema != 1
+        || !matches!(name, "ChatGPT.app" | "Codex.app")
+        || (parent != Path::new("/Applications") && parent != home.join("Applications"))
+        || pending.backup != parent.join(format!(".{name}-before-companion-{build}"))
+        || stage_root.parent() != Some(parent)
+        || !stage_root
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with(".codex-update-"))
+        || pending.staged.parent() != Some(stage_root.join("extracted").as_path())
+    {
+        return Err("App 恢复记录包含不受支持的路径；未覆盖文件。".into());
+    }
+    for path in [&pending.destination, &pending.staged, &pending.backup] {
+        no_redirects(path)?;
+    }
+    Ok(())
+}
+
+/// Resume each durable state around the two renames. Verification precedes
+/// every destructive step, and the original bundle is always retained.
+fn resume_app_publication(
+    pending: &AppPublication,
+    verify: impl Fn(&Path, &Version) -> Result<(), String>,
+) -> Result<(), String> {
+    let AppPublication {
+        destination,
+        staged,
+        backup,
+        original,
+        target,
+        ..
+    } = pending;
+    if destination.exists() && verify(destination, target).is_ok() {
+        verify(backup, original)?;
+        return Ok(());
+    }
+    verify(staged, target)?;
+    if destination.exists() {
+        verify(destination, original)?;
+        if backup.exists() {
+            return Err("App 目标与恢复备份同时存在冲突；未覆盖文件。".into());
+        }
+        publish_with_backup(staged, destination, backup)?;
+    } else {
+        verify(backup, original)?;
+        fs::rename(staged, destination)
+            .map_err(|_| format!("无法继续 App 发布；原版本保留在 {}。", backup.display()))?;
+    }
+    verify(destination, target)
 }
 fn private_directory(path: &Path) -> Result<(), String> {
     no_redirects(path)?;
@@ -561,23 +844,7 @@ fn private_directory(path: &Path) -> Result<(), String> {
 }
 fn isolated_command(program: &Path, profile: &Path) -> Command {
     let mut command = Command::new(program);
-    for (key, _) in std::env::vars_os() {
-        let value = key.to_string_lossy();
-        if (value.starts_with("CODEX_")
-            && !matches!(
-                value.as_ref(),
-                "CODEX_SANDBOX" | "CODEX_SANDBOX_NETWORK_DISABLED"
-            )
-            && !value.starts_with("CODEX_NETWORK_"))
-            || value.starts_with("OPENAI_")
-            || value.starts_with("CHATGPT_")
-            || value.starts_with("ELECTRON_")
-            || value.starts_with("DYLD_")
-            || matches!(value.as_ref(), "NODE_OPTIONS" | "NODE_PATH")
-        {
-            command.env_remove(key);
-        }
-    }
+    agent_companion_core::process_environment::isolate_command(&mut command);
     command.env("CODEX_HOME", profile);
     // Finder's PATH often omits the package manager, including npm's node.
     let mut paths = vec![
@@ -597,6 +864,12 @@ fn isolated_command(program: &Path, profile: &Path) -> Command {
     command
 }
 fn run(command: &mut Command, timeout: Duration) -> Result<Vec<u8>, String> {
+    let explicit: Vec<_> = command
+        .get_envs()
+        .filter_map(|(name, value)| value.map(|value| (name.to_owned(), value.to_owned())))
+        .collect();
+    agent_companion_core::process_environment::isolate_command(command);
+    command.envs(explicit);
     let mut stdout = tempfile::tempfile().map_err(|_| "无法创建命令输出缓冲区。")?;
     let stderr = tempfile::tempfile().map_err(|_| "无法创建命令输出缓冲区。")?;
     let mut child = command

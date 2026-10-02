@@ -31,6 +31,8 @@ tempfile.workspace = true
 semver = "1"
 serde.workspace = true
 serde_json.workspace = true
+base64 = "0.22"
+sha2 = "0.10"
 slint.workspace = true
 tokio.workspace = true
 ureq = { version = "3.4", default-features = false, features = ["rustls"] }
@@ -39,7 +41,6 @@ ureq = { version = "3.4", default-features = false, features = ["rustls"] }
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-sha2 = "0.10"
 toml_edit = "0.25.13"
 agent-companion-core = { workspace = true, features = ["server"] }
 futures-util = { version = "0.3", features = ["sink"] }
@@ -48,6 +49,7 @@ tray-icon.workspace = true
 windows.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.9.4"
 roxmltree = "0.21"
 toml_edit = "0.25.13"
 agent-companion-core = { workspace = true, features = ["desktop-history"] }

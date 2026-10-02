@@ -5,7 +5,7 @@ use super::*;
 use serde_json::{Map, Value, json};
 
 const MIRROR_SCHEMA: u32 = 1;
-const PACKAGING_REVISION: u32 = 2;
+const PACKAGING_REVISION: u32 = 3;
 const BUNDLE_ID: &str = "local.agent-companion.dodex";
 const LAUNCHER_EXECUTABLE: &str = "DodexLauncher";
 const LAUNCHER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/DodexLauncher"));
@@ -217,6 +217,21 @@ fn sync_on_launch_with(
     let manifest = read_manifest(&app)?;
     if manifest.app != app {
         return Err("Dodex App 记录与公共入口不一致。".into());
+    }
+    validate_profile(layout, &manifest.profile)?;
+    validate_profile_config(&manifest.profile)?;
+    let plist = read_plist(&app)?;
+    if plist
+        != customize_plist(
+            plist.clone(),
+            &manifest.profile,
+            &app,
+            &manifest.source.executable,
+            manifest.source.cli_sha256.is_some(),
+            manifest.updater_executable.as_deref(),
+        )?
+    {
+        return Err("Dodex App 启动设置与已保存的隔离目录不一致；未启动应用。".into());
     }
     let source =
         crate::macos_primary_app::discover(&layout.system_applications, &layout.applications)
@@ -639,6 +654,7 @@ fn customize_plist(
         .remove("LSEnvironment")
         .and_then(|value| value.as_object().cloned())
         .unwrap_or_default();
+    env.retain(|key, _| agent_companion_core::process_environment::keep_variable(key));
     env.extend(
         environment(profile, app, bundled_cli)
             .as_object()
@@ -708,7 +724,18 @@ fn prepare_profile(layout: &Layout, profile: &MirrorProfile, app: &Path) -> Resu
             0o600,
         )?;
     }
-    Ok(())
+    validate_profile_config(profile)
+}
+
+fn validate_profile_config(profile: &MirrorProfile) -> Result<(), String> {
+    profile_sync::validate_isolated_profile(
+        &profile.codex_home,
+        &IsolationPaths {
+            sqlite_home: profile.database_dir.clone(),
+            log_dir: profile.desktop_user_data.join("logs"),
+        },
+    )
+    .map_err(|error| error.to_string())
 }
 
 fn read_manifest(app: &Path) -> Result<MirrorManifest, String> {
@@ -738,6 +765,7 @@ fn validate_app(
         return Err("Dodex App 记录与公共入口不一致。".into());
     }
     validate_profile(layout, &manifest.profile)?;
+    validate_profile_config(&manifest.profile)?;
     let plist = read_plist(app)?;
     let expected = customize_plist(
         plist.clone(),
@@ -837,12 +865,15 @@ fn require_stopped(
         if launch_parent == Some(process.pid) && process.executable == launcher {
             return false;
         }
-        apps.iter().any(|app| {
-            process.executable.starts_with(app.join("Contents/MacOS"))
-                || process
-                    .executable
-                    .starts_with(app.join("Contents/Frameworks"))
-        })
+        // The public mirror is exchanged as one directory, including Resources
+        // and any native helpers left running after the desktop window closes.
+        process.executable.starts_with(app)
+            || apps.iter().any(|app| {
+                process.executable.starts_with(app.join("Contents/MacOS"))
+                    || process
+                        .executable
+                        .starts_with(app.join("Contents/Frameworks"))
+            })
     }) {
         return Err("请先退出 Dodex 桌面 App，再同步官方版本；TUI 可以继续运行。".into());
     }
@@ -1245,6 +1276,11 @@ mod tests {
             ] {
                 fs::create_dir_all(path).unwrap();
             }
+            fs::write(
+                profile.codex_home.join("config.toml"),
+                config_text(&profile.instance(&app)),
+            )
+            .unwrap();
             profile
         }
     }
@@ -1384,6 +1420,35 @@ mod tests {
     }
 
     #[test]
+    fn launch_fast_path_revalidates_existing_profile_without_rewriting_it() {
+        let fixture = Fixture::new(false);
+        let profile = MirrorProfile::fresh(&fixture.layout);
+        let installed = sync_with(
+            &fixture.layout,
+            &profile,
+            &fixture.source,
+            &FakeOps::default(),
+            |_, _| {},
+        )
+        .unwrap();
+        let config = profile.codex_home.join("config.toml");
+        let original = fs::read_to_string(&config).unwrap();
+        let app = installed.instance.runtime_app;
+        for override_text in [
+            "\n[profiles.work]\ncli_auth_credentials_store='keyring'\n",
+            "\n[profiles.work]\nlog_dir='/synthetic/primary'\n",
+            "\n[profiles.work]\nsqlite_home='/synthetic/primary'\n",
+        ] {
+            let changed = format!("{original}{override_text}");
+            fs::write(&config, &changed).unwrap();
+            let ops = launch_ops(&app);
+            assert!(sync_on_launch_with(&fixture.layout, &app, 123, &ops).is_err());
+            assert_eq!(fs::read_to_string(&config).unwrap(), changed);
+            assert_eq!(ops.copies.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[test]
     fn bootstrap_execs_same_bundle_with_only_the_selected_browser_profile() {
         let fixture = Fixture::new(false);
         let mut profile = MirrorProfile::fresh(&fixture.layout);
@@ -1392,6 +1457,12 @@ mod tests {
             .user_home
             .join("Library/Application Support/Dodex's $HOME `data` $(data)");
         let native_name = "ChatGPT's executable";
+        fs::create_dir_all(&profile.codex_home).unwrap();
+        fs::write(
+            profile.codex_home.join("config.toml"),
+            config_text(&profile.instance(&fixture.source)),
+        )
+        .unwrap();
         let mut plist = read_plist(&fixture.source).unwrap();
         plist["CFBundleExecutable"] = json!(native_name);
         fs::write(
@@ -1457,6 +1528,7 @@ mod tests {
         let fixture = Fixture::new(true);
         let profile = fixture.legacy();
         let config = profile.codex_home.join("config.toml");
+        let original_config = fs::read(&config).unwrap();
         let auth = profile.codex_home.join("auth.json");
         let manager = profile.desktop_user_data.join("tools/manager.py");
         let tui = fixture.layout.user_home.join(".local/bin/dodex");
@@ -1464,7 +1536,7 @@ mod tests {
             .layout
             .system_applications
             .join(".Dodex/Dodex.app/Contents/Resources/codex");
-        for path in [&config, &auth, &manager, &tui, &hidden] {
+        for path in [&auth, &manager, &tui, &hidden] {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, b"must remain byte-for-byte unchanged").unwrap();
         }
@@ -1507,13 +1579,14 @@ mod tests {
             fs::read(backup.join("Contents/MacOS/Dodex")).unwrap(),
             b"original launcher, never run"
         );
-        for path in [&config, &auth, &manager, &tui, &hidden] {
+        for path in [&auth, &manager, &tui, &hidden] {
             assert_eq!(
                 fs::read(path).unwrap(),
                 b"must remain byte-for-byte unchanged"
             );
         }
         assert_eq!(ops.copies.load(Ordering::SeqCst), 3); // two releases, one backup
+        assert_eq!(fs::read(config).unwrap(), original_config);
     }
 
     #[test]
@@ -1543,10 +1616,22 @@ mod tests {
     }
 
     #[test]
-    fn running_desktop_blocks_update_and_cli_paths_do_not() {
+    fn every_public_bundle_process_blocks_update_while_untouched_legacy_tui_can_continue() {
         let fixture = Fixture::new(false);
         let profile = fixture.legacy();
         for path in [
+            fixture
+                .layout
+                .system_applications
+                .join("Dodex.app/Contents/Resources/codex"),
+            fixture
+                .layout
+                .system_applications
+                .join("Dodex.app/Contents/Resources/codex-code-mode-host"),
+            fixture
+                .layout
+                .system_applications
+                .join("Dodex.app/Contents/OtherHelper"),
             fixture
                 .layout
                 .system_applications
@@ -1633,11 +1718,10 @@ mod tests {
             let fixture = Fixture::new(false);
             let profile = fixture.legacy();
             let config = profile.codex_home.join("config.toml");
+            let original_config = fs::read(&config).unwrap();
             let tui = fixture.layout.user_home.join(".local/bin/dodex");
-            for path in [&config, &tui] {
-                fs::create_dir_all(path.parent().unwrap()).unwrap();
-                fs::write(path, b"existing shared profile and TUI").unwrap();
-            }
+            fs::create_dir_all(tui.parent().unwrap()).unwrap();
+            fs::write(&tui, b"existing shared profile and TUI").unwrap();
             let installed = sync_with(
                 &fixture.layout,
                 &profile,
@@ -1657,9 +1741,8 @@ mod tests {
             assert_eq!(ops.copies.load(Ordering::SeqCst), 1);
             assert_eq!(ops.signatures.load(Ordering::SeqCst), 1);
             assert_eq!(ops.registrations.load(Ordering::SeqCst), 1);
-            for path in [&config, &tui] {
-                assert_eq!(fs::read(path).unwrap(), b"existing shared profile and TUI");
-            }
+            assert_eq!(fs::read(&config).unwrap(), original_config);
+            assert_eq!(fs::read(&tui).unwrap(), b"existing shared profile and TUI");
         }
     }
 

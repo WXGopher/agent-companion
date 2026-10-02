@@ -2,8 +2,30 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+// Keep this predicate aligned with core::process_environment and the terminal
+// adapters. Proxy and containment variables are inherited; identity is not.
+static BOOL keepVariable(NSString *name) {
+    name = name.uppercaseString;
+    if ([name hasPrefix:@"CODEX_"]) {
+        return [@[@"CODEX_SANDBOX", @"CODEX_SANDBOX_NETWORK_DISABLED",
+            @"CODEX_CA_CERTIFICATE", @"CODEX_PROXY_CERT"] containsObject:name]
+            || [name hasPrefix:@"CODEX_NETWORK_"];
+    }
+    for (NSString *prefix in @[@"OPENAI_", @"CHATGPT_", @"ELECTRON_", @"DYLD_", @"LD_"]) {
+        if ([name hasPrefix:prefix]) { return NO; }
+    }
+    return ![@[@"NODE_OPTIONS", @"NODE_PATH"] containsObject:name];
+}
+
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
+        NSMutableDictionary *inherited = [NSProcessInfo.processInfo.environment mutableCopy];
+        for (NSString *key in [inherited.allKeys copy]) {
+            if (!keepVariable(key)) {
+                [inherited removeObjectForKey:key];
+                unsetenv(key.UTF8String);
+            }
+        }
         NSString *workspace = nil;
         for (int index = 1; index < argc; index++) {
             if (strcmp(argv[index], "--open-project") != 0) { continue; }
@@ -28,20 +50,24 @@ int main(int argc, const char *argv[]) {
             NSTask *task = [[NSTask alloc] init];
             task.executableURL = [NSURL fileURLWithPath:updater];
             task.arguments = @[@"dodex-app", @"--sync-on-launch", app];
+            task.environment = inherited;
             task.standardInput = NSFileHandle.fileHandleWithNullDevice;
             task.standardOutput = NSFileHandle.fileHandleWithNullDevice;
-            task.standardError = NSFileHandle.fileHandleWithNullDevice;
+            task.standardError = NSFileHandle.fileHandleWithStandardError;
             if ([task launchAndReturnError:NULL]) {
                 [task waitUntilExit];
                 if (task.terminationReason != NSTaskTerminationReasonExit ||
                     task.terminationStatus != 0) {
-                    fputs("Dodex: startup sync failed; using current app\n", stderr);
+                    fputs("Dodex: startup validation failed; app was not started\n", stderr);
+                    return 78;
                 }
             } else {
-                fputs("Dodex: startup sync unavailable; using current app\n", stderr);
+                fputs("Dodex: startup validation unavailable; app was not started\n", stderr);
+                return 78;
             }
         } else {
-            fputs("Dodex: startup sync unavailable; using current app\n", stderr);
+            fputs("Dodex: startup validation unavailable; app was not started\n", stderr);
+            return 78;
         }
         // The updater can replace this bundle while we wait. Read its public
         // path again without NSBundle's cached metadata or resolved location.

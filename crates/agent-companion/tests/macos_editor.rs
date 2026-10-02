@@ -153,6 +153,11 @@ fn check_editor_startup() {
         let mut created = false;
         window.window().with_winit_window(|native| {
             created = native.is_visible() == Some(true);
+            // This accessory fixture may be behind another application, where
+            // the display-link throttle stops scheduling frames. Request a
+            // native frame so each synthetic phase receives layout/binding
+            // updates before the next timer examines its snapshot.
+            native.request_redraw();
             let RawWindowHandle::AppKit(handle) = native.window_handle().unwrap().as_raw() else {
                 panic!("The settings window is not an AppKit window");
             };
@@ -469,7 +474,7 @@ fn check_editor_startup() {
             }
             24 => {
                 assert!(window.get_dual_scroll_y() > -10000.0 && window.get_dual_scroll_y() < 0.0,
-                        "The Dual page scrolled beyond its actual content");
+                        "The Dual page scrolled beyond its actual content: {}", window.get_dual_scroll_y());
                 window.invoke_sync_profile("instructions".into(), true);
                 assert!(!window.get_sync_busy());
                 assert!(window.get_sync_files().row_data(1).unwrap().error);

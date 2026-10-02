@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 use super::{
     AccountIdentity, Environment, Provenance, ResumeInspection, Session, config, discovery,
-    display_path, safe_text, valid_id,
+    display_path, valid_id,
 };
 
 const MANIFEST: &str = "acomp-resume.json";
@@ -122,7 +122,7 @@ pub fn inspect(
         Ok(false) => {}
         Err(reason) => blockers.push(reason),
     }
-    blockers.extend(environment_blockers());
+    // Inherited account/runtime variables are removed by isolated_environment.
     let mut details = settings.details;
     details.push(("历史实际位置".into(), display_path(&session.rollout_path)));
     details.push(("历史存储环境".into(), display_path(&source.home)));
@@ -749,84 +749,11 @@ fn runtime_version(executable: &Path) -> Result<String, String> {
     Ok(version.to_owned())
 }
 
-fn environment_blockers() -> Vec<String> {
-    let mut result = Vec::new();
-    for (key, _) in std::env::vars_os() {
-        let key = key.to_string_lossy();
-        let upper = key.to_ascii_uppercase();
-        let allowed = upper.starts_with("CODEX_NETWORK_")
-            || matches!(
-                upper.as_str(),
-                "CODEX_HOME"
-                    | "CODEX_SQLITE_HOME"
-                    | "CODEX_CI"
-                    | "CODEX_VERSION"
-                    | "CODEX_SANDBOX"
-                    | "CODEX_SANDBOX_NETWORK_DISABLED"
-                    | "CODEX_API_KEY"
-                    | "CODEX_THREAD_ID"
-                    | "CODEX_SESSION_ID"
-                    | "CODEX_CONVERSATION_ID"
-                    | "CODEX_APP_SERVER_URL"
-                    | "CODEX_APP_SERVER_REMOTE"
-                    | "CODEX_REMOTE"
-                    | "CODEX_DAEMON_SOCKET"
-                    | "CODEX_ORIGINATOR_OVERRIDE"
-            );
-        if (upper.starts_with("CODEX_") && !allowed)
-            || matches!(
-                upper.as_str(),
-                "CODEX_CONFIG"
-                    | "CODEX_CONFIG_FILE"
-                    | "CODEX_PROFILE"
-                    | "CODEX_CONFIG_PROFILE"
-                    | "CODEX_MANAGED_CONFIG_PATH"
-                    | "CODEX_HOME_ALLOW_SYMLINKS"
-                    | "CODEX_REFRESH_TOKEN_URL_OVERRIDE"
-                    | "CODEX_USE_MOCK_RESPONSES"
-                    | "CODEX_RESPONSES_API_PROXY_URL"
-                    | "CODEX_CHATGPT_BASE_URL"
-                    | "CODEX_AUTH_URL"
-            )
-        {
-            result.push(format!(
-                "继承了未验证的配置覆盖环境变量 {}。",
-                safe_text(&key)
-            ));
-        }
-    }
-    result
-}
 fn isolated_environment(command: &mut Command, home: &Path) {
-    for (key, _) in std::env::vars_os() {
-        let upper = key.to_string_lossy().to_ascii_uppercase();
-        if upper.starts_with("OPENAI_")
-            || upper.starts_with("CHATGPT_")
-            || matches!(
-                upper.as_str(),
-                "CODEX_API_KEY"
-                    | "CODEX_HOME"
-                    | "CODEX_SQLITE_HOME"
-                    | "CODEX_THREAD_ID"
-                    | "CODEX_SESSION_ID"
-                    | "CODEX_CONVERSATION_ID"
-                    | "CODEX_APP_SERVER_URL"
-                    | "CODEX_APP_SERVER_REMOTE"
-                    | "CODEX_REMOTE"
-                    | "CODEX_DAEMON_SOCKET"
-                    | "CODEX_ORIGINATOR_OVERRIDE"
-                    | "CODEX_REFRESH_TOKEN_URL_OVERRIDE"
-                    | "CODEX_USE_MOCK_RESPONSES"
-                    | "CODEX_RESPONSES_API_PROXY_URL"
-                    | "CODEX_CHATGPT_BASE_URL"
-                    | "CODEX_AUTH_URL"
-            )
-        {
-            command.env_remove(key);
-        }
-    }
+    crate::process_environment::isolate_command(command);
     command.env("CODEX_HOME", home);
 }
+
 fn isolated_entry(name: &str) -> bool {
     matches!(
         name,

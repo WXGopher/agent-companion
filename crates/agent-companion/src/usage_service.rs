@@ -1,46 +1,42 @@
 //! Cross-platform account reader. UI events enter the core scheduler; worker
-//! threads execute one isolated, read-only app-server request at a time.
+//! threads verify account ownership and multiplex isolated app-server reads.
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     ffi::OsString,
     io,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::mpsc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 pub use agent_companion_core::usage_service::{InstanceSnapshot, Source, UsageSettings};
 use agent_companion_core::usage_service::{QueryKind, Request, Scheduler, settings_path};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::{
-    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
-    sync::oneshot,
-};
+#[cfg(test)]
+use std::{collections::HashMap, time::Instant};
+#[cfg(test)]
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
 const READ_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
-struct Pending {
-    request: Request,
-    cancel: oneshot::Sender<()>,
-    worker: std::thread::JoinHandle<()>,
-}
+#[path = "usage_service/identity.rs"]
+mod identity;
+#[path = "usage_service/worker.rs"]
+mod worker;
 
-struct Completion {
-    request: Request,
-    result: Result<Value, String>,
-    completed_at: u64,
-    elapsed_ms: u64,
-}
+use worker::{Event, Worker};
 
 pub struct UsageService {
     scheduler: Scheduler,
-    jobs: BTreeMap<u64, Pending>,
-    retired: Vec<std::thread::JoinHandle<()>>,
-    sender: mpsc::Sender<Completion>,
-    receiver: mpsc::Receiver<Completion>,
+    jobs: BTreeMap<u64, Request>,
+    workers: BTreeMap<PathBuf, Worker>,
+    retired: Vec<Worker>,
+    next_worker_id: u64,
+    sender: mpsc::Sender<Event>,
+    receiver: mpsc::Receiver<Event>,
     settings_path: Option<PathBuf>,
     settings_checked_at: Option<u64>,
     settings_stamp: Option<std::time::SystemTime>,
@@ -65,6 +61,8 @@ impl UsageService {
             scheduler: Scheduler::new(settings.refresh_interval_minutes),
             jobs: BTreeMap::new(),
             retired: Vec::new(),
+            workers: BTreeMap::new(),
+            next_worker_id: 0,
             sender,
             receiver,
             settings_path: path,
@@ -107,18 +105,70 @@ impl UsageService {
         changed
     }
 
-    pub fn poll(&mut self, _now: u64) -> bool {
+    pub fn poll(&mut self, now: u64) -> bool {
         let mut changed = false;
-        while let Ok(completion) = self.receiver.try_recv() {
-            if let Some(pending) = self.jobs.remove(&completion.request.id) {
-                self.retired.push(pending.worker);
+        while let Ok(event) = self.receiver.try_recv() {
+            let current = self
+                .workers
+                .get(event.home())
+                .is_some_and(|worker| worker.id == event.worker_id());
+            if !current {
+                continue;
             }
-            changed |= self.scheduler.complete(
-                &completion.request,
-                completion.result,
-                completion.completed_at,
-                completion.elapsed_ms,
-            );
+            match event {
+                Event::Identity {
+                    source, identity, ..
+                } => {
+                    if !self
+                        .scheduler
+                        .snapshot(&source.instance_id)
+                        .is_some_and(|snapshot| snapshot.source == source)
+                    {
+                        continue;
+                    }
+                    let history_pending = self.jobs.values().any(|request| {
+                        request.source == source && request.kind == QueryKind::History
+                    });
+                    let before = self.scheduler.snapshot(&source.instance_id);
+                    let mut requests =
+                        self.scheduler
+                            .sync_identity(&source.instance_id, identity, now);
+                    self.cancel_obsolete();
+                    if history_pending {
+                        requests.extend(self.scheduler.load_history(&source.instance_id, now));
+                    }
+                    changed |= before != self.scheduler.snapshot(&source.instance_id);
+                    self.dispatch(requests, now);
+                }
+                Event::Completed {
+                    request,
+                    result,
+                    completed_at,
+                    elapsed_ms,
+                    ..
+                } => {
+                    self.jobs.remove(&request.id);
+                    if self.scheduler.is_current(&request)
+                        && let Some(expected) = &request.identity
+                        && let Some(identity) =
+                            identity::local_publication_check(&request.source, expected)
+                        && identity.as_ref().ok() != Some(expected)
+                    {
+                        let requests = self.scheduler.sync_identity(
+                            &request.source.instance_id,
+                            identity,
+                            now,
+                        );
+                        self.cancel_obsolete();
+                        self.dispatch(requests, now);
+                        changed = true;
+                        continue;
+                    }
+                    changed |= self
+                        .scheduler
+                        .complete(&request, result, completed_at, elapsed_ms);
+                }
+            }
         }
         self.reap_finished();
         changed
@@ -126,12 +176,20 @@ impl UsageService {
 
     pub fn panel_open(&mut self, now: u64) {
         self.poll(now);
+        for worker in self.workers.values() {
+            worker.probe();
+        }
         let requests = self.scheduler.panel_open(now);
         self.dispatch(requests, now);
     }
 
     pub fn refresh(&mut self, id: &str, now: u64) {
         self.poll(now);
+        if let Some(source) = self.scheduler.snapshot(id).map(|snapshot| snapshot.source)
+            && let Some(worker) = self.workers.get(&source.codex_home)
+        {
+            worker.probe();
+        }
         let requests = self.scheduler.refresh(id, now);
         self.dispatch(requests, now);
     }
@@ -175,13 +233,31 @@ impl UsageService {
     fn cancel_obsolete(&mut self) {
         let obsolete: Vec<_> = self
             .jobs
-            .iter()
-            .filter_map(|(id, job)| (!self.scheduler.is_current(&job.request)).then_some(*id))
+            .values()
+            .filter(|request| !self.scheduler.is_current(request))
+            .cloned()
             .collect();
-        for id in obsolete {
-            if let Some(job) = self.jobs.remove(&id) {
-                let _ = job.cancel.send(());
-                self.retired.push(job.worker);
+        for request in obsolete {
+            self.jobs.remove(&request.id);
+            if let Some(worker) = self.workers.get(&request.source.codex_home) {
+                worker.cancel(request.id);
+            }
+        }
+        let snapshots = self.scheduler.snapshots();
+        let unused: Vec<_> = self
+            .workers
+            .iter()
+            .filter_map(|(home, worker)| {
+                (!snapshots
+                    .iter()
+                    .any(|snapshot| worker.accepts(&snapshot.source)))
+                .then_some(home.clone())
+            })
+            .collect();
+        for home in unused {
+            if let Some(worker) = self.workers.remove(&home) {
+                worker.stop();
+                self.retired.push(worker);
             }
         }
     }
@@ -190,7 +266,7 @@ impl UsageService {
         let mut index = 0;
         while index < self.retired.len() {
             if self.retired[index].is_finished() {
-                let _ = self.retired.swap_remove(index).join();
+                self.retired.swap_remove(index).join();
             } else {
                 index += 1;
             }
@@ -199,59 +275,37 @@ impl UsageService {
 
     fn dispatch(&mut self, requests: Vec<Request>, now: u64) {
         for request in requests {
-            let (cancel, cancelled) = oneshot::channel();
-            let pending = request.clone();
-            let sender = self.sender.clone();
-            let timeout = self.read_timeout;
-            let spawned = std::thread::Builder::new()
-                .name(format!(
-                    "usage-{}-{:?}",
-                    request.source.instance_id, request.kind
-                ))
-                .spawn(move || {
-                    let started = Instant::now();
-                    let result = match tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                    {
-                        Ok(runtime) => runtime.block_on(read(
-                            &request.source,
-                            request.kind,
-                            cancelled,
-                            timeout,
-                        )),
-                        Err(_) => Some(Err(
-                            "Could not start the usage reader. Please refresh.".into()
-                        )),
-                    };
-                    if let Some(result) = result {
-                        let _ = sender.send(Completion {
-                            request,
-                            result,
-                            completed_at: agent_companion_core::now_unix_secs(),
-                            elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
-                        });
+            if !self.scheduler.is_current(&request) {
+                continue;
+            }
+            let home = request.source.codex_home.clone();
+            if !self.workers.contains_key(&home) {
+                self.next_worker_id += 1;
+                match Worker::spawn(
+                    self.next_worker_id,
+                    request.source.clone(),
+                    self.sender.clone(),
+                    self.read_timeout,
+                ) {
+                    Ok(worker) => {
+                        self.workers.insert(home.clone(), worker);
                     }
-                });
-            match spawned {
-                Ok(worker) => {
-                    self.jobs.insert(
-                        pending.id,
-                        Pending {
-                            request: pending,
-                            cancel,
-                            worker,
-                        },
-                    );
+                    Err(_) => {
+                        self.scheduler.complete(
+                            &request,
+                            Err("Could not start the usage reader. Please refresh.".into()),
+                            now,
+                            0,
+                        );
+                        continue;
+                    }
                 }
-                Err(_) => {
-                    self.scheduler.complete(
-                        &pending,
-                        Err("Could not start the usage reader. Please refresh.".into()),
-                        now,
-                        0,
-                    );
-                }
+            }
+            let worker = &self.workers[&home];
+            if !worker.accepts(&request.source) || worker.query(request.clone()).is_err() {
+                self.scheduler.complete(&request, Err("The authentication store has conflicting or unavailable usage runtimes. Validate the instance configuration and refresh.".into()), now, 0);
+            } else {
+                self.jobs.insert(request.id, request);
             }
         }
     }
@@ -259,10 +313,9 @@ impl UsageService {
     pub fn stop(&mut self) {
         self.scheduler.clear();
         self.cancel_obsolete();
-        // Source changes remain nonblocking. App shutdown waits for its owned
-        // readers to kill and reap their children before the process can exit.
+        // Join only Companion-owned readers; never touch existing daemons.
         for worker in self.retired.drain(..) {
-            let _ = worker.join();
+            worker.join();
         }
     }
 }
@@ -297,10 +350,8 @@ fn resolve_source(mut source: Source) -> Source {
     source
 }
 
+#[cfg(not(windows))]
 fn user_home() -> Option<PathBuf> {
-    #[cfg(windows)]
-    let value = std::env::var_os("USERPROFILE");
-    #[cfg(not(windows))]
     let value = std::env::var_os("HOME");
     value.filter(|value| !value.is_empty()).map(PathBuf::from)
 }
@@ -325,7 +376,14 @@ fn primary_executable() -> Option<PathBuf> {
             PathBuf::from("/opt/homebrew/bin/codex"),
             PathBuf::from("/usr/local/bin/codex"),
         ]);
-        if let Some(path) = candidates.into_iter().find(|path| is_executable(path)) {
+        for path in candidates.into_iter().filter(|path| is_executable(path)) {
+            #[cfg(target_os = "macos")]
+            if let Some(home) = user_home()
+                && let Ok(native) = crate::software_updates::primary_native(&home, &path)
+            {
+                return Some(native);
+            }
+            #[cfg(not(target_os = "macos"))]
             return Some(path);
         }
         #[cfg(target_os = "macos")]
@@ -360,35 +418,7 @@ fn isolated_environment(
     let mut environment: BTreeMap<_, _> = inherited
         .into_iter()
         .filter(|(name, _)| {
-            let name = name.to_string_lossy().to_ascii_uppercase();
-            #[cfg(windows)]
-            {
-                [
-                    "SYSTEMROOT",
-                    "WINDIR",
-                    "SYSTEMDRIVE",
-                    "USERPROFILE",
-                    "HOMEDRIVE",
-                    "HOMEPATH",
-                    "LOCALAPPDATA",
-                    "APPDATA",
-                    "TEMP",
-                    "TMP",
-                    "PATH",
-                    "COMSPEC",
-                    "PATHEXT",
-                    "USERNAME",
-                    "USERDOMAIN",
-                ]
-                .contains(&name.as_str())
-            }
-            #[cfg(not(windows))]
-            {
-                !["CODEX_", "OPENAI_", "CHATGPT_", "ELECTRON_", "DYLD_", "LD_"]
-                    .iter()
-                    .any(|prefix| name.starts_with(prefix))
-                    && !["NODE_OPTIONS", "NODE_PATH"].contains(&name.as_str())
-            }
+            agent_companion_core::process_environment::keep_variable(&name.to_string_lossy())
         })
         .collect();
     environment.insert(
@@ -406,29 +436,35 @@ fn command(source: &Source, executable: &Path) -> io::Result<Command> {
     let mut command = Command::new(executable);
     command
         .env_clear()
-        .envs(isolated_environment(source, std::env::vars_os()));
+        .envs(isolated_environment(source, std::env::vars_os()))
+        // Supported by the native app-server bootstrap: disable remote
+        // control for this owned process without changing persisted settings.
+        .env("CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED", "1");
     command.args([
         "app-server",
         "--listen",
         "stdio://",
+        "--strict-config",
         "-c",
         "analytics.enabled=false",
+        "-c",
+        "features.remote_control=false",
+        "-c",
+        "features.daemon_auto_start=false",
     ]);
-    if source.instance_id != "codex" {
-        command.args(["-c", "cli_auth_credentials_store=\"file\""]);
-    }
+    let configuration = identity::configuration(source).map_err(io::Error::other)?;
+    command.arg("-c").arg(format!(
+        "cli_auth_credentials_store={}",
+        serde_json::to_string(&configuration.store).unwrap()
+    ));
+    command.arg("-c").arg(format!(
+        "chatgpt_base_url={}",
+        serde_json::to_string(&configuration.service).unwrap()
+    ));
     command.arg("-c").arg(format!(
         "sqlite_home={}",
         serde_json::to_string(&source.database_path.to_string_lossy()).unwrap()
     ));
-    // An absent home must not fall back to the GUI's inherited working
-    // directory, where a project-local configuration could change accounts.
-    command.current_dir(user_home().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            "User home directory is unavailable.",
-        )
-    })?);
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -448,6 +484,7 @@ fn command(source: &Source, executable: &Path) -> io::Result<Command> {
 
 struct Child {
     process: tokio::process::Child,
+    _working_directory: tempfile::TempDir,
     #[cfg(unix)]
     group: i32,
     #[cfg(windows)]
@@ -458,7 +495,12 @@ impl Child {
     fn spawn(source: &Source, executable: &Path) -> io::Result<Self> {
         #[cfg(windows)]
         let job = crate::codex::job::Job::new()?;
-        let process = tokio::process::Command::from(command(source, executable)?)
+        let working_directory = tempfile::Builder::new()
+            .prefix("companion-usage-")
+            .tempdir()?;
+        let mut command = command(source, executable)?;
+        command.current_dir(working_directory.path());
+        let process = tokio::process::Command::from(command)
             .kill_on_drop(true)
             .spawn()?;
         let pid = process
@@ -468,6 +510,7 @@ impl Child {
         job.assign(pid)?;
         Ok(Self {
             process,
+            _working_directory: working_directory,
             #[cfg(unix)]
             group: pid as i32,
             #[cfg(windows)]
@@ -505,55 +548,7 @@ impl Drop for Child {
     }
 }
 
-async fn read(
-    source: &Source,
-    kind: QueryKind,
-    mut cancelled: oneshot::Receiver<()>,
-    timeout: Duration,
-) -> Option<Result<Value, String>> {
-    let started = Instant::now();
-    if !matches!(
-        cancelled.try_recv(),
-        Err(oneshot::error::TryRecvError::Empty)
-    ) {
-        return None;
-    }
-    let Some(executable) = source
-        .executable_path
-        .as_ref()
-        .filter(|path| is_executable(path))
-    else {
-        return Some(Err(if source.instance_id == "codex" {
-            "Install Codex CLI or Codex.app, then sign in with your ChatGPT subscription and refresh."
-        } else { "The Dodex runtime could not be located. Validate its deployment in Settings." }.into()));
-    };
-    let mut child = match Child::spawn(source, executable) {
-        Ok(child) => child,
-        Err(_) => {
-            return Some(Err(
-                "Could not start Codex to read usage. Check the runtime and refresh.".into(),
-            ));
-        }
-    };
-    let mut rpc = Rpc::new(
-        child.process.stdout.take().unwrap(),
-        child.process.stdin.take().unwrap(),
-        timeout.saturating_sub(started.elapsed()),
-    );
-    let result = tokio::select! {
-        biased;
-        _ = &mut cancelled => None,
-        result = exchange(&mut rpc, kind) => Some(result.unwrap_or_else(|error| Err(if error.kind() == io::ErrorKind::TimedOut {
-            "Codex did not respond within 20 seconds. Check your connection and refresh."
-        } else {
-            "Could not read subscription usage. Check Codex CLI, your subscription login and connection, then refresh."
-        }.into()))),
-    };
-    drop(rpc);
-    child.close().await;
-    result
-}
-
+#[cfg(test)]
 struct Rpc<R, W> {
     input: W,
     output: BufReader<R>,
@@ -562,6 +557,7 @@ struct Rpc<R, W> {
     deadline: tokio::time::Instant,
 }
 
+#[cfg(test)]
 impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Rpc<R, W> {
     fn new(output: R, input: W, timeout: Duration) -> Self {
         Self {
@@ -608,7 +604,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Rpc<R, W> {
                 continue;
             }
             let reply: Value = serde_json::from_slice(&line)?;
-            if let Some(id) = reply["id"].as_u64().filter(|id| (1..=2).contains(id)) {
+            if let Some(id) = reply["id"].as_u64().filter(|id| (1..=3).contains(id)) {
                 self.replies.insert(id, reply);
             }
         }
@@ -630,6 +626,7 @@ fn decode(reply: &Value, kind: QueryKind) -> Result<Value, String> {
     }
 }
 
+#[cfg(test)]
 async fn exchange<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     rpc: &mut Rpc<R, W>,
     kind: QueryKind,
@@ -640,12 +637,18 @@ async fn exchange<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         return Ok(Err("Update Codex CLI to read subscription usage.".into()));
     }
     rpc.send(json!({"method":"initialized"})).await?;
+    rpc.send(json!({"id":2,"method":"config/read","params":{"includeLayers":false}}))
+        .await?;
+    let config = rpc.receive(2).await?;
+    if config.get("error").is_some() || config.get("result").is_none() {
+        return Ok(Err("The native configuration could not be verified.".into()));
+    }
     let method = match kind {
         QueryKind::Limits => "account/rateLimits/read",
         QueryKind::History => "account/usage/read",
     };
-    rpc.send(json!({"id":2,"method":method})).await?;
-    Ok(decode(&rpc.receive(2).await?, kind))
+    rpc.send(json!({"id":3,"method":method})).await?;
+    Ok(decode(&rpc.receive(3).await?, kind))
 }
 
 // Validate supported payload fields before the state machine calls a response

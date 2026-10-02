@@ -48,6 +48,7 @@ sys.exit(int(os.environ.get("TEST_EXIT", "0")))
             "OPENAI_WORKLOAD_IDENTITY_CONTEXT": "synthetic-workload",
             "OPENAI_FEDERATION_RULE_ID": "synthetic-federation",
             "CODEX_SANDBOX": "seatbelt", "CODEX_SANDBOX_NETWORK_DISABLED": "1",
+            "CODEX_CA_CERTIFICATE": "/synthetic/corporate-ca.pem",
             "CODEX_NETWORK_PROXY_ACTIVE": "1", "CODEX_NETWORK_ALLOW_LOCAL_BINDING": "0",
             "ELECTRON_RUN_AS_NODE": "1",
             "NODE_OPTIONS": "--synthetic", "NODE_PATH": "/synthetic/node",
@@ -65,7 +66,7 @@ sys.exit(int(os.environ.get("TEST_EXIT", "0")))
         self.assertEqual(Path(captured["cwd"]), self.workspace.resolve())
         for key in ("PATH", "HTTPS_PROXY", "TERM", "UNRELATED_SETTING", "CODEX_SANDBOX",
                     "CODEX_SANDBOX_NETWORK_DISABLED", "CODEX_NETWORK_PROXY_ACTIVE",
-                    "CODEX_NETWORK_ALLOW_LOCAL_BINDING"):
+                    "CODEX_NETWORK_ALLOW_LOCAL_BINDING", "CODEX_CA_CERTIFICATE"):
             self.assertEqual(captured["env"][key], self.env[key])
         self.assertEqual(captured["env"]["CODEX_HOME"], str(self.user_home / ".codex"))
         for key in ("CODEX_SQLITE_HOME", "CODEX_THREAD_ID", "CODEX_CLI_PATH", "CODEX_API_KEY",

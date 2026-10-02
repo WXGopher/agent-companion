@@ -14,7 +14,6 @@
 use std::fmt::Arguments;
 use std::io::Write;
 
-#[cfg(windows)]
 pub fn stdout_line(args: Arguments<'_>) {
     let stdout = std::io::stdout();
     let mut handle = stdout.lock();
@@ -30,7 +29,6 @@ pub fn stderr_line(args: Arguments<'_>) {
 }
 
 /// `println!` that shrugs off a closed pipe.
-#[cfg(windows)]
 macro_rules! outln {
     () => { $crate::out::stdout_line(::std::format_args!("")) };
     ($($arg:tt)*) => { $crate::out::stdout_line(::std::format_args!($($arg)*)) };
@@ -42,5 +40,4 @@ macro_rules! errln {
 }
 
 pub(crate) use errln;
-#[cfg(windows)]
 pub(crate) use outln;

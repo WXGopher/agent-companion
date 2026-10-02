@@ -500,7 +500,11 @@ fn copy_and_copied_signature_failures_clean_only_this_attempt() {
         assert!(!fixture.layout.instance().launcher_app.exists());
         assert_eq!(
             child_names(&fixture.layout.support),
-            [".dodex-stage-interrupted-other-process", "deployment.lock"]
+            [
+                ".dodex-stage-interrupted-other-process",
+                "deployment.lock",
+                "software-updates.lock"
+            ]
         );
         assert_eq!(
             child_names(&fixture.layout.applications),
@@ -614,7 +618,14 @@ fn malformed_nested_and_inline_config_overrides_are_rejected() {
         fs::write(&config, text).unwrap();
         assert!(validate_config(&config, &instance).is_err());
     }
-    fs::write(&config, "'cli_auth_credentials_store' = 'file' # synthetic compatible\n[profiles.work]\ncli_auth_credentials_store = 'file'\n").unwrap();
+    fs::write(
+        &config,
+        format!(
+            "{}\n[profiles.work]\ncli_auth_credentials_store = 'file'\n",
+            config_text(&instance)
+        ),
+    )
+    .unwrap();
     validate_config(&config, &instance).unwrap();
 }
 pub(super) fn legacy_fixture() -> (Fixture, InstanceConfig) {

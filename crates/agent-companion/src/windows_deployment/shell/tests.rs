@@ -316,3 +316,28 @@ fn user_path_preserves_existing_entries_type_and_unexpanded_variables() {
         "%LOCALAPPDATA%\\AgentCompanion\\bin"
     );
 }
+
+#[test]
+fn identical_console_binary_still_migrates_the_owned_legacy_update_route() {
+    let temporary = tempfile::tempdir().unwrap();
+    let env = environment(temporary.path());
+    let source = temporary.path().join("companion.exe");
+    fs::write(&source, executable(b"same-version", 2)).unwrap();
+    let registration = register(&source, &env).unwrap();
+    let target = registration.directory.join("dodex.exe");
+    let original = fs::read(&target).unwrap();
+    let old = serde_json::json!({"schema":1,"owner":OWNER,"hashes":[file_hash(&target).unwrap()]});
+    fs::write(
+        registration.directory.join(MARKER),
+        serde_json::to_vec(&old).unwrap(),
+    )
+    .unwrap();
+    register(&source, &env).unwrap();
+    let migrated = ownership(&registration.directory).unwrap().unwrap();
+    assert_eq!(migrated.schema, 2);
+    assert_eq!(migrated.entry_revision, 2);
+    assert_eq!(migrated.update_route, "companion");
+    assert_eq!(fs::read(&target).unwrap(), original);
+    register(&source, &env).unwrap();
+    assert_eq!(fs::read(&target).unwrap(), original);
+}

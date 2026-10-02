@@ -5,7 +5,7 @@ import { SettingsButton, SettingsColors } from "settings-common.slint";
 import { StatusBarSettings } from "statusbar-settings.slint";
 import { StatusComponent } from "status-component.slint";
 import { ProfileSyncFile, ProfileSyncSettings } from "profile-sync.slint";
-import { SoftwareVersion } from "software-updates.slint";
+import { SoftwareVersion, SoftwareUpdates } from "software-updates.slint";
 export { SoftwareVersion }
 export { StatusComponent }
 export { ProfileSyncFile }
@@ -262,25 +262,33 @@ export component CodexTuiWindow inherits Window {
                     VerticalLayout {
                     alignment: start;
                     spacing: 20px;
+                    SoftwareUpdates {
+                        versions: root.software-versions;
+                        busy: root.software-busy || root.dual-busy || root.sync-busy;
+                        error: root.software-error;
+                        message: root.software-message;
+                        notice: root.software-notice;
+                        maintain(action) => { root.maintain-software(action); }
+                    }
                     Text { text: "独立的第二个 Codex"; color: SettingsColors.text; font-size: 22px; font-weight: 600; }
                     Text { text: "启用时自动检查或创建独立环境，并设置 shell 的 dodex 命令。首次打开后登录第二个账号。"; color: SettingsColors.secondary; wrap: word-wrap; }
                     CheckBox {
                         text: "启用 Dodex 支持";
                         checked: root.dual-enabled;
-                        enabled: !root.dual-busy;
+                        enabled: !root.dual-busy && !root.software-busy;
                         toggled => { root.toggle-dual(self.checked); }
                     }
                     HorizontalLayout {
                         spacing: 8px;
-                        SettingsButton { text: root.dual-deployed ? "检查并接入" : "部署双开环境"; enabled: !root.dual-busy; clicked => { root.deploy-dual(); } }
-                        SettingsButton { text: "打开 Dodex"; enabled: root.dual-enabled && !root.dual-busy; clicked => { root.open-dual(); } }
+                        SettingsButton { text: root.dual-deployed ? "检查并接入" : "部署双开环境"; enabled: !root.dual-busy && !root.software-busy; clicked => { root.deploy-dual(); } }
+                        SettingsButton { text: "打开 Dodex"; enabled: root.dual-deployed && !root.dual-busy && !root.software-busy; clicked => { root.open-dual(); } }
                         Rectangle { horizontal-stretch: 1; }
                     }
                     Text { text: root.dual-busy ? root.dual-phase : root.dual-message; color: root.dual-error ? #d9534f : SettingsColors.secondary; wrap: word-wrap; }
-                    Text { text: "停用后保留环境。运行程序更新或卸载需手动处理。"; color: SettingsColors.secondary; wrap: word-wrap; }
+                    Text { text: "关闭监控后保留登录与历史；上方版本管理用于成对更新 App 和 TUI。"; color: SettingsColors.secondary; wrap: word-wrap; }
                     ProfileSyncSettings {
                         files: root.sync-files;
-                        busy: root.dual-busy || root.sync-busy;
+                        busy: root.dual-busy || root.sync-busy || root.software-busy;
                         status: root.sync-status;
                         error: root.sync-error;
                         sync(file, to-secondary) => { root.sync-profile(file, to-secondary); }

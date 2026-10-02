@@ -63,12 +63,33 @@ pub struct Request {
     pub id: u64,
     pub source: Source,
     pub kind: QueryKind,
+    pub generation: u64,
+    pub identity: Option<AccountIdentity>,
+}
+
+/// Account ownership exists only in memory. Debug output deliberately omits
+/// all identifiers; neither this type nor Request is serializable.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AccountIdentity {
+    pub user: String,
+    pub workspace: String,
+    pub storage: String,
+    pub service: String,
+}
+
+impl std::fmt::Debug for AccountIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AccountIdentity([redacted])")
+    }
 }
 
 struct InstanceState {
     snapshot: InstanceSnapshot,
     limits_request: Option<u64>,
     history_request: Option<u64>,
+    identity: Option<AccountIdentity>,
+    identity_error: Option<String>,
+    generation: u64,
 }
 
 /// Pure state machine. The application executes returned requests and cancels
@@ -109,6 +130,9 @@ impl Scheduler {
                         },
                         limits_request: None,
                         history_request: None,
+                        identity: None,
+                        identity_error: None,
+                        generation: 0,
                     },
                 );
                 added.push(id);
@@ -118,6 +142,41 @@ impl Scheduler {
             .into_iter()
             .filter_map(|id| self.start(&id, QueryKind::Limits, now))
             .collect()
+    }
+
+    /// Bind both caches and in-flight requests to the same verified account.
+    /// A token refresh does not change this identity. Unknown/signed-out
+    /// identities cannot retain or publish an earlier account's data.
+    pub fn sync_identity(
+        &mut self,
+        id: &str,
+        identity: Result<AccountIdentity, String>,
+        now: u64,
+    ) -> Vec<Request> {
+        let Some(state) = self.instances.get_mut(id) else {
+            return Vec::new();
+        };
+        let (identity, error) = match identity {
+            Ok(identity) => (Some(identity), None),
+            Err(error) => (None, Some(error)),
+        };
+        if state.identity == identity && state.identity_error == error {
+            return Vec::new();
+        }
+        state.identity = identity;
+        state.identity_error = error.clone();
+        state.generation = state.generation.wrapping_add(1);
+        state.limits_request = None;
+        state.history_request = None;
+        state.snapshot.limits = QuerySnapshot {
+            error: error.clone(),
+            ..Default::default()
+        };
+        state.snapshot.history = QuerySnapshot {
+            error,
+            ..Default::default()
+        };
+        self.start(id, QueryKind::Limits, now).into_iter().collect()
     }
 
     /// No catch-up queue: a resumed machine gets at most one query per source.
@@ -169,6 +228,9 @@ impl Scheduler {
 
     fn start(&mut self, id: &str, kind: QueryKind, _now: u64) -> Option<Request> {
         let state = self.instances.get_mut(id)?;
+        if state.identity_error.is_some() {
+            return None;
+        }
         let (snapshot, pending) = match kind {
             QueryKind::Limits => (&mut state.snapshot.limits, &mut state.limits_request),
             QueryKind::History => (&mut state.snapshot.history, &mut state.history_request),
@@ -184,6 +246,8 @@ impl Scheduler {
             id: self.next_id,
             source: state.snapshot.source.clone(),
             kind,
+            generation: state.generation,
+            identity: state.identity.clone(),
         })
     }
 
@@ -192,6 +256,8 @@ impl Scheduler {
             .get(&request.source.instance_id)
             .is_some_and(|state| {
                 state.snapshot.source == request.source
+                    && state.generation == request.generation
+                    && state.identity == request.identity
                     && match request.kind {
                         QueryKind::Limits => state.limits_request == Some(request.id),
                         QueryKind::History => state.history_request == Some(request.id),

@@ -106,7 +106,7 @@ fn wrapper_fixture(root: &Path) -> Binding {
         desktop_data: root.join("existing desktop"),
         log_dir: root.join("existing desktop/logs"),
         original: root.join("original adapter"),
-        companion: root.join("Companion"),
+        companion: PathBuf::from("/usr/bin/true"),
         version: "0.160.0".into(),
     };
     fs::create_dir_all(&binding.sqlite_home).unwrap();
@@ -280,4 +280,67 @@ assert 'CODEX_HOME' not in captured[0][2]
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[test]
+fn app_publication_resumes_every_crash_boundary_and_rejects_foreign_installations() {
+    for phase in 0..3 {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let pending = AppPublication {
+            schema: 1,
+            destination: root.join("Codex.app"),
+            staged: root.join("staged.app"),
+            backup: root.join("backup.app"),
+            original: Version {
+                version: "old".into(),
+                build: Some("1".into()),
+            },
+            target: Version {
+                version: "new".into(),
+                build: Some("2".into()),
+            },
+        };
+        let write = |path: &Path, version: &str| {
+            fs::create_dir(path).unwrap();
+            fs::write(path.join("version"), version).unwrap();
+        };
+        write(&pending.destination, "old");
+        write(&pending.staged, "new");
+        if phase >= 1 {
+            fs::rename(&pending.destination, &pending.backup).unwrap();
+        }
+        if phase >= 2 {
+            fs::rename(&pending.staged, &pending.destination).unwrap();
+        }
+        let verify = |path: &Path, expected: &Version| {
+            if fs::read_to_string(path.join("version")).ok().as_deref()
+                == Some(expected.version.as_str())
+            {
+                Ok(())
+            } else {
+                Err("changed bundle".into())
+            }
+        };
+        resume_app_publication(&pending, verify).unwrap();
+        resume_app_publication(&pending, verify).unwrap();
+        assert_eq!(
+            fs::read_to_string(pending.destination.join("version")).unwrap(),
+            "new"
+        );
+        assert_eq!(
+            fs::read_to_string(pending.backup.join("version")).unwrap(),
+            "old"
+        );
+        fs::write(pending.destination.join("version"), "foreign").unwrap();
+        assert!(resume_app_publication(&pending, verify).is_err());
+        assert_eq!(
+            fs::read_to_string(pending.destination.join("version")).unwrap(),
+            "foreign"
+        );
+        assert_eq!(
+            fs::read_to_string(pending.backup.join("version")).unwrap(),
+            "old"
+        );
+    }
 }

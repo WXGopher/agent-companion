@@ -137,7 +137,9 @@ name = "agent-companion"
 version = "0.3.23"
 dependencies = [
  "agent-companion-core",
+ "base64 0.22.1",
  "clap",
+ "core-foundation",
  "crossterm",
  "futures-util",
  "libc",

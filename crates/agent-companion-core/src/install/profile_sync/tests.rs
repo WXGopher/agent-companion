@@ -1,5 +1,86 @@
 use super::*;
 
+#[cfg(unix)]
+#[test]
+fn launch_guard_rejects_redirected_credentials_without_reading_their_contents() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().canonicalize().unwrap();
+    let paths = IsolationPaths {
+        sqlite_home: home.join("sqlite"),
+        log_dir: home.join("logs"),
+    };
+    let mut document = DocumentMut::new();
+    for key in ISOLATION_KEYS {
+        document[key] = toml_edit::value(isolation_value(key, &paths));
+    }
+    fs::write(home.join("config.toml"), document.to_string()).unwrap();
+    let external = home.join("outside-auth");
+    fs::write(&external, b"opaque synthetic credentials, not JSON").unwrap();
+    std::os::unix::fs::symlink(&external, home.join("auth.json")).unwrap();
+    assert!(validate_isolated_profile(&home, &paths).is_err());
+    assert_eq!(
+        fs::read(external).unwrap(),
+        b"opaque synthetic credentials, not JSON"
+    );
+}
+
+#[test]
+fn launch_validation_checks_defaults_and_profiles_but_not_mcp_parameters() {
+    let paths = IsolationPaths {
+        sqlite_home: "/synthetic/sqlite".into(),
+        log_dir: "/synthetic/logs".into(),
+    };
+    let base = "cli_auth_credentials_store='file'\nsqlite_home='/synthetic/sqlite'\nlog_dir='/synthetic/logs'\n";
+    for extra in [
+        "[profiles.work]\nmodel='example'\n",
+        "[mcp_servers.helper.env]\nlog_dir='/service/logs'\nsqlite_home='/service/db'\n",
+        "[profiles.work.mcp_servers.helper.env]\ncli_auth_credentials_store='service setting'\n",
+    ] {
+        validate_isolated_config(format!("{base}{extra}").as_bytes(), &paths).unwrap();
+    }
+    for extra in [
+        "[profiles.work]\ncli_auth_credentials_store='keyring'\n",
+        "profiles={work={sqlite_home='/primary/sqlite'}}\n",
+        "[profiles.work]\nlog_dir='/primary/logs'\n",
+    ] {
+        assert!(validate_isolated_config(format!("{base}{extra}").as_bytes(), &paths).is_err());
+    }
+    for key in ISOLATION_KEYS {
+        let missing: String = base
+            .lines()
+            .filter(|line| !line.starts_with(key))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        assert!(
+            validate_isolated_config(missing.as_bytes(), &paths)
+                .unwrap_err()
+                .to_string()
+                .contains(key)
+        );
+    }
+}
+
+#[test]
+fn launch_validation_parses_inline_and_quoted_profile_override_keys() {
+    for raw in [
+        "sqlite_home='/wrong'",
+        "profiles.work.log_dir='/wrong'",
+        "profiles={work={cli_auth_credentials_store='keyring'}}",
+        "profiles.work={\"\\u006cog_dir\"='/wrong'}",
+    ] {
+        assert!(validate_isolated_overrides(&[raw.into()]).is_err(), "{raw}");
+    }
+    for raw in [
+        "model=o3",
+        "model='sqlite_home=ordinary text'",
+        "profiles={work={model='o3'}}",
+        "profiles.work={mcp_servers={helper={env={log_dir='service'}}}}",
+        "mcp_servers.helper.env.sqlite_home='/service/db'",
+    ] {
+        validate_isolated_overrides(&[raw.into()]).unwrap();
+    }
+}
+
 struct Fixture {
     _temp: tempfile::TempDir,
     pair: ProfilePair,

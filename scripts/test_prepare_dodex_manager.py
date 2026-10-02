@@ -21,6 +21,27 @@ SPEC.loader.exec_module(repair)
 
 
 class RepairTests(unittest.TestCase):
+    def test_prepared_manager_delegates_updates_and_preserves_rollback_material(self):
+        original = b"class Manager:\n    def update(self, app=None, dmg=None):\n        raise AssertionError('independent updater invoked')\n\n    def rollback(self):\n        return 'original recovery method'\n"
+        routed = repair.route_maintenance(original, Path("/synthetic/Companion"))
+        self.assertIn(b"return 'original recovery method'", routed)
+        self.assertNotIn(b"independent updater invoked", routed)
+        calls = []
+        inherited = {"CODEX_THREAD_ID": "other", "OPENAI_API_KEY": "synthetic",
+                     "CODEX_SANDBOX": "seatbelt", "HTTPS_PROXY": "http://synthetic"}
+        namespace = {"os": types.SimpleNamespace(environ=inherited, execve=lambda *args: calls.append(args)),
+                     "ManagerError": RuntimeError}
+        exec(routed, namespace)
+        manager = namespace["Manager"]()
+        manager.update()
+        self.assertEqual(calls[0][:2], ("/synthetic/Companion", ["/synthetic/Companion", "software-maintenance", "update-all"]))
+        self.assertEqual(calls[0][2], {"CODEX_SANDBOX": "seatbelt", "HTTPS_PROXY": "http://synthetic"})
+        self.assertEqual(manager.rollback(), "original recovery method")
+        for app, dmg in [(Path("/synthetic/local.app"), None), (None, Path("/synthetic/local.dmg"))]:
+            with self.assertRaisesRegex(RuntimeError, "paired maintenance"):
+                manager.update(app, dmg)
+        self.assertEqual(len(calls), 1)
+
     def setUp(self):
         self.snippets = {
             name: (repair.RESOURCES / (name + ".old.txt")).read_bytes()
@@ -100,7 +121,7 @@ class RepairTests(unittest.TestCase):
             source = Path(directory) / "source.py"
             output = Path(directory) / "output.py"
             source.write_bytes(b"fixture")
-            with patch.object(repair, "prepare", return_value=b"patched"), contextlib.redirect_stdout(io.StringIO()):
+            with patch.object(repair, "prepare", return_value=b"patched"), patch.object(repair, "route_maintenance", return_value=b"patched"), contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(repair.main(["--source", str(source)]), 0)
                 self.assertEqual(list(Path(directory).iterdir()), [source])
                 self.assertEqual(repair.main(["--source", str(source), "--output", str(output)]), 0)

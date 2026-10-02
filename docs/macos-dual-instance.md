@@ -26,15 +26,15 @@ they do not update either application's program files.
 
 The **Codex 双开** page creates Dodex App from the official Codex App already
 installed on this Mac. Thereafter, opening Dodex from Finder or Dock checks the
-official App's version and build. Matching versions launch immediately without
-copying or signing. A different version is copied, verified and published before
+official App's version, build and launcher revision. Matching versions and
+revisions launch after profile validation without copying or signing. A different version is copied, verified and published before
 the Dodex window opens. Updating the official App while Dodex is running takes
 effect after Dodex is quit and opened again.
 
 This startup check uses the installed Companion executable; its menu bar app
 does not need to be running. It does not download an installer or run a background
-update daemon. If the source or updater is unavailable, or synchronization fails,
-the existing Dodex App still opens and a later startup can retry. Concurrent
+update daemon. If the updater is unavailable or validation/synchronization fails,
+the launcher reports the failure and does not start an unverified profile. Concurrent
 startup and manual synchronization share a deployment lock; an already running
 Dodex process is never replaced.
 
@@ -50,7 +50,7 @@ source matches the locally installed official version. Neither public command
 launches an App. Existing mirrors need one manual sync after installing this
 Companion update to receive the startup check.
 
-The startup check leaves signatures untouched when versions match. An actual
+The startup check leaves signatures untouched when versions and launcher revisions match. An actual
 upgrade changes the local signature, so macOS may ask again for Keychain access;
 silent synchronization does not bypass system authorization prompts.
 
@@ -109,7 +109,7 @@ Dodex or remove files. Updating an existing App preserves this preference.
 
 Right-click the menu-bar readout, or use **版本管理** in Settings → **Codex 双开**:
 
-- **对齐 Codex/Dodex 版本** compares installed versions without contacting a server. Codex is the reference for its TUI and App separately. A newer Dodex is retained with a suggestion to check official updates; alignment never downgrades it.
+- **对齐 Codex/Dodex 版本** compares installed versions, entry revisions, public App bindings and maintenance routes without contacting a server. Matching versions can still require an audited entry migration. Codex is the reference for its TUI and App separately. A newer Dodex is retained with a suggestion to check official updates; alignment never downgrades it.
 - **全部更新到最新** fetches official stable CLI release metadata and the official App feed. It updates the primary standalone CLI with its own updater, verifies the downloaded App's OpenAI signature and exact version/build, and then aligns Dodex. App and CLI version numbers remain independent.
 
 Opening Settings reads local version metadata only. Four rows show current and
@@ -118,8 +118,9 @@ that both instances are current. Existing Apps and TUI processes must be closed
 by the user before replacement. Maintenance does not quit or restart them.
 Concurrent settings windows and App synchronization share filesystem locks.
 
-TUI alignment currently supports the complete official standalone package with
-`codex-package.json`, plus the known existing Dodex terminal adapter. Other
+TUI alignment supports the complete official standalone package with
+`codex-package.json`, official entry symlinks, the known generated primary wrapper,
+and audited legacy Dodex adapter/managed-entry templates. Other
 package managers and unknown adapters are rejected before updates; they are not
 silently converted. The entire versioned package is copied, including
 `codex-code-mode-host`, `codex-path` and `codex-resources`. The original adapter is
@@ -131,9 +132,12 @@ No credentials, personal configuration or session files are copied or rewritten.
 The legacy hidden runtime and deployment metadata remain for existing validation
 and rollback; removing them manually is not part of this migration.
 
-The primary App retains a sibling backup before replacement, and Dodex uses its
+The primary App retains a sibling backup and durable recovery record before replacement, and Dodex uses its
 existing mirror backup mechanism. An interrupted or failed step reports its
 actual installed versions; completed updates remain installed and can be retried.
+An official updater that installs a newer version than initially requested must
+have that version confirmed against fresh stable-release metadata before Dodex
+is synchronized. An unconfirmed result remains explicitly incomplete.
 The existing startup and manual App synchronization also preserve a newer Dodex
 instead of copying an older primary App over it.
 The isolated tests cover paths, arguments, account separation and native launcher

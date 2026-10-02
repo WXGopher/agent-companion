@@ -19,6 +19,7 @@ use std::{
 const MANIFEST: &str = "companion-deployment.json";
 const READY: &str = "环境已就绪。打开 Dodex 后，请使用第二个账号登录。";
 
+pub(crate) mod maintenance;
 mod shell;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -56,6 +57,10 @@ struct Manifest {
     schema: u32,
     instance: InstanceConfig,
     archive_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    desktop: Option<maintenance::DesktopPackage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tui: Option<maintenance::TuiPackage>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -249,6 +254,7 @@ pub fn sync_profile_file(kind: FileKind, direction: Direction) -> Result<SyncOut
 
 fn sync_operation<T>(root: &Path, action: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     let _guard = OPERATION.try_lock().map_err(|_| "双开操作正在进行。")?;
+    let _maintenance = maintenance::lock()?;
     {
         let mut state = shared().lock().unwrap_or_else(|e| e.into_inner());
         if state.status.busy {
@@ -332,6 +338,7 @@ fn perform(
     action: impl FnOnce() -> Result<(Option<InstanceConfig>, bool, Option<String>), String>,
 ) -> Result<DeploymentStatus, String> {
     let _guard = OPERATION.try_lock().map_err(|_| "双开操作正在进行。")?;
+    let _maintenance = maintenance::lock()?;
     {
         let mut state = shared().lock().unwrap_or_else(|e| e.into_inner());
         state.initialized = true;
@@ -386,8 +393,8 @@ pub fn set_enabled(enabled: bool) -> Result<DeploymentStatus, String> {
 pub fn deploy() -> Result<DeploymentStatus, String> {
     perform(|| {
         let root = current_root()?;
-        let instance =
-            ensure_instance(&root, official_runtime, &|path| verify_runtime(path, false))?;
+        ensure_instance(&root, official_runtime, &|path| verify_runtime(path, false))?;
+        let instance = maintenance::initialize_under_deployment_lock()?;
         shared()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -449,6 +456,8 @@ fn ensure_instance(
         schema: 1,
         instance: instance.clone(),
         archive_hash: verify(&stage.path().join("runtime"))?,
+        desktop: None,
+        tui: None,
     };
     fs::write(
         stage.path().join(MANIFEST),
@@ -504,7 +513,7 @@ fn validate_with_config(
 ) -> Result<Manifest, String> {
     no_redirects(root)?;
     let manifest: Manifest = read_json(&root.join(MANIFEST))?;
-    if manifest.schema != 1 || manifest.instance != InstanceConfig::at(root) {
+    if !maintenance::valid_manifest_layout(root, &manifest) {
         return Err("双开目录与部署清单不一致。".into());
     }
     let instance = &manifest.instance;
@@ -540,8 +549,18 @@ fn validate_with_config(
         Err(error) if !require_config && error.kind() == std::io::ErrorKind::NotFound => (),
         Err(_) => return Err("独立配置缺失。".into()),
     }
-    if runtime && verify(&root.join("runtime"))? != manifest.archive_hash {
+    if runtime
+        && verify(
+            instance
+                .runtime_app
+                .parent()
+                .ok_or("桌面运行程序路径无效。")?,
+        )? != manifest.archive_hash
+    {
         return Err("Dodex 运行程序已改变，请检查部署环境。".into());
+    }
+    if runtime && let Some(tui) = &manifest.tui {
+        maintenance::verify_tui(tui)?;
     }
     Ok(manifest)
 }
@@ -564,39 +583,14 @@ fn validate_primary_separation(root: &Path) -> Result<(), String> {
 }
 
 fn validate_config(config: &str, instance: &InstanceConfig) -> Result<(), String> {
-    let document = config
-        .parse::<toml_edit::DocumentMut>()
-        .map_err(|_| "Dodex 配置格式无效。")?;
-    let expected = configuration(instance)
-        .parse::<toml_edit::DocumentMut>()
-        .unwrap();
-    for key in ["cli_auth_credentials_store", "sqlite_home", "log_dir"] {
-        if document.get(key).and_then(toml_edit::Item::as_str)
-            != expected.get(key).and_then(toml_edit::Item::as_str)
-        {
-            return Err("Dodex 必须使用独立文件凭证、数据库与日志目录。".into());
-        }
-    }
-    // Profiles must not override the isolation settings either.
-    fn walk(item: &toml_edit::Item, expected: &toml_edit::DocumentMut) -> bool {
-        if let Some(table) = item.as_table_like() {
-            table.iter().all(|(key, child)| {
-                (expected.get(key).is_none()
-                    || child.as_str() == expected.get(key).and_then(toml_edit::Item::as_str))
-                    && walk(child, expected)
-            })
-        } else if let Some(tables) = item.as_array_of_tables() {
-            tables
-                .iter()
-                .all(|table| walk(&toml_edit::Item::Table(table.clone()), expected))
-        } else {
-            true
-        }
-    }
-    if !walk(document.as_item(), &expected) {
-        return Err("配置中的覆盖项会破坏实例隔离。".into());
-    }
-    Ok(())
+    profile_sync::validate_isolated_config(
+        config.as_bytes(),
+        &IsolationPaths {
+            sqlite_home: instance.database_dir.clone(),
+            log_dir: instance.desktop_user_data.join("logs"),
+        },
+    )
+    .map_err(|error| error.to_string())
 }
 
 fn paths_overlap(a: &Path, b: &Path) -> bool {
@@ -678,21 +672,23 @@ fn copy_tree(source: &Path, target: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn powershell(script: &str, path: Option<&Path>) -> Result<String, String> {
+pub(crate) fn powershell(script: &str, path: Option<&Path>) -> Result<String, String> {
     let system = std::env::var_os("SystemRoot").ok_or("无法定位 Windows。")?;
     let mut command =
         Command::new(PathBuf::from(system).join("System32/WindowsPowerShell/v1.0/powershell.exe"));
     command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "-"]);
+    agent_companion_core::process_environment::isolate_command(&mut command);
     // A PowerShell 7 host's module path points Windows PowerShell at incompatible
     // Security assemblies. Let the system interpreter build its own module path.
     command.env_remove("PSModulePath");
     if let Some(path) = path {
         command.env("COMPANION_RUNTIME_CHECK", path);
     }
+    let mut stdout = tempfile::tempfile().map_err(|_| "无法暂存验证结果。")?;
     let mut child = command
         .creation_flags(0x08000000)
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
+        .stdout(stdout.try_clone().map_err(|_| "无法暂存验证结果。")?)
         .stderr(Stdio::null())
         .spawn()
         .map_err(|_| "无法验证官方 Codex 程序。")?;
@@ -703,13 +699,38 @@ fn powershell(script: &str, path: Option<&Path>) -> Result<String, String> {
         .unwrap()
         .write_all(format!("{script}\n").as_bytes())
         .map_err(|_| "无法验证官方 Codex 程序。")?;
-    let output = child
-        .wait_with_output()
-        .map_err(|_| "无法验证官方 Codex 程序。")?;
-    if !output.status.success() {
-        return Err("需要签名有效的官方 Codex Windows 应用。".into());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => break,
+            Ok(Some(_)) => {
+                return Err(
+                    "官方 Windows 运行程序或维护工具验证失败，请检查签名与系统策略。".into(),
+                );
+            }
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Windows 验证工具超时。".into());
+            }
+        }
     }
-    Ok(String::from_utf8_lossy(&output.stdout)
+    use std::io::{Seek, SeekFrom};
+    stdout
+        .seek(SeekFrom::Start(0))
+        .map_err(|_| "无法读取验证结果。")?;
+    let mut output = Vec::new();
+    stdout
+        .take(4 * 1024 * 1024 + 1)
+        .read_to_end(&mut output)
+        .map_err(|_| "无法读取验证结果。")?;
+    if output.len() > 4 * 1024 * 1024 {
+        return Err("Windows 验证结果过大。".into());
+    }
+    Ok(String::from_utf8_lossy(&output)
         .trim()
         .trim_start_matches('\u{feff}')
         .to_owned())
@@ -731,11 +752,11 @@ pub fn check_runtime() -> Result<String, String> {
 }
 
 fn verify_runtime(path: &Path, allow_hardlinks: bool) -> Result<String, String> {
-    for file in ["ChatGPT.exe", "resources/codex.exe", "resources/app.asar"] {
+    for file in ["ChatGPT.exe", "resources/app.asar"] {
         no_links(&path.join(file), allow_hardlinks)?;
     }
     powershell(
-        "$ErrorActionPreference='Stop'; $r=$env:COMPANION_RUNTIME_CHECK; $s=Get-AuthenticodeSignature -LiteralPath (Join-Path $r 'ChatGPT.exe'); if ($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notmatch 'O=\"?OpenAI OpCo, LLC\"?,') { exit 1 }; if (!(Test-Path -LiteralPath (Join-Path $r 'resources/codex.exe'))) { exit 1 }; (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $r 'resources/app.asar')).Hash",
+        "$ErrorActionPreference='Stop'; $r=$env:COMPANION_RUNTIME_CHECK; $s=Get-AuthenticodeSignature -LiteralPath (Join-Path $r 'ChatGPT.exe'); if ($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notmatch 'O=\"?OpenAI OpCo, LLC\"?,') { exit 1 }; (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $r 'resources/app.asar')).Hash",
         Some(path),
     )
 }
@@ -743,28 +764,7 @@ fn verify_runtime(path: &Path, allow_hardlinks: bool) -> Result<String, String> 
 /// Start from a small OS environment, never inheriting account/session overrides.
 pub fn isolated_command(executable: &Path, home: &Path, database: &Path) -> Command {
     let mut command = Command::new(executable);
-    command.env_clear();
-    for name in [
-        "SystemRoot",
-        "WINDIR",
-        "SystemDrive",
-        "USERPROFILE",
-        "HOMEDRIVE",
-        "HOMEPATH",
-        "LOCALAPPDATA",
-        "APPDATA",
-        "TEMP",
-        "TMP",
-        "PATH",
-        "COMSPEC",
-        "PATHEXT",
-        "USERNAME",
-        "USERDOMAIN",
-    ] {
-        if let Some(value) = std::env::var_os(name) {
-            command.env(name, value);
-        }
-    }
+    agent_companion_core::process_environment::isolate_command(&mut command);
     command
         .env("CODEX_HOME", home)
         .env("CODEX_SQLITE_HOME", database);
@@ -774,6 +774,10 @@ pub fn isolated_command(executable: &Path, home: &Path, database: &Path) -> Comm
 /// Launch the deployed CLI in the caller's terminal and working directory. The
 /// desktop entry point below deliberately has different window/stdio behavior.
 pub fn launch_cli(arguments: &[OsString]) -> Result<ExitStatus, String> {
+    profile_sync::validate_isolated_overrides(&agent_companion_core::codex_args::config_overrides(
+        arguments,
+    ))
+    .map_err(|error| error.to_string())?;
     let manifest = validate(&current_root()?, true)?;
     prepare_sandbox_bin(&manifest.instance.codex_home)?;
     wait_for_cli(&mut cli_command(&manifest.instance, arguments))
@@ -810,6 +814,17 @@ fn cli_command(instance: &InstanceConfig, arguments: &[OsString]) -> Command {
         }
     }
     command
+        .args(["-c", "cli_auth_credentials_store=\"file\""])
+        .arg("-c")
+        .arg(format!(
+            "sqlite_home={}",
+            serde_json::to_string(&instance.database_dir).unwrap()
+        ))
+        .arg("-c")
+        .arg(format!(
+            "log_dir={}",
+            serde_json::to_string(&instance.desktop_user_data.join("logs")).unwrap()
+        ))
         .args(arguments)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
@@ -849,6 +864,14 @@ fn wait_for_cli(command: &mut Command) -> std::io::Result<ExitStatus> {
 }
 
 pub fn launch(thread: Option<&str>) -> Result<(), String> {
+    launch_with(thread, None)
+}
+
+pub fn launch_project(workspace: Option<&Path>) -> Result<(), String> {
+    launch_with(None, workspace)
+}
+
+fn launch_with(thread: Option<&str>, workspace: Option<&Path>) -> Result<(), String> {
     let root = current_root()?;
     let manifest = validate(&root, true)?;
     let instance = manifest.instance;
@@ -879,6 +902,12 @@ pub fn launch(thread: Option<&str>) -> Result<(), String> {
     if let Some(thread) = thread {
         let uri = crate::app::win::codex::thread_uri(thread).ok_or("无效的会话 ID。")?;
         command.arg(uri);
+    }
+    if let Some(workspace) = workspace {
+        if !workspace.is_dir() {
+            return Err("项目目录不存在。".into());
+        }
+        command.arg("--open-project").arg(workspace);
     }
     command
         .creation_flags(0x08000000)

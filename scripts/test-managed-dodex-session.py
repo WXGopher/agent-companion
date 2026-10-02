@@ -14,7 +14,7 @@ import threading
 import time
 
 
-def verify(executable, root):
+def verify(executable, root, companion):
     package = executable.resolve().parent.parent
     manifest = json.loads((package / "codex-package.json").read_text())
     assert manifest["entrypoint"] == "bin/codex"
@@ -22,10 +22,13 @@ def verify(executable, root):
     workspace = root / "workspace"
     for path in (profile, sqlite, desktop / "logs", workspace, root / "user"):
         path.mkdir(parents=True, exist_ok=True)
+    (profile / "config.toml").write_text('cli_auth_credentials_store = "file"\n'
+        + "sqlite_home = " + json.dumps(str(sqlite)) + "\n"
+        + "log_dir = " + json.dumps(str(desktop / "logs")) + "\n")
     binding = dict(package=str(package), entry=str(root / "dodex"), app=str(root / "Dodex.app"),
                    profile_home=str(profile), sqlite_home=str(sqlite), desktop_data=str(desktop),
                    log_dir=str(desktop / "logs"), original=str(root / "unused-adapter"),
-                   companion=str(root / "unused-companion"), version=manifest["version"])
+                   companion=str(companion.resolve()), version=manifest["version"])
     template = (Path(__file__).resolve().parents[1] / "crates/agent-companion/src/software_updates/dodex-wrapper.py").read_text()
     serialized = json.dumps(binding, separators=(",", ":"), ensure_ascii=False)
     wrapper = root / "dodex"
@@ -116,6 +119,7 @@ def verify(executable, root):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--codex", required=True, type=Path)
+    parser.add_argument("--companion", type=Path, default=Path(__file__).resolve().parents[1] / "target/debug/agent-companion")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="companion-native-session-") as temporary:
-        verify(args.codex, Path(temporary).resolve())
+        verify(args.codex, Path(temporary).resolve(), args.companion)

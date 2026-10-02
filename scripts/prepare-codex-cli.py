@@ -42,12 +42,12 @@ SAFETY_ENV = {"CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED"}
 def primary_environment(inherited):
     # Network-policy/proxy metadata and sandbox markers are containment context,
     # not profile identity. Keep them while dropping the previous Codex session.
-    env = {key: value for key, value in inherited.items()
-           if (not key.startswith("CODEX_") or key in SAFETY_ENV
-               or key.startswith("CODEX_NETWORK_"))
-           and key not in AUTH_ENV
-           and not key.startswith(("ELECTRON_", "DYLD_"))
-           and key not in {"NODE_OPTIONS", "NODE_PATH"}}
+    def keep(key):
+        key = key.upper()
+        if key.startswith("CODEX_"):
+            return key in SAFETY_ENV | {"CODEX_CA_CERTIFICATE", "CODEX_PROXY_CERT"} or key.startswith("CODEX_NETWORK_")
+        return not key.startswith(("OPENAI_", "CHATGPT_", "ELECTRON_", "DYLD_", "LD_")) and key not in {"NODE_OPTIONS", "NODE_PATH"}
+    env = {key: value for key, value in inherited.items() if keep(key)}
     env["CODEX_HOME"] = PRIMARY_HOME
     return env
 

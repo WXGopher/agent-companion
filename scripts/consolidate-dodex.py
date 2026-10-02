@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Consolidate the audited repaired Dodex installation; default is read-only.
+"""Inspect the unified migration route, or invoke Companion during maintenance.
 
-Keeps a live legacy CLI in place. A durable journal and exact code fingerprints
-allow --apply to finish interrupted publication without overwriting other work.
-No credentials, profiles, conversations, signed app resources or running
-processes are changed. The manager retires the old runtime after its last exit.
+--apply delegates to Companion's paired maintenance with its process checks,
+software/deployment locks and recovery journal. Existing App/TUI processes must
+be closed by the user first; this script never stops them. Historical publication
+helpers below remain recovery material and are not a daily installation route.
 """
 import argparse
 import contextlib
@@ -223,7 +223,7 @@ def check_primary_interpreter():
         raise ValueError("A working /usr/bin/python3 is required for the primary CLI wrapper; no entries were changed") from error
 
 
-def run(apply=False, *, home=None, applications=None):
+def _legacy_recovery(apply=False, *, home=None, applications=None):
     home = Path.home() if home is None else Path(home)
     apps = Path("/Applications") if applications is None else Path(applications)
     root = apps / ".Dodex"
@@ -322,6 +322,28 @@ def run(apply=False, *, home=None, applications=None):
     subprocess.run([str(apps / "Agent Companion.app/Contents/MacOS/agent-companion"),
                     "dodex-app"], check=True, stdout=subprocess.DEVNULL)
     report["primary_cli_isolated"] = read_regular(primary) == new_primary
+    return report
+
+
+def run(apply=False, *, home=None, applications=None):
+    apps = Path("/Applications") if applications is None else Path(applications)
+    companion = apps / "Agent Companion.app/Contents/MacOS/agent-companion"
+    report = {"mode": "apply" if apply else "check", "maintenance_route": "companion",
+              "companion": str(companion), "action": "align",
+              "requires_stopped_app_and_tui": True, "installed": False}
+    if not apply:
+        return report
+    no_links(companion)
+    if not companion.is_file() or not os.access(companion, os.X_OK):
+        raise ValueError("Install the current Agent Companion before running unified maintenance.")
+    def keep(name):
+        name = name.upper()
+        if name.startswith("CODEX_"):
+            return name in {"CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "CODEX_CA_CERTIFICATE", "CODEX_PROXY_CERT"} or name.startswith("CODEX_NETWORK_")
+        return not name.startswith(("OPENAI_", "CHATGPT_", "ELECTRON_", "DYLD_", "LD_")) and name not in {"NODE_OPTIONS", "NODE_PATH"}
+    inherited = {name: value for name, value in os.environ.items() if keep(name)}
+    subprocess.run([str(companion), "software-maintenance", "align"], check=True, env=inherited)
+    report["installed"] = True
     return report
 
 

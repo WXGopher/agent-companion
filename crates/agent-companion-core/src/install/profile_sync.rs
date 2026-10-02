@@ -138,6 +138,113 @@ fn parse_config(bytes: &[u8]) -> io::Result<DocumentMut> {
         .map_err(|_| invalid("A configuration file contains invalid TOML. No file was changed."))
 }
 
+/// Check effective isolation defaults and every profile/table override without
+/// changing the user's configuration. Diagnostics name the setting, never its
+/// value: configuration may contain credentials or private service addresses.
+pub fn validate_isolated_config(bytes: &[u8], paths: &IsolationPaths) -> io::Result<()> {
+    let document = parse_config(bytes)?;
+    fn check(key: &str, value: Option<&str>, paths: &IsolationPaths) -> io::Result<()> {
+        if is_isolation(key) && value != Some(isolation_value(key, paths).as_str()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Dodex isolation setting {key} is missing or points outside its assigned storage; no configuration was changed."
+                ),
+            ));
+        }
+        Ok(())
+    }
+    fn check_table(table: &dyn TableLike, paths: &IsolationPaths) -> io::Result<()> {
+        for key in ISOLATION_KEYS {
+            if let Some(value) = table.get(key) {
+                check(key, value.as_str(), paths)?;
+            }
+        }
+        Ok(())
+    }
+
+    for key in ISOLATION_KEYS {
+        check(key, document.get(key).and_then(Item::as_str), paths)?;
+    }
+    if let Some(profiles) = document.get("profiles") {
+        let profiles = profiles.as_table_like().ok_or_else(|| {
+            invalid("Dodex profiles must be a TOML table; isolation cannot be verified.")
+        })?;
+        for (_, profile) in profiles.iter() {
+            let profile = profile.as_table_like().ok_or_else(|| {
+                invalid("A Dodex profile must be a TOML table; isolation cannot be verified.")
+            })?;
+            check_table(profile, paths)?;
+        }
+    }
+    Ok(())
+}
+
+/// Read only an isolated regular config file, with the same link/size guards
+/// used for explicit profile synchronization.
+pub fn validate_isolated_profile(home: &Path, paths: &IsolationPaths) -> io::Result<()> {
+    for path in [home, paths.sqlite_home.as_path(), paths.log_dir.as_path()] {
+        validate_path(path)?;
+    }
+    // Credential and session contents are never read. Metadata is enough to
+    // reject a secondary home that redirects into another account's storage.
+    for relative in ["auth.json", "sessions", "archived_sessions"] {
+        validate_path(&home.join(relative))?;
+    }
+    match fs::read_dir(&paths.sqlite_home) {
+        Ok(entries) => {
+            for entry in entries {
+                validate_path(&entry?.path())?;
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let bytes = read_optional(&home.join("config.toml"))?
+        .ok_or_else(|| invalid("Dodex config.toml is missing; isolation cannot be verified."))?;
+    validate_isolated_config(&bytes, paths)
+}
+
+/// Configuration options may appear after native subcommands. Validate the
+/// actual TOML key structure, including quoted/escaped profile keys and inline
+/// profile tables. The CLI still owns ordinary option value parsing.
+pub fn validate_isolated_overrides(overrides: &[String]) -> io::Result<()> {
+    for raw in overrides {
+        let Some((key, _)) = raw.split_once('=') else {
+            continue;
+        };
+        let document = raw
+            .parse::<DocumentMut>()
+            .or_else(|_| {
+                // Native --config accepts unquoted scalar strings as a fallback.
+                format!("{key} = \"__native_string_value__\"").parse::<DocumentMut>()
+            })
+            .map_err(|_| {
+                invalid(
+                    "A configuration override has an invalid key; isolation cannot be verified.",
+                )
+            })?;
+        let root = document.as_table();
+        let owned = ISOLATION_KEYS.iter().any(|key| root.contains_key(key))
+            || root
+                .get("profiles")
+                .and_then(Item::as_table_like)
+                .is_some_and(|profiles| {
+                    profiles.iter().any(|(_, profile)| {
+                        profile.as_table_like().is_some_and(|profile| {
+                            ISOLATION_KEYS.iter().any(|key| profile.contains_key(key))
+                        })
+                    })
+                });
+        if owned {
+            return Err(invalid(
+                "Dodex owns its credential, SQLite and log paths; those overrides are disabled.",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn sync_configuration(
     source: &[u8],
     destination: Option<&[u8]>,

@@ -102,7 +102,7 @@ enum SubscriptionUsageTests {
         import json, os, sys
         forbidden = [key for key in os.environ if key.startswith(('OPENAI_', 'CHATGPT_', 'ELECTRON_', 'DYLD_')) or key in ('CODEX_AUTH_TOKEN', 'CODEX_APP_SERVER_WS_URL', 'NODE_OPTIONS')]
         with open(__file__ + '.result', 'w') as output:
-            json.dump({'clean': not forbidden, 'home': os.environ.get('CODEX_HOME'), 'database': os.environ.get('CODEX_SQLITE_HOME'), 'args': sys.argv[1:]}, output)
+            json.dump({'clean': not forbidden, 'home': os.environ.get('CODEX_HOME'), 'database': os.environ.get('CODEX_SQLITE_HOME'), 'args': sys.argv[1:], 'environment': dict(os.environ)}, output)
         """
         try script.write(to: executable, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
@@ -114,8 +114,23 @@ enum SubscriptionUsageTests {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = ["-c", command]
-        process.environment = ["HOME": directory.path, "PATH": "/usr/bin:/bin", "OPENAI_API_KEY": "synthetic-only",
-            "CODEX_HOME": "/wrong", "CODEX_APP_SERVER_WS_URL": "synthetic-only", "NODE_OPTIONS": "synthetic-only"]
+        let kept = [
+            "CODEX_SANDBOX": "synthetic-containment", "CODEX_SANDBOX_NETWORK_DISABLED": "1",
+            "CODEX_NETWORK_PROXY_ACTIVE": "1", "CODEX_NETWORK_ALLOW_LOCAL_BINDING": "0",
+            "CODEX_CA_CERTIFICATE": "/synthetic/proxy ca.pem", "CODEX_PROXY_CERT": "/synthetic/proxy.pem",
+            "HTTPS_PROXY": "https://synthetic.invalid:8080/proxy?q='a b'", "NO_PROXY": "localhost,127.0.0.1",
+            "SSL_CERT_FILE": "/synthetic/ca.pem", "TERM": "synthetic-terminal",
+        ]
+        let removed = ["CODEX_AUTH_TOKEN", "CODEX_APP_SERVER_WS_URL", "CODEX_CONFIG", "CODEX_CLI_PATH",
+            "CODEX_THREAD_ID", "CODEX_FUTURE_OVERRIDE", "OPENAI_API_KEY", "openai_access_token",
+            "CHATGPT_TOKEN", "ELECTRON_RUN_AS_NODE", "NODE_OPTIONS", "NODE_PATH", "DYLD_LIBRARY_PATH", "LD_PRELOAD"]
+        var inherited = kept
+        inherited["HOME"] = directory.path
+        inherited["PATH"] = "/usr/bin:/bin"
+        inherited["CODEX_HOME"] = "/wrong"
+        inherited["CODEX_SQLITE_HOME"] = "/wrong/sqlite"
+        for key in removed { inherited[key] = "synthetic-only" }
+        process.environment = inherited
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         try process.run(); process.waitUntilExit()
@@ -126,6 +141,22 @@ enum SubscriptionUsageTests {
         let arguments = result["args"] as! [String]
         precondition(arguments.suffix(2) == ["resume", id] && arguments.contains("cli_auth_credentials_store=\"file\""))
         precondition(arguments.contains { $0.hasPrefix("sqlite_home=") })
+        let environment = result["environment"] as! [String: String]
+        for (key, value) in kept {
+            precondition(environment[key] == value, "Resume removed or changed inherited containment/proxy setting: \(key)")
+        }
+        for key in removed { precondition(environment[key] == nil, "Resume inherited \(key)") }
+        precondition(!command.contains("synthetic-only") && !command.contains("synthetic.invalid"),
+                     "Resume command captured inherited values instead of filtering at execution time")
+
+        let isolated = InstanceEnvironment.isolated(inherited, source: commandInstance.usageSource)
+        for (key, value) in kept {
+            precondition(!InstanceEnvironment.shouldClear(key) && isolated[key] == value,
+                         "Swift isolation removed containment/proxy setting: \(key)")
+        }
+        for key in removed {
+            precondition(InstanceEnvironment.shouldClear(key) && isolated[key] == nil, "Swift isolation inherited \(key)")
+        }
     }
 
     @MainActor private static func triggerBoundaries() {

@@ -92,12 +92,15 @@ enum TerminalJump {
               let database = instance.databasePath, database.hasPrefix("/"),
               FileManager.default.isExecutableFile(atPath: executable) else { return nil }
         func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-        // Start a clean environment at execution time, including when pasted
-        // into a different terminal with inherited auth or instance overrides.
-        let environment = "/usr/bin/env -i HOME=\"$HOME\" PATH=\"$PATH\" TERM=\"${TERM:-xterm-256color}\""
+        // Filter names at execution time so a pasted command keeps that
+        // terminal's containment, proxies and certificates. A system zsh child
+        // provides parameter-name enumeration without reading user shell rc files
+        // or changing the caller's environment. Values stay out of the command.
+        let script = InstanceEnvironment.shellCleanup
+            + "; export CODEX_HOME=\"$1\" CODEX_SQLITE_HOME=\"$2\"; shift 2; exec \"$@\""
         let arguments = InstanceEnvironment.configurationArguments(instance.usageSource) + ["resume", task.conversationID]
-        return environment + " CODEX_HOME=" + quote(instance.codexHome) + " CODEX_SQLITE_HOME=" + quote(database)
-            + " " + quote(executable) + " " + arguments.map(quote).joined(separator: " ")
+        return "/bin/zsh -f -c " + quote(script) + " companion-resume "
+            + ([instance.codexHome, database, executable] + arguments).map(quote).joined(separator: " ")
     }
 
     struct TerminalTarget {

@@ -7,10 +7,12 @@
 //! `server` adds the Windows backend dependencies; the hook uses neither feature.
 
 pub mod codex;
+pub mod codex_args;
 pub mod compat;
 pub mod dashboard;
 pub mod install;
 pub mod pipe;
+pub mod process_environment;
 pub mod protocol;
 pub mod questions;
 #[cfg(feature = "resume")]

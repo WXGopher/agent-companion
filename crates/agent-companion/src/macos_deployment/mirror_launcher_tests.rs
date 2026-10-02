@@ -194,26 +194,6 @@ printf '%s\0' "$$" "$0" "$@" "$CODEX_HOME" "$CODEX_ELECTRON_USER_DATA_PATH"
 exit 37
 "#;
 
-fn assert_fallback(app: &Path, data: &Path, home: &Path, diagnostic: &[u8]) {
-    let child = launcher(app).spawn().unwrap();
-    let pid = child.id();
-    let output = child.wait_with_output().unwrap();
-    assert_eq!(output.status.code(), Some(37));
-    assert_eq!(output.stderr, diagnostic);
-    assert_eq!(
-        fields(&output.stdout),
-        [
-            pid.to_string(),
-            app.join("Contents/MacOS/CurrentNative")
-                .display()
-                .to_string(),
-            format!("--user-data-dir={}", data.display()),
-            home.display().to_string(),
-            data.display().to_string(),
-        ]
-    );
-}
-
 #[test]
 fn bootstrap_forwards_only_an_existing_project_and_keeps_the_secondary_profile() {
     let temporary = tempfile::tempdir().unwrap();
@@ -224,7 +204,7 @@ fn bootstrap_forwards_only_an_existing_project_and_keeps_the_secondary_profile()
     bundle(
         &app,
         "CurrentNative",
-        None,
+        Some(Path::new("/usr/bin/true")),
         json!({"CODEX_HOME": root.join("same-second"), "CODEX_ELECTRON_USER_DATA_PATH": root.join("same-desktop")}),
         b"#!/bin/sh\nprintf '%s\\0' \"$@\" \"$CODEX_HOME\"\n",
     );
@@ -254,7 +234,7 @@ fn bootstrap_forwards_only_an_existing_project_and_keeps_the_secondary_profile()
 }
 
 #[test]
-fn bootstrap_starts_current_native_when_updater_fails() {
+fn bootstrap_refuses_to_start_when_updater_fails() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().canonicalize().unwrap();
     let app = root.join("Dodex.app");
@@ -275,16 +255,16 @@ fn bootstrap_starts_current_native_when_updater_fails() {
         }),
         FALLBACK_NATIVE,
     );
-    assert_fallback(
-        &app,
-        &data,
-        &home,
-        b"Dodex: startup sync failed; using current app\n",
+    let output = launcher(&app).output().unwrap();
+    assert_eq!(output.status.code(), Some(78));
+    assert!(
+        output.stdout.is_empty(),
+        "failed isolation validation must not start native app"
     );
 }
 
 #[test]
-fn bootstrap_starts_current_native_when_updater_is_missing() {
+fn bootstrap_refuses_to_start_when_updater_is_missing() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().canonicalize().unwrap();
     let missing_updater = root.join("missing-updater");
@@ -305,11 +285,68 @@ fn bootstrap_starts_current_native_when_updater_is_missing() {
             }),
             FALLBACK_NATIVE,
         );
-        assert_fallback(
-            &app,
-            &data,
-            &home,
-            b"Dodex: startup sync unavailable; using current app\n",
-        );
+        let output = launcher(&app).output().unwrap();
+        assert_eq!(output.status.code(), Some(78));
+        assert!(output.stdout.is_empty());
+    }
+}
+
+#[test]
+fn bootstrap_and_its_updater_remove_inherited_identity_but_keep_containment() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().canonicalize().unwrap();
+    let app = root.join("Dodex.app");
+    let updater = root.join("updater");
+    let log = root.join("updater-environment");
+    executable(
+        &updater,
+        b"#!/bin/sh\n/usr/bin/env > \"$TEST_UPDATER_ENV\"\n",
+    );
+    bundle(
+        &app,
+        "Native",
+        Some(&updater),
+        json!({"CODEX_HOME": root.join("second"), "CODEX_ELECTRON_USER_DATA_PATH": root.join("desktop")}),
+        b"#!/bin/sh\n/usr/bin/env\n",
+    );
+    let mut command = launcher(&app);
+    command.env("TEST_UPDATER_ENV", &log);
+    let unsafe_names = [
+        "CODEX_THREAD_ID",
+        "CODEX_SESSION_ID",
+        "CODEX_API_KEY",
+        "CODEX_CONFIG_FILE",
+        "OPENAI_API_KEY",
+        "OPENAI_ACCESS_TOKEN",
+        "CHATGPT_ACCESS_TOKEN",
+        "OPENAI_IDENTITY_TOKEN_FILE",
+        "NODE_OPTIONS",
+        "NODE_PATH",
+        "ELECTRON_RUN_AS_NODE",
+    ];
+    let keep_names = [
+        "CODEX_SANDBOX",
+        "CODEX_SANDBOX_NETWORK_DISABLED",
+        "CODEX_NETWORK_PROXY_ACTIVE",
+        "CODEX_CA_CERTIFICATE",
+        "HTTPS_PROXY",
+    ];
+    for name in unsafe_names.into_iter().chain(keep_names) {
+        command.env(name, "synthetic");
+    }
+    let output = command.output().unwrap();
+    assert!(output.status.success());
+    for bytes in [output.stdout, fs::read(log).unwrap()] {
+        let names: Vec<_> = String::from_utf8(bytes)
+            .unwrap()
+            .lines()
+            .filter_map(|line| line.split_once('=').map(|(name, _)| name.to_owned()))
+            .collect();
+        for name in unsafe_names {
+            assert!(!names.iter().any(|actual| actual == name), "leaked {name}");
+        }
+        for name in keep_names {
+            assert!(names.iter().any(|actual| actual == name), "lost {name}");
+        }
     }
 }

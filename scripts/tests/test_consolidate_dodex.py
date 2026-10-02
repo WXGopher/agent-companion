@@ -15,6 +15,21 @@ INSTALL = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(INSTALL)
 
 
+class UnifiedMaintenanceEntry(unittest.TestCase):
+    def test_apply_uses_companion_without_loading_the_independent_legacy_manager(self):
+        with tempfile.TemporaryDirectory() as directory:
+            apps = Path(directory).resolve() / "Applications"
+            companion = apps / "Agent Companion.app/Contents/MacOS/agent-companion"
+            companion.parent.mkdir(parents=True)
+            companion.write_text("#!/bin/sh\nexit 0\n")
+            companion.chmod(0o755)
+            with mock.patch.object(INSTALL, "module", side_effect=AssertionError("legacy updater loaded")), \
+                    mock.patch.object(INSTALL.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as command:
+                result = INSTALL.run(True, home=Path(directory), applications=apps)
+                self.assertEqual(command.call_args.args[0], [str(companion), "software-maintenance", "align"])
+                self.assertEqual(result["maintenance_route"], "companion")
+
+
 class PublicationRecovery(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -224,7 +239,7 @@ class FullRunRecovery(unittest.TestCase):
         self.flags = mock.patch.object(INSTALL.os, "chflags", create=True).start()
 
     def run_installer(self, apply=True):
-        return INSTALL.run(apply, home=self.home, applications=self.apps)
+        return INSTALL._legacy_recovery(apply, home=self.home, applications=self.apps)
 
     def assert_complete(self):
         self.assertEqual(json.loads(self.journal.read_bytes())["phase"], "complete")

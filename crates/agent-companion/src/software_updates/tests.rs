@@ -9,6 +9,10 @@ struct Fake {
     fail_align_app: bool,
     unsupported: bool,
     app_needs_sync: bool,
+    cli_needs_sync: bool,
+    updater_cli: Option<Version>,
+    newer_release: bool,
+    store_app: Option<Version>,
 }
 fn cli(value: &str) -> Version {
     Version {
@@ -37,12 +41,23 @@ impl Default for Fake {
             fail_align_app: false,
             unsupported: false,
             app_needs_sync: false,
+            cli_needs_sync: false,
+            updater_cli: None,
+            newer_release: false,
+            store_app: None,
         }
     }
 }
 impl Operations for Fake {
+    fn always_update_primary(&self, app: bool) -> bool {
+        app && self.store_app.is_some()
+    }
+
     fn app_needs_sync(&self) -> bool {
-        self.app_needs_sync
+        self.app_needs_sync && !self.calls.borrow().iter().any(|call| call == "align-true")
+    }
+    fn cli_needs_sync(&self) -> bool {
+        self.cli_needs_sync && !self.calls.borrow().iter().any(|call| call == "align-false")
     }
     fn installed(&self, target: Target) -> Result<Option<Version>, String> {
         Ok(self.versions.borrow()[target.index()].clone())
@@ -54,9 +69,27 @@ impl Operations for Fake {
         }
         Ok(Release {
             version: if app {
-                self::app("110")
+                if self.store_app.is_some() {
+                    self.versions.borrow()[2].clone().unwrap()
+                } else {
+                    self::app("110")
+                }
             } else {
-                cli("0.160.0")
+                cli(
+                    if self.newer_release
+                        && self
+                            .calls
+                            .borrow()
+                            .iter()
+                            .filter(|call| *call == "fetch-false")
+                            .count()
+                            > 1
+                    {
+                        "0.161.0"
+                    } else {
+                        "0.160.0"
+                    },
+                )
             },
             url: String::new(),
             length: 0,
@@ -78,7 +111,15 @@ impl Operations for Fake {
     }
     fn update_primary(&self, app: bool, release: &Release) -> Result<(), String> {
         self.calls.borrow_mut().push(format!("update-{app}"));
-        self.versions.borrow_mut()[if app { 2 } else { 0 }] = Some(release.version.clone());
+        self.versions.borrow_mut()[if app { 2 } else { 0 }] = Some(if !app {
+            self.updater_cli
+                .clone()
+                .unwrap_or_else(|| release.version.clone())
+        } else {
+            self.store_app
+                .clone()
+                .unwrap_or_else(|| release.version.clone())
+        });
         Ok(())
     }
     fn align_secondary(&self, app: bool, expected: &Version) -> Result<(), String> {
@@ -256,4 +297,73 @@ fn already_aligned_running_instances_are_a_read_only_noop() {
     fake.versions.borrow_mut()[3] = Some(app("100"));
     run(&fake, Some(Action::Align)).1.unwrap();
     assert!(fake.calls.borrow().is_empty());
+}
+
+#[test]
+fn matching_versions_still_migrate_legacy_terminal_entry() {
+    let fake = Fake {
+        cli_needs_sync: true,
+        ..Fake::default()
+    };
+    fake.versions.borrow_mut()[1] = Some(cli("0.159.3"));
+    fake.versions.borrow_mut()[3] = Some(app("100"));
+    run(&fake, Some(Action::Align)).1.unwrap();
+    assert_eq!(*fake.calls.borrow(), ["align-false"]);
+}
+
+#[test]
+fn updater_can_advance_to_a_newly_confirmed_stable_release() {
+    let fake = Fake {
+        updater_cli: Some(cli("0.161.0")),
+        newer_release: true,
+        ..Fake::default()
+    };
+    let (snapshot, result) = run(&fake, Some(Action::UpdateAll));
+    result.unwrap();
+    assert_eq!(snapshot.rows[0].current, "0.161.0");
+    assert_eq!(snapshot.rows[1].current, "0.161.0");
+    assert_eq!(snapshot.rows[0].target, "0.161.0");
+    assert_eq!(snapshot.rows[1].target, "0.161.0");
+}
+
+#[test]
+fn unconfirmed_updater_version_reports_partial_completion_and_preserves_secondary() {
+    let fake = Fake {
+        updater_cli: Some(cli("0.161.0")),
+        ..Fake::default()
+    };
+    let (snapshot, result) = run(&fake, Some(Action::UpdateAll));
+    assert!(result.unwrap_err().contains("未全部完成"));
+    assert_eq!(snapshot.rows[0].current, "0.161.0");
+    assert_eq!(snapshot.rows[1].current, "0.155.0-alpha.16.4");
+    assert!(!fake.calls.borrow().iter().any(|call| call == "align-false"));
+}
+
+#[test]
+fn store_version_floor_does_not_prevent_a_newer_desktop_and_bootstrap_from_converging() {
+    let fake = Fake {
+        store_app: Some(app("110")),
+        app_needs_sync: true,
+        ..Fake::default()
+    };
+    fake.versions.borrow_mut()[3] = Some(app("105"));
+    let (snapshot, result) = run(&fake, Some(Action::UpdateAll));
+    result.unwrap();
+    assert_eq!(snapshot.rows[2].current, "26.9.110 (110)");
+    assert_eq!(snapshot.rows[3].current, "26.9.110 (110)");
+    assert!(!snapshot.message.contains("较新"));
+}
+
+#[test]
+fn updater_advance_recomputes_a_previous_newer_secondary_decision() {
+    let fake = Fake {
+        updater_cli: Some(cli("0.161.0")),
+        newer_release: true,
+        ..Fake::default()
+    };
+    fake.versions.borrow_mut()[1] = Some(cli("0.160.1"));
+    let (snapshot, result) = run(&fake, Some(Action::UpdateAll));
+    result.unwrap();
+    assert_eq!(snapshot.rows[1].current, "0.161.0");
+    assert!(!snapshot.message.contains("未降级"));
 }

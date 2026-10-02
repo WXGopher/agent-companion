@@ -16,6 +16,78 @@ fn finish(scheduler: &mut Scheduler, requests: &[Request], now: u64) {
     }
 }
 
+fn identity(user: &str) -> AccountIdentity {
+    AccountIdentity {
+        user: user.into(),
+        workspace: "workspace".into(),
+        storage: "file:/synthetic/auth.json".into(),
+        service: "https://fixture.invalid".into(),
+    }
+}
+
+#[test]
+fn account_generation_discards_both_caches_and_late_results_even_after_account_returns() {
+    let mut scheduler = Scheduler::new(5);
+    scheduler.sync_sources(vec![source("codex")], 100);
+    let a = scheduler.sync_identity("codex", Ok(identity("a")), 100);
+    finish(&mut scheduler, &a, 101);
+    let history = scheduler.load_history("codex", 101);
+    finish(&mut scheduler, &history, 102);
+    let old = scheduler.refresh("codex", 103);
+    let b = scheduler.sync_identity("codex", Ok(identity("b")), 104);
+    assert_eq!(b.len(), 1);
+    assert!(!scheduler.complete(&old[0], Ok(json!({"wrong":"a"})), 105, 3));
+    let snapshot = scheduler.snapshot("codex").unwrap();
+    assert!(snapshot.limits.value.is_none() && snapshot.history.value.is_none());
+    let again = scheduler.sync_identity("codex", Ok(identity("a")), 106);
+    assert!(again[0].generation > old[0].generation);
+    assert!(!scheduler.complete(&old[0], Ok(json!({"wrong":"old-a"})), 107, 3));
+    assert!(!scheduler.complete(&b[0], Ok(json!({"wrong":"b"})), 107, 3));
+    finish(&mut scheduler, &again, 108);
+}
+
+#[test]
+fn unverified_authentication_blocks_queries_and_clears_old_account_data() {
+    let mut scheduler = Scheduler::new(5);
+    scheduler.sync_sources(vec![source("codex")], 100);
+    let requests = scheduler.sync_identity("codex", Ok(identity("a")), 100);
+    finish(&mut scheduler, &requests, 101);
+    assert!(
+        scheduler
+            .sync_identity("codex", Err("Signed out".into()), 102)
+            .is_empty()
+    );
+    let snapshot = scheduler.snapshot("codex").unwrap();
+    assert!(snapshot.limits.value.is_none());
+    assert_eq!(snapshot.limits.error.as_deref(), Some("Signed out"));
+    assert!(scheduler.panel_open(103).is_empty());
+    assert!(scheduler.load_history("codex", 104).is_empty());
+    assert!(scheduler.tick(10_000).is_empty());
+    assert_eq!(
+        scheduler
+            .sync_identity("codex", Ok(identity("b")), 10_001)
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn verified_account_refresh_preserves_caches_without_extra_queries_or_identity_serialization() {
+    let mut scheduler = Scheduler::new(5);
+    scheduler.sync_sources(vec![source("codex")], 100);
+    let requests = scheduler.sync_identity("codex", Ok(identity("private-user")), 100);
+    finish(&mut scheduler, &requests, 101);
+    assert!(
+        scheduler
+            .sync_identity("codex", Ok(identity("private-user")), 102)
+            .is_empty()
+    );
+    assert!(scheduler.snapshot("codex").unwrap().limits.value.is_some());
+    let snapshot = serde_json::to_string(&scheduler.snapshot("codex")).unwrap();
+    assert!(!snapshot.contains("private-user") && !snapshot.contains("auth.json"));
+    assert!(!format!("{:?}", requests).contains("private-user"));
+}
+
 #[test]
 fn startup_timer_panel_and_selected_refresh_are_the_only_quota_triggers() {
     let mut scheduler = Scheduler::new(5);

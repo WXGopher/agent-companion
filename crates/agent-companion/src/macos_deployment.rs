@@ -39,6 +39,7 @@ mod desktop;
 mod icon_signature;
 #[path = "macos_deployment/mirror.rs"]
 mod mirror;
+pub(crate) use desktop::sync_desktop_under_maintenance_lock;
 pub use desktop::{desktop_entry, sync_desktop, sync_desktop_on_launch};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -450,6 +451,7 @@ fn sync_operation<T>(
     }
     let result = (|| {
         no_symlinks(&layout.support)?;
+        let _maintenance = DeploymentLock::acquire(&layout.support.join("software-updates.lock"))?;
         let _lock = DeploymentLock::acquire(&layout.support.join("deployment.lock"))?;
         action()
     })();
@@ -583,6 +585,7 @@ pub fn deploy() -> Result<DeploymentStatus, String> {
     let result = (|| {
         let layout = Layout::current()?;
         private_directory(&layout.support)?;
+        let _maintenance = DeploymentLock::acquire(&layout.support.join("software-updates.lock"))?;
         let _lock = DeploymentLock::acquire(&layout.support.join("deployment.lock"))?;
         let saved = existing_monitor_record(&layout)?;
         if let Some(record) = &saved {
@@ -677,6 +680,8 @@ pub fn set_enabled(enabled: bool) -> Result<DeploymentStatus, String> {
                 .clone()
                 .ok_or("请先部署双开环境。")?;
             private_directory(&layout.support)?;
+            let _maintenance =
+                DeploymentLock::acquire(&layout.support.join("software-updates.lock"))?;
             let _lock = DeploymentLock::acquire(&layout.support.join("deployment.lock"))?;
             validate_existing(&layout, &SystemOps, &instance)?;
             save_record(&layout, true, &instance)?;
@@ -689,6 +694,7 @@ pub fn set_enabled(enabled: bool) -> Result<DeploymentStatus, String> {
     prepare_saved_action(&layout, &mut state)?;
     if let Some(instance) = &state.instance {
         private_directory(&layout.support)?;
+        let _maintenance = DeploymentLock::acquire(&layout.support.join("software-updates.lock"))?;
         let _lock = DeploymentLock::acquire(&layout.support.join("deployment.lock"))?;
         save_record(&layout, false, instance)?;
         state.preference_stamp = preference_stamp(&layout);
@@ -852,6 +858,7 @@ fn deploy_with(
 ) -> Result<InstanceConfig, String> {
     // Directory creation happens only after the user selects Deploy.
     private_directory(&layout.support)?;
+    let _maintenance = DeploymentLock::acquire(&layout.support.join("software-updates.lock"))?;
     let _lock = DeploymentLock::acquire(&layout.support.join("deployment.lock"))?;
     deploy_under_lock(layout, ops, notify)
 }
@@ -1263,68 +1270,16 @@ fn toml_string(path: &Path) -> String {
 }
 fn validate_config(path: &Path, instance: &InstanceConfig) -> Result<(), String> {
     let bytes = read_limited(path, 2 * 1024 * 1024)?;
-    let text = std::str::from_utf8(&bytes).map_err(|_| "Dodex 隔离配置格式无效。")?;
-    let document = text
-        .parse::<toml_edit::DocumentMut>()
-        .map_err(|_| "Dodex 隔离配置 TOML 格式无效；未修改配置。")?;
-    if document
-        .get("cli_auth_credentials_store")
-        .and_then(toml_edit::Item::as_str)
-        != Some("file")
-    {
-        return Err(
-            "Dodex 配置必须使用 cli_auth_credentials_store = \"file\"；未修改现有配置。".into(),
-        );
-    }
-    fn check(key: &str, value: Option<&str>, instance: &InstanceConfig) -> Result<(), String> {
-        let expected = match key {
-            "cli_auth_credentials_store" => "file".to_owned(),
-            "sqlite_home" => instance.database_dir.to_string_lossy().into_owned(),
-            "log_dir" => instance
-                .desktop_user_data
-                .join("logs")
-                .to_string_lossy()
-                .into_owned(),
-            _ => return Ok(()),
-        };
-        if value != Some(expected.as_str()) {
-            return Err("Dodex 必须使用独立文件凭证、数据库与日志目录；现有配置不兼容。".into());
-        }
-        Ok(())
-    }
-    fn walk_value(value: &toml_edit::Value, instance: &InstanceConfig) -> Result<(), String> {
-        if let Some(table) = value.as_inline_table() {
-            for (key, child) in table.iter() {
-                check(key, child.as_str(), instance)?;
-                walk_value(child, instance)?;
-            }
-        } else if let Some(array) = value.as_array() {
-            for child in array.iter() {
-                walk_value(child, instance)?;
-            }
-        }
-        Ok(())
-    }
-    fn walk_item(item: &toml_edit::Item, instance: &InstanceConfig) -> Result<(), String> {
-        if let Some(table) = item.as_table() {
-            for (key, child) in table.iter() {
-                check(key, child.as_str(), instance)?;
-                walk_item(child, instance)?;
-            }
-        } else if let Some(tables) = item.as_array_of_tables() {
-            for table in tables.iter() {
-                for (key, child) in table.iter() {
-                    check(key, child.as_str(), instance)?;
-                    walk_item(child, instance)?;
-                }
-            }
-        } else if let Some(value) = item.as_value() {
-            walk_value(value, instance)?;
-        }
-        Ok(())
-    }
-    walk_item(document.as_item(), instance)
+    profile_sync::validate_isolated_config(
+        &bytes,
+        &IsolationPaths {
+            sqlite_home: instance.database_dir.clone(),
+            log_dir: instance.desktop_user_data.join("logs"),
+        },
+    )
+    .map_err(|error| error.to_string())
 }
+
 fn launcher_text(layout: &Layout, instance: &InstanceConfig) -> String {
     // Compatibility with earlier launcher repairs. New deployment uses mirror.
     // LaunchServices must keep tracking this wrapper's PID. exec (including a

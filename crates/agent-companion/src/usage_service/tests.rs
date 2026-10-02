@@ -24,11 +24,21 @@ async fn quota_protocol_is_handshake_and_exactly_one_business_call() {
             let notification: Value =
                 serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
             assert_eq!(notification, json!({"method":"initialized"}));
+            let config: Value =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(
+                config,
+                json!({"id":2,"method":"config/read","params":{"includeLayers":false}})
+            );
+            output
+                .write_all(b"{\"id\":2,\"result\":{\"config\":{}}}\n")
+                .await
+                .unwrap();
             let request: Value =
                 serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
             assert_eq!(
                 request,
-                json!({"id":2,"method":if kind == QueryKind::Limits { "account/rateLimits/read" } else { "account/usage/read" }})
+                json!({"id":3,"method":if kind == QueryKind::Limits { "account/rateLimits/read" } else { "account/usage/read" }})
             );
             output
                 .write_all(
@@ -41,7 +51,7 @@ async fn quota_protocol_is_handshake_and_exactly_one_business_call() {
                 QueryKind::History => json!({"summary":{}}),
             };
             output
-                .write_all(format!("{}\n", json!({"id":2,"result":value})).as_bytes())
+                .write_all(format!("{}\n", json!({"id":3,"result":value})).as_bytes())
                 .await
                 .unwrap();
             // If the reader sends a preflight, another quota call, token call,
@@ -148,6 +158,22 @@ fn executable() -> PathBuf {
                 "{}",
                 String::from_utf8_lossy(&output.stderr)
             );
+            // A fresh executable may spend seconds in macOS launch validation.
+            // Warm only this disposable fixture before request deadlines start.
+            let warm = directory.path().join("warmup");
+            fs::create_dir(&warm).unwrap();
+            let status = Command::new(&executable)
+                .env("CODEX_HOME", &warm)
+                .env("CODEX_SQLITE_HOME", &warm)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "could not warm up the synthetic native fixture"
+            );
             (directory, executable)
         })
         .1
@@ -157,6 +183,7 @@ fn executable() -> PathBuf {
 fn source(root: &Path, id: &str) -> Source {
     let home = root.join(id);
     fs::create_dir_all(&home).unwrap();
+    write_identity(&home, false);
     Source {
         instance_id: id.into(),
         codex_home: home.clone(),
@@ -165,14 +192,64 @@ fn source(root: &Path, id: &str) -> Source {
     }
 }
 
+fn write_identity(home: &Path, second: bool) {
+    // Synthetic JWTs only. Token material deliberately is not an identity.
+    let payload = if second {
+        "eyJzdWIiOiJ1c2VyLWIiLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoid29ya3NwYWNlIn19"
+    } else {
+        "eyJzdWIiOiJ1c2VyLWEiLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoid29ya3NwYWNlIn19"
+    };
+    fs::write(home.join("auth.json"), json!({"fixture_account": if second {"b"} else {"a"}, "tokens": {
+        "id_token": format!("header.{payload}.signature"),
+        "access_token": "synthetic-access", "refresh_token": "synthetic-refresh", "account_id": "workspace"
+    }}).to_string()).unwrap();
+}
+
+#[test]
+fn same_path_account_switch_clears_both_snapshots_before_a_failed_read() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = source(directory.path(), "codex");
+    let mut service = UsageService::with_settings_path(directory.path().join("usage.json"));
+    let now = agent_companion_core::now_unix_secs();
+    service.sync_sources(vec![source.clone()], now);
+    service.load_history("codex", now);
+    wait_for(&mut service, |service| {
+        let snapshot = service.snapshot("codex").unwrap();
+        snapshot.limits.value.is_some() && snapshot.history.value.is_some()
+    });
+    write_identity(&source.codex_home, true);
+    fs::write(source.codex_home.join("mode"), "exit").unwrap();
+    service.tick(now + 1);
+    wait_for(&mut service, |service| {
+        service.snapshot("codex").unwrap().limits.value.is_none()
+    });
+    let snapshot = service.snapshot("codex").unwrap();
+    assert!(
+        snapshot.limits.value.is_none(),
+        "old user's quota survived account switch"
+    );
+    assert!(
+        snapshot.history.value.is_none(),
+        "old user's history survived account switch"
+    );
+    wait_for(&mut service, |service| {
+        !service.snapshot("codex").unwrap().limits.loading
+    });
+    assert!(service.snapshot("codex").unwrap().limits.value.is_none());
+}
+
 fn wait_for(service: &mut UsageService, mut done: impl FnMut(&UsageService) -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(25);
     loop {
         service.poll(agent_companion_core::now_unix_secs());
         if done(service) {
             return;
         }
-        assert!(Instant::now() < deadline, "usage fixture did not finish");
+        assert!(
+            Instant::now() < deadline,
+            "usage fixture did not finish: {:?}",
+            service.snapshots()
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
 }
@@ -183,7 +260,7 @@ fn startup_publishes_limits_while_history_is_still_waiting() {
     let source = source(directory.path(), "codex");
     fs::write(source.codex_home.join("mode"), "history-hang").unwrap();
     let mut service = UsageService::with_settings_path(directory.path().join("usage.json"));
-    service.read_timeout = Duration::from_millis(800);
+    service.read_timeout = Duration::from_secs(5);
     let now = agent_companion_core::now_unix_secs();
     let started = Instant::now();
     service.sync_sources(vec![source.clone()], now);
@@ -197,7 +274,7 @@ fn startup_publishes_limits_while_history_is_still_waiting() {
     });
     let snapshot = service.snapshot("codex").unwrap();
     assert!(snapshot.history.loading);
-    assert!(snapshot.limits.elapsed_ms.unwrap() < 800);
+    assert!(snapshot.limits.elapsed_ms.unwrap() < 5_000);
     eprintln!(
         "[usage-fixture] startup to allowance result: {} ms; history still loading",
         snapshot.limits.elapsed_ms.unwrap()
@@ -211,9 +288,20 @@ fn startup_publishes_limits_while_history_is_still_waiting() {
     let requests = fs::read_to_string(source.codex_home.join("requests.log")).unwrap();
     assert_eq!(requests.matches("account/rateLimits/read").count(), 1);
     assert_eq!(requests.matches("account/usage/read").count(), 1);
+    assert_eq!(requests.matches("\"method\":\"initialize\"").count(), 1);
+    assert_eq!(requests.matches("\"method\":\"config/read\"").count(), 1);
     assert!(!requests.contains("account/read"));
     assert!(!requests.contains("thread/"));
     assert!(!requests.contains("turn/"));
+    assert_eq!(
+        fs::read_dir(&source.codex_home)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("pid-"))
+            .count(),
+        1,
+        "quota and history must reuse one owned native worker"
+    );
 }
 
 #[test]
@@ -273,10 +361,7 @@ fn each_instance_uses_its_own_runtime_home_database_and_credentials() {
         assert!(log.contains(&source.codex_home.to_string_lossy().to_string()));
         assert!(log.contains(&source.database_path.to_string_lossy().to_string()));
         let args = fs::read_to_string(source.codex_home.join("arguments.log")).unwrap();
-        assert_eq!(
-            args.contains("cli_auth_credentials_store=\"file\""),
-            source.instance_id == "dodex"
-        );
+        assert!(args.contains("cli_auth_credentials_store=\"file\""));
         assert!(args.contains("sqlite_home="));
         let expected = if source.instance_id == "codex" {
             23
@@ -405,7 +490,7 @@ fn timeout_removal_replacement_and_service_drop_reap_children() {
         // A freshly compiled executable may spend more than 100 ms in macOS
         // launch validation under a full parallel test run. The timeout test
         // must reach the fixture, rather than killing it before main starts.
-        service.read_timeout = Duration::from_secs(2);
+        service.read_timeout = Duration::from_secs(5);
         let now = agent_companion_core::now_unix_secs();
         service.sync_sources(vec![source.clone()], now);
         wait_for(&mut service, |_| {
@@ -462,4 +547,211 @@ fn runtime_exit_is_reported_without_retrying() {
     }
     let requests = fs::read_to_string(source.codex_home.join("requests.log")).unwrap();
     assert_eq!(requests.matches("account/rateLimits/read").count(), 1);
+}
+
+#[test]
+fn token_rotation_does_not_clear_readings_or_trigger_an_extra_query() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = source(directory.path(), "codex");
+    let mut service = UsageService::with_settings_path(directory.path().join("usage.json"));
+    let now = agent_companion_core::now_unix_secs();
+    service.sync_sources(vec![source.clone()], now);
+    wait_for(&mut service, |s| {
+        s.snapshot("codex").unwrap().limits.value.is_some()
+    });
+    let before = service.snapshot("codex").unwrap();
+    let path = source.codex_home.join("auth.json");
+    let mut auth: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    auth["tokens"]["access_token"] = json!("rotated-synthetic-access");
+    auth["tokens"]["refresh_token"] = json!("rotated-synthetic-refresh");
+    auth["last_refresh"] = json!("2026-10-02T01:02:03Z");
+    fs::write(path, auth.to_string()).unwrap();
+    std::thread::sleep(Duration::from_millis(1100));
+    service.tick(now + 2);
+    assert_eq!(service.snapshot("codex").unwrap(), before);
+    let requests = fs::read_to_string(source.codex_home.join("requests.log")).unwrap();
+    assert_eq!(requests.matches("account/rateLimits/read").count(), 1);
+}
+
+#[test]
+fn logout_clears_last_success_without_launching_an_unauthenticated_query() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = source(directory.path(), "codex");
+    let mut service = UsageService::with_settings_path(directory.path().join("usage.json"));
+    let now = agent_companion_core::now_unix_secs();
+    service.sync_sources(vec![source.clone()], now);
+    service.load_history("codex", now);
+    wait_for(&mut service, |s| {
+        s.snapshot("codex").unwrap().history.value.is_some()
+    });
+    fs::remove_file(source.codex_home.join("auth.json")).unwrap();
+    wait_for(&mut service, |s| {
+        s.snapshot("codex").unwrap().limits.error.is_some()
+    });
+    service.refresh("codex", now + 1);
+    let snapshot = service.snapshot("codex").unwrap();
+    assert!(snapshot.limits.value.is_none() && snapshot.history.value.is_none());
+    assert!(snapshot.limits.error.unwrap().contains("Sign in"));
+    assert!(!snapshot.limits.loading);
+    let requests = fs::read_to_string(source.codex_home.join("requests.log")).unwrap();
+    assert_eq!(requests.matches("account/rateLimits/read").count(), 1);
+}
+
+#[test]
+fn request_triggered_switch_replaces_native_account_before_the_periodic_probe() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = source(directory.path(), "codex");
+    fs::write(source.codex_home.join("mode"), "history-hang").unwrap();
+    let mut service = UsageService::with_settings_path(directory.path().join("usage.json"));
+    let now = agent_companion_core::now_unix_secs();
+    service.sync_sources(vec![source.clone()], now);
+    service.load_history("codex", now);
+    wait_for(&mut service, |s| {
+        s.snapshot("codex").unwrap().limits.value.is_some()
+    });
+    assert!(service.snapshot("codex").unwrap().history.loading);
+    write_identity(&source.codex_home, true);
+    service.refresh("codex", now + 1);
+    wait_for(&mut service, |s| {
+        s.snapshot("codex")
+            .unwrap()
+            .limits
+            .value
+            .as_ref()
+            .is_some_and(|v| v["rateLimits"]["secondary"]["usedPercent"] == 73)
+    });
+    assert!(service.snapshot("codex").unwrap().history.value.is_none());
+    assert_eq!(
+        fs::read_dir(&source.codex_home)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("pid-"))
+            .count(),
+        2
+    );
+    service.stop();
+    #[cfg(unix)]
+    assert_processes_exited(&source.codex_home);
+}
+
+#[test]
+fn queued_old_result_is_rechecked_before_publication() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = source(directory.path(), "codex");
+    fs::write(source.codex_home.join("mode"), "hang").unwrap();
+    let mut service = UsageService::with_settings_path(directory.path().join("usage.json"));
+    let now = agent_companion_core::now_unix_secs();
+    service.sync_sources(vec![source.clone()], now);
+    wait_for(&mut service, |s| {
+        s.jobs.values().any(|r| r.identity.is_some())
+    });
+    let request = service
+        .jobs
+        .values()
+        .find(|r| r.identity.is_some())
+        .unwrap()
+        .clone();
+    let worker_id = service.workers[&request.source.codex_home].id;
+    write_identity(&source.codex_home, true);
+    service
+        .sender
+        .send(Event::Completed {
+            worker_id,
+            request,
+            result: Ok(json!({"rateLimits":{"secondary":{"usedPercent":99}}})),
+            completed_at: now,
+            elapsed_ms: 1,
+        })
+        .unwrap();
+    service.poll(now);
+    assert!(service.snapshot("codex").unwrap().limits.value.is_none());
+    assert!(
+        service
+            .jobs
+            .values()
+            .all(|r| r.identity.as_ref().is_some_and(|i| i.user == "user-b"))
+    );
+}
+
+#[test]
+fn one_instance_timeout_does_not_delay_the_other_instances_quota_or_history() {
+    let directory = tempfile::tempdir().unwrap();
+    let primary = source(directory.path(), "codex");
+    let secondary = source(directory.path(), "dodex");
+    fs::write(primary.codex_home.join("mode"), "hang").unwrap();
+    let mut service = UsageService::with_settings_path(directory.path().join("usage.json"));
+    service.read_timeout = READ_TIMEOUT;
+    let now = agent_companion_core::now_unix_secs();
+    service.sync_sources(vec![primary, secondary], now);
+    service.load_history("dodex", now);
+    wait_for(&mut service, |s| {
+        s.snapshot("dodex").unwrap().limits.value.is_some()
+            && s.snapshot("dodex").unwrap().history.value.is_some()
+    });
+    assert!(service.snapshot("codex").unwrap().limits.loading);
+    wait_for(&mut service, |s| {
+        !s.snapshot("codex").unwrap().limits.loading
+    });
+    assert!(service.snapshot("codex").unwrap().limits.error.is_some());
+    assert!(service.snapshot("dodex").unwrap().limits.error.is_none());
+}
+
+#[test]
+fn changed_backend_origin_invalidates_both_account_caches() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = source(directory.path(), "codex");
+    let mut service = UsageService::with_settings_path(directory.path().join("usage.json"));
+    let now = agent_companion_core::now_unix_secs();
+    service.sync_sources(vec![source.clone()], now);
+    service.load_history("codex", now);
+    wait_for(&mut service, |s| {
+        s.snapshot("codex").unwrap().history.value.is_some()
+    });
+    fs::write(source.codex_home.join("mode"), "hang").unwrap();
+    fs::write(
+        source.codex_home.join("config.toml"),
+        "chatgpt_base_url='http://127.0.0.1:1/backend-api'\n",
+    )
+    .unwrap();
+    service.refresh("codex", now + 1);
+    wait_for(&mut service, |s| {
+        s.snapshot("codex").unwrap().limits.value.is_none()
+    });
+    assert!(service.snapshot("codex").unwrap().history.value.is_none());
+}
+
+#[test]
+fn native_config_mismatch_clears_caches_without_retry_loop_and_manual_refresh_recovers() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = source(directory.path(), "codex");
+    let mut service = UsageService::with_settings_path(directory.path().join("usage.json"));
+    let now = agent_companion_core::now_unix_secs();
+    service.sync_sources(vec![source.clone()], now);
+    service.load_history("codex", now);
+    wait_for(&mut service, |s| {
+        s.snapshot("codex").unwrap().history.value.is_some()
+    });
+    fs::write(source.codex_home.join("mode"), "wrong-config").unwrap();
+    service.refresh("codex", now + 1);
+    wait_for(&mut service, |s| {
+        s.snapshot("codex")
+            .unwrap()
+            .limits
+            .error
+            .as_ref()
+            .is_some_and(|error| error.contains("configuration could not be verified"))
+    });
+    let snapshot = service.snapshot("codex").unwrap();
+    assert!(snapshot.limits.value.is_none() && snapshot.history.value.is_none());
+    std::thread::sleep(Duration::from_millis(1100));
+    service.tick(now + 3);
+    let requests = fs::read_to_string(source.codex_home.join("requests.log")).unwrap();
+    assert_eq!(requests.matches("account/rateLimits/read").count(), 1);
+    assert_eq!(requests.matches("config/read").count(), 2);
+    fs::write(source.codex_home.join("mode"), "").unwrap();
+    service.refresh("codex", now + 4);
+    wait_for(&mut service, |s| {
+        s.snapshot("codex").unwrap().limits.value.is_some()
+    });
+    assert!(service.snapshot("codex").unwrap().limits.error.is_none());
 }

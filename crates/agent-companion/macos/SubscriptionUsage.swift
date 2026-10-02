@@ -128,10 +128,23 @@ struct SubscriptionSource: Hashable, Codable {
 }
 
 enum InstanceEnvironment {
-    static let clearedPrefixes = ["CODEX_", "OPENAI_", "CHATGPT_", "ELECTRON_", "DYLD_"]
+    // Keep this policy aligned with core process_environment::keep_variable.
+    static let preservedCodexNames = ["CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "CODEX_CA_CERTIFICATE", "CODEX_PROXY_CERT"]
+    static let clearedPrefixes = ["OPENAI_", "CHATGPT_", "ELECTRON_", "DYLD_", "LD_"]
     static let clearedNames = ["NODE_OPTIONS", "NODE_PATH"]
     static func shouldClear(_ key: String) -> Bool {
-        clearedNames.contains(key) || clearedPrefixes.contains { key.hasPrefix($0) }
+        let name = key.uppercased()
+        if name.hasPrefix("CODEX_") {
+            return !preservedCodexNames.contains(name) && !name.hasPrefix("CODEX_NETWORK_")
+        }
+        return clearedNames.contains(name) || clearedPrefixes.contains { name.hasPrefix($0) }
+    }
+    /// zsh's parameter-name expansion never copies credential values into the
+    /// generated command. Apply the same policy to the destination terminal.
+    static var shellCleanup: String {
+        let kept = (preservedCodexNames + ["CODEX_NETWORK_*"]).joined(separator: "|")
+        let removed = (["CODEX_*"] + clearedPrefixes.map { $0 + "*" } + clearedNames).joined(separator: "|")
+        return "for _companion_key in ${(k)parameters}; do case \"${(U)_companion_key}\" in \(kept)) ;; \(removed)) unset \"$_companion_key\" || exit 78 ;; esac; done"
     }
     static func isolated(_ inherited: [String: String], source: SubscriptionSource) -> [String: String] {
         var result = inherited.filter { !shouldClear($0.key) }

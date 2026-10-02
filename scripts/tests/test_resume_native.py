@@ -102,6 +102,9 @@ class LoopbackServer:
         self.started = threading.Event()
         self.release = threading.Event()
         self.hold_next_response = False
+        self.hold_usage_history = False
+        self.usage_history_started = threading.Event()
+        self.usage_history_release = threading.Event()
         fixture = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -124,6 +127,19 @@ class LoopbackServer:
                     } for account in {"source-account", "selected-account", fixture.refresh_account}]})
                 elif "models" in self.path:
                     self.reply({"models": []})
+                elif self.path.endswith("/wham/usage"):
+                    self.reply({"plan_type": "plus", "rate_limit": {
+                        "allowed": True, "limit_reached": False,
+                        "primary_window": {"used_percent": 23, "limit_window_seconds": 18000,
+                                           "reset_after_seconds": 3600, "reset_at": 1900000000},
+                        "secondary_window": {"used_percent": 61, "limit_window_seconds": 604800,
+                                             "reset_after_seconds": 7200, "reset_at": 1900003600},
+                    }})
+                elif self.path.endswith("/wham/profiles/me"):
+                    fixture.usage_history_started.set()
+                    if fixture.hold_usage_history:
+                        fixture.usage_history_release.wait(timeout=10)
+                    self.reply({"stats": {"lifetime_tokens": 1000, "daily_usage_buckets": []}})
                 else:
                     self.reply({})
 
@@ -280,6 +296,65 @@ class NativeResumeContracts(unittest.TestCase):
     def write_auth(self, home, account):
         (home / "auth.json").write_text(json.dumps(fake_auth(account)), encoding="utf-8")
 
+    def test_shared_usage_worker_publishes_quota_before_slow_history_without_daemon(self):
+        self.server.hold_usage_history = True
+        self.addCleanup(self.server.usage_history_release.set)
+        daemon = self.selected / "app-server-daemon"
+        daemon.mkdir()
+        sentinel = daemon / "fixture-owner"
+        sentinel.write_text("existing-daemon-material")
+        auth_before = (self.selected / "auth.json").read_bytes()
+        worker = AppServer(self, self.selected, ["app-server", "--listen", "stdio://", "--strict-config",
+                                               "-c", "features.remote_control=false",
+                                               "-c", "features.daemon_auto_start=false",
+                                               "-c", "sqlite_home=" + json.dumps(str(self.source))])
+        self.addCleanup(worker.close)
+        effective = worker.call(2, "config/read", {"includeLayers": False})["config"]
+        self.assertEqual(effective["cli_auth_credentials_store"], "file")
+        self.assertEqual(effective["sqlite_home"], str(self.source))
+        self.assertEqual(effective["chatgpt_base_url"].rstrip("/"),
+                         self.server.url.replace("127.0.0.1", "localhost") + "/backend-api")
+        worker.send({"id": 20, "method": "account/usage/read"})
+        self.assertTrue(self.server.usage_history_started.wait(10), "native history route was not reached")
+        worker.send({"id": 21, "method": "account/rateLimits/read"})
+        deadline = time.monotonic() + 10
+        while True:
+            message = worker.messages.get(timeout=max(0.01, deadline - time.monotonic()))
+            self.assertIsNotNone(message)
+            self.assertNotEqual(message.get("id"), 20, "quota waited for the blocked history request")
+            if message.get("id") == 21:
+                self.assertNotIn("error", message)
+                self.assertEqual(message["result"]["rateLimits"]["primary"]["usedPercent"], 23)
+                break
+        self.server.usage_history_release.set()
+        while True:
+            message = worker.messages.get(timeout=10)
+            self.assertIsNotNone(message)
+            if message.get("id") == 20:
+                self.assertNotIn("error", message)
+                self.assertEqual(message["result"]["summary"]["lifetimeTokens"], 1000)
+                break
+        self.assertEqual((self.selected / "auth.json").read_bytes(), auth_before)
+        self.assertEqual(sentinel.read_text(), "existing-daemon-material")
+        reads = [(path, headers) for path, headers, _ in self.server.requests
+                 if path.endswith(("/wham/usage", "/wham/profiles/me"))]
+        self.assertEqual(len(reads), 2)
+        for _, headers in reads:
+            self.assertEqual({key.lower(): value for key, value in headers.items()}["chatgpt-account-id"],
+                             "selected-account")
+        self.assertEqual(self.server.model_requests(), [])
+
+    def test_usage_worker_strict_config_rejects_legacy_profile_without_falling_back(self):
+        path = self.selected / "config.toml"
+        path.write_text("profile='legacy'\n" + path.read_text() + "\n[profiles.legacy]\nmodel='fixture'\n")
+        auth_before = (self.selected / "auth.json").read_bytes()
+        result = self.run_native(self.selected, ["app-server", "--listen", "stdio://", "--strict-config"],
+                                 input_text="", check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("legacy", result.stderr)
+        self.assertEqual(self.server.requests, [])
+        self.assertEqual((self.selected / "auth.json").read_bytes(), auth_before)
+
     def write_config(self, home):
         (home / "config.toml").write_text("\n".join([
             'model="gpt-5.2"',
@@ -335,8 +410,10 @@ class NativeResumeContracts(unittest.TestCase):
         return result
 
     def start(self, home, arguments):
+        environment = self.environment(home)
+        environment["CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED"] = "1"
         return subprocess.Popen(
-            [NATIVE] + arguments, env=self.environment(home), cwd=self.project,
+            [NATIVE] + arguments, env=environment, cwd=self.project,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.stderr, text=True,
         )
 

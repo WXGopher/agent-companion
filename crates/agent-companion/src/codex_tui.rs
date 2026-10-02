@@ -225,9 +225,9 @@ pub(crate) struct Editor {
     drafts: RefCell<InstanceDrafts>,
     left_rows: Rc<VecModel<ui::StatusComponent>>,
     right_rows: Rc<VecModel<ui::StatusComponent>>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     software: Option<crate::software_updates::Service>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     software_rows: Rc<VecModel<ui::SoftwareVersion>>,
     #[cfg(any(target_os = "macos", windows))]
     sync_rows: Rc<VecModel<ui::ProfileSyncFile>>,
@@ -342,9 +342,9 @@ impl Editor {
             drafts: RefCell::new(InstanceDrafts::new(path)),
             left_rows: Rc::new(VecModel::default()),
             right_rows: Rc::new(VecModel::default()),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             software: _live_deployment.then(crate::software_updates::Service::new),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             software_rows: Rc::new(VecModel::default()),
             #[cfg(any(target_os = "macos", windows))]
             sync_rows: Rc::new(VecModel::default()),
@@ -409,11 +409,12 @@ impl Editor {
             });
             editor.refresh_profile_sync();
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         {
             editor
                 .window
                 .set_software_versions(ModelRc::from(editor.software_rows.clone()));
+            #[cfg(target_os = "macos")]
             if _live_deployment {
                 crate::macos::listen_software_updates();
             }
@@ -428,6 +429,9 @@ impl Editor {
                 }
             });
             editor.refresh_software();
+        }
+        #[cfg(target_os = "macos")]
+        {
             editor.window.set_mono_font("Menlo".into());
             editor
                 .window
@@ -510,6 +514,7 @@ impl Editor {
         }
         #[cfg(windows)]
         {
+            editor.window.set_windows_preferences(true);
             editor.refresh_deployment();
             let weak = Rc::downgrade(&editor);
             editor.window.on_deploy_dual(move || {
@@ -534,6 +539,7 @@ impl Editor {
                 if let Some(editor) = weak.upgrade() {
                     if editor.deployment_operation.borrow().is_some()
                         || editor.sync_operation.borrow().is_some()
+                        || editor.window.get_software_busy()
                     {
                         return;
                     }
@@ -553,6 +559,7 @@ impl Editor {
                 move || {
                     if let Some(editor) = weak.upgrade() {
                         editor.refresh_deployment();
+                        editor.refresh_software();
                     }
                 },
             );
@@ -929,7 +936,7 @@ impl Editor {
         self.refresh_deployment();
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     fn refresh_software(&self) {
         let Some(service) = &self.software else {
             return;
@@ -939,7 +946,8 @@ impl Editor {
             && !deployment_status().busy
             && service.poll_requests()
         {
-            self.window.set_settings_page(1);
+            self.window
+                .set_settings_page(if cfg!(windows) { 3 } else { 1 });
             self.window.set_dual_scroll_y(0.0);
         }
         let snapshot = service.snapshot();

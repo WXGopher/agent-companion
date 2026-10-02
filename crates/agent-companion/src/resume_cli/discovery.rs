@@ -16,6 +16,9 @@ pub struct Discovery {
 struct SavedDeployment {
     schema: u32,
     instance: SavedInstance,
+    archive_hash: Option<String>,
+    desktop: Option<SavedDesktop>,
+    tui: Option<SavedTui>,
 }
 
 #[derive(Deserialize)]
@@ -23,8 +26,71 @@ struct SavedInstance {
     codex_home: PathBuf,
     database_dir: PathBuf,
     cli_path: PathBuf,
-    #[cfg(target_os = "macos")]
     desktop_user_data: Option<PathBuf>,
+    runtime_app: Option<PathBuf>,
+}
+
+#[derive(Deserialize)]
+struct SavedDesktop {
+    package: PathBuf,
+    version: String,
+    archive_hash: String,
+}
+
+#[derive(Deserialize)]
+struct SavedTui {
+    package: PathBuf,
+    version: String,
+    hash: String,
+}
+
+// The console binary deliberately does not link the Windows deployment/UI
+// backend. Verify its schema-2 bindings here without launching or modifying it.
+fn supported_schema(record: &Path, saved: &SavedDeployment) -> bool {
+    if saved.schema == 1 {
+        return true;
+    }
+    if saved.schema != 2 {
+        return false;
+    }
+    let (Some(root), Some(desktop)) = (record.parent(), &saved.desktop) else {
+        return false;
+    };
+    let package_at = |package: &Path, directory: &str, leaf: &str| {
+        package.is_absolute()
+            && !package.components().any(|part| {
+                matches!(
+                    part,
+                    std::path::Component::ParentDir | std::path::Component::CurDir
+                )
+            })
+            && package.file_name().is_some_and(|name| name == leaf)
+            && package.parent().and_then(Path::parent) == Some(root.join(directory).as_path())
+    };
+    let hash = |value: &str| value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit());
+    if saved.instance.codex_home != root.join("codex-home")
+        || saved.instance.database_dir != root.join("codex-home/sqlite")
+        || saved.instance.desktop_user_data.as_deref() != Some(root.join("desktop-data").as_path())
+        || !package_at(&desktop.package, "desktop-packages", "runtime")
+        || saved.instance.runtime_app.as_deref()
+            != Some(desktop.package.join("ChatGPT.exe").as_path())
+        || desktop.version.is_empty()
+        || !hash(&desktop.archive_hash)
+        || saved.archive_hash.as_deref() != Some(desktop.archive_hash.as_str())
+    {
+        return false;
+    }
+    match &saved.tui {
+        Some(tui) => {
+            package_at(&tui.package, "tui-packages", "package")
+                && semver::Version::parse(&tui.version).is_ok()
+                && hash(&tui.hash)
+                && saved.instance.cli_path == tui.package.join("bin/codex.exe")
+        }
+        // Desktop migration may precede TUI migration. The complete old
+        // runtime remains in place until the independent TUI package is bound.
+        None => saved.instance.cli_path == root.join("runtime/resources/codex.exe"),
+    }
 }
 
 pub fn discover() -> io::Result<Discovery> {
@@ -104,7 +170,7 @@ fn saved_environment(
     let bytes = fs::read(record)?;
     let saved: SavedDeployment = serde_json::from_slice(&bytes)
         .map_err(|_| io::Error::other("Saved Dodex deployment metadata is invalid"))?;
-    if saved.schema != 1
+    if !supported_schema(record, &saved)
         || [
             &saved.instance.codex_home,
             &saved.instance.database_dir,
@@ -261,6 +327,107 @@ mod tests {
             .unwrap();
         assert_eq!(found.id, "dodex");
         assert_eq!(found.home, root.join("dodex/home"));
+    }
+
+    fn windows_manifest(root: &Path) -> serde_json::Value {
+        let desktop = root.join("desktop-packages/release-desktop/runtime");
+        serde_json::json!({
+            "schema": 2, "enabled": false, "archive_hash": "A".repeat(64),
+            "instance": {
+                "codex_home": root.join("codex-home"),
+                "database_dir": root.join("codex-home/sqlite"),
+                "desktop_user_data": root.join("desktop-data"),
+                "runtime_app": desktop.join("ChatGPT.exe"),
+                "cli_path": root.join("runtime/resources/codex.exe")
+            },
+            "desktop": {"package": desktop, "version": "26.9.1", "archive_hash": "A".repeat(64)}
+        })
+    }
+
+    fn add_windows_tui(root: &Path, manifest: &mut serde_json::Value) -> PathBuf {
+        let package = root.join("tui-packages/release-tui/package");
+        let cli = package.join("bin/codex.exe");
+        manifest["tui"] = serde_json::json!({
+            "package": package, "version": "0.160.0", "hash": "a".repeat(64)
+        });
+        manifest["instance"]["cli_path"] = serde_json::json!(cli);
+        cli
+    }
+
+    #[test]
+    fn windows_schema_two_preserves_history_during_and_after_tui_migration() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let record = root.join("companion-deployment.json");
+        let primary = root.join("unrelated-primary");
+        let mut manifest = windows_manifest(&root);
+        for expected in [
+            root.join("runtime/resources/codex.exe"),
+            root.join("tui-packages/release-tui/package/bin/codex.exe"),
+        ] {
+            if expected != root.join("runtime/resources/codex.exe") {
+                assert_eq!(add_windows_tui(&root, &mut manifest), expected);
+            }
+            let bytes = serde_json::to_vec(&manifest).unwrap();
+            fs::write(&record, &bytes).unwrap();
+            let found = saved_environment(&record, &primary, None).unwrap().unwrap();
+            assert_eq!(found.home, root.join("codex-home"));
+            assert_eq!(found.database_home, Some(root.join("codex-home/sqlite")));
+            assert_eq!(found.executable, expected);
+            assert_eq!(fs::read(&record).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn windows_schema_two_rejects_unbound_paths_and_incomplete_metadata() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let record = root.join("companion-deployment.json");
+        let mut good = windows_manifest(&root);
+        add_windows_tui(&root, &mut good);
+        for (pointer, value) in [
+            ("/schema", serde_json::json!(3)),
+            (
+                "/instance/codex_home",
+                serde_json::json!(root.join("primary")),
+            ),
+            (
+                "/instance/database_dir",
+                serde_json::json!(root.join("elsewhere")),
+            ),
+            (
+                "/instance/desktop_user_data",
+                serde_json::json!(root.join("elsewhere")),
+            ),
+            (
+                "/instance/runtime_app",
+                serde_json::json!(root.join("other.exe")),
+            ),
+            (
+                "/instance/cli_path",
+                serde_json::json!(root.join("runtime/resources/codex.exe")),
+            ),
+            ("/archive_hash", serde_json::json!("B".repeat(64))),
+            ("/desktop/archive_hash", serde_json::json!("invalid")),
+            (
+                "/desktop/package",
+                serde_json::json!(root.join("unmanaged/runtime")),
+            ),
+            (
+                "/tui/package",
+                serde_json::json!(root.join("desktop-packages/release-tui/package")),
+            ),
+            ("/tui/version", serde_json::json!("invalid")),
+            ("/tui/hash", serde_json::json!("invalid")),
+        ] {
+            let mut invalid = good.clone();
+            *invalid.pointer_mut(pointer).unwrap() = value;
+            fs::write(&record, serde_json::to_vec(&invalid).unwrap()).unwrap();
+            assert!(
+                saved_environment(&record, &root.join("primary"), None).is_err(),
+                "accepted changed field {pointer}"
+            );
+        }
     }
 
     #[test]
