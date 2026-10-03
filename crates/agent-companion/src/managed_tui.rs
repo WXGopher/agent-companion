@@ -73,6 +73,53 @@ pub(crate) fn command(home: &Path, name: &str) -> Option<PathBuf> {
     })
 }
 
+pub(crate) fn is_native_package_entry(entry: &Path) -> bool {
+    let mut magic = [0; 4];
+    entry.file_name().is_some_and(|name| name == "codex")
+        && entry
+            .parent()
+            .and_then(Path::parent)
+            .is_some_and(|root| root.join("codex-package.json").is_file())
+        && File::open(entry)
+            .and_then(|mut file| file.read_exact(&mut magic))
+            .is_ok()
+        && matches!(
+            magic,
+            [0xcf, 0xfa, 0xed, 0xfe]
+                | [0xfe, 0xed, 0xfa, 0xcf]
+                | [0xce, 0xfa, 0xed, 0xfe]
+                | [0xfe, 0xed, 0xfa, 0xce]
+                | [0xca, 0xfe, 0xba, 0xbe]
+                | [0xbe, 0xba, 0xfe, 0xca]
+                | [0xca, 0xfe, 0xba, 0xbf]
+                | [0xbf, 0xba, 0xfe, 0xca]
+        )
+}
+
+/// Read-only structural validation shared by maintenance and resume discovery.
+/// Callers still verify the native version (and signatures before publishing).
+pub(crate) fn package_version(root: &Path) -> Result<String, String> {
+    no_redirects(root)?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&read_limited(&root.join("codex-package.json"), 64 * 1024)?)
+            .map_err(|_| "TUI 安装包清单无效。")?;
+    let version = value["version"]
+        .as_str()
+        .ok_or("官方 TUI 安装包布局或版本不兼容；未发布不完整的 Dodex TUI。")?;
+    if value["layoutVersion"] != 1
+        || value["entrypoint"] != "bin/codex"
+        || value["resourcesDir"] != "codex-resources"
+        || value["pathDir"] != "codex-path"
+        || !root.join("bin/codex-code-mode-host").is_file()
+        || !root.join("codex-resources").is_dir()
+        || !root.join("codex-path").is_dir()
+        || !root.join("codex-path/rg").is_file()
+    {
+        return Err("官方 TUI 安装包布局或版本不兼容；未发布不完整的 Dodex TUI。".into());
+    }
+    Ok(version.into())
+}
+
 pub(crate) fn read_binding(home: &Path, entry: &Path) -> Result<Option<Binding>, String> {
     if !entry.is_file() {
         return Ok(None);

@@ -12,6 +12,7 @@ pub(super) struct Settings {
     pub details: Vec<(String, String)>,
     pub blockers: Vec<String>,
     pub forced_account: Option<String>,
+    pub disabled_mcp: Vec<String>,
 }
 
 pub(super) fn inspect(
@@ -26,6 +27,7 @@ pub(super) fn inspect(
         details: Vec::new(),
         blockers: Vec::new(),
         forced_account: None,
+        disabled_mcp: Vec::new(),
     };
     // Native 0.159.3 deliberately opens this OAuth fallback with O_NOFOLLOW;
     // a home overlay cannot promise refresh writeback through its link.
@@ -84,8 +86,6 @@ pub(super) fn inspect(
         }
         layers.push(("来源 Profile（覆盖用户配置）", path, true));
     }
-    let mut ancestors: Vec<_> = session.cwd.ancestors().collect();
-    ancestors.reverse();
     let mut trusted = false;
     let user = parse(&source.home.join("config.toml"))?;
     if let Some(projects) = user
@@ -101,7 +101,9 @@ pub(super) fn inspect(
             }
         }
     }
-    for directory in ancestors {
+    // Match the pinned native runtime's default project boundary. An account's
+    // .codex above the nearest Git root is not a project layer for this session.
+    for directory in project_directories(&session.cwd) {
         let path = directory.join(".codex/config.toml");
         // The source home can also be an ancestor; do not apply its config twice.
         if path == source.home.join("config.toml") {
@@ -177,7 +179,14 @@ pub(super) fn inspect(
                 .push("来源使用尚未验证的 MCP 钥匙串或 OAuth 存储方式；当前禁用接力。".into());
         }
         if let Some(servers) = document.get("mcp_servers").and_then(Item::as_table_like) {
-            for (_, server) in servers.iter() {
+            for (name, server) in servers.iter() {
+                if server.get("enabled").and_then(Item::as_bool) == Some(false) {
+                    // Inactive definitions cannot launch a process or use OAuth.
+                    // Native preflight must confirm that no effective layer has
+                    // re-enabled a server whose fields we did not validate.
+                    settings.disabled_mcp.push(name.to_owned());
+                    continue;
+                }
                 let explicit_bearer = server
                     .get("bearer_token_env_var")
                     .and_then(Item::as_str)
@@ -308,11 +317,16 @@ pub(super) fn inspect(
     ));
     settings.blockers.sort();
     settings.blockers.dedup();
+    settings.disabled_mcp.sort();
+    settings.disabled_mcp.dedup();
     Ok(settings)
 }
 
 fn check_paths(table: &dyn TableLike, prefix: &str, blockers: &mut Vec<String>) {
     for (key, item) in table.iter() {
+        if prefix == "mcp_servers" && item.get("enabled").and_then(Item::as_bool) == Some(false) {
+            continue;
+        }
         let full = if prefix.is_empty() {
             key.to_owned()
         } else {
@@ -409,7 +423,14 @@ fn instruction_file(directory: &Path) -> Option<PathBuf> {
 fn project_directories(cwd: &Path) -> Vec<PathBuf> {
     let root = cwd
         .ancestors()
-        .find(|directory| directory.join(".git").exists())
+        .find(|directory| {
+            let marker = directory.join(".git");
+            fs::metadata(&marker).is_ok_and(|metadata| {
+                // Native 0.159.3 skips incomplete Git directories, while a
+                // file marker (for example a worktree) also defines the root.
+                !metadata.is_dir() || fs::metadata(marker.join("HEAD")).is_ok()
+            })
+        })
         .unwrap_or(cwd);
     let mut result: Vec<_> = cwd
         .ancestors()
@@ -466,6 +487,147 @@ mod tests {
             blockers: Vec::new(),
         };
         (root, environment, session)
+    }
+    #[test]
+    fn disabled_mcp_relative_command_and_cwd_do_not_block_resume() {
+        for syntax in [
+            "[mcp_servers.computer-use]\nenabled=false\ncommand='./Missing App/Contents/MacOS/server'\ncwd='.'\n",
+            "mcp_servers.computer-use={enabled=false,command='./Missing App/Contents/MacOS/server',cwd='.'}\n",
+        ] {
+            let (_root, environment, session) = fixture(&format!("model='gpt-5'\n{syntax}"));
+            let settings = inspect(&environment, &session, None).unwrap();
+            assert!(settings.blockers.is_empty(), "{:?}", settings.blockers);
+            assert_eq!(settings.disabled_mcp, ["computer-use"]);
+        }
+    }
+    #[test]
+    fn disabled_http_mcp_does_not_require_unused_oauth_identity() {
+        let (_root, environment, session) = fixture(
+            "model='gpt-5'\n[mcp_servers.remote]\nenabled=false\nurl='https://mcp.invalid'\n",
+        );
+        let settings = inspect(&environment, &session, None).unwrap();
+        assert!(settings.blockers.is_empty(), "{:?}", settings.blockers);
+        assert_eq!(settings.disabled_mcp, ["remote"]);
+    }
+    #[test]
+    fn active_mcp_and_project_reactivation_keep_their_compatibility_checks() {
+        for enabled in ["", "enabled=true\n"] {
+            let (_root, environment, session) = fixture(&format!(
+                "model='gpt-5'\n[mcp_servers.computer-use]\n{enabled}command='./missing-server'\ncwd='.'\n"
+            ));
+            let settings = inspect(&environment, &session, None).unwrap();
+            assert!(
+                settings
+                    .blockers
+                    .iter()
+                    .any(|reason| reason.contains("mcp_servers.computer-use.command"))
+            );
+            assert!(
+                settings
+                    .blockers
+                    .iter()
+                    .any(|reason| reason.contains("mcp_servers.computer-use.cwd"))
+            );
+        }
+        let (_root, environment, session) = fixture(
+            "model='gpt-5'\n[mcp_servers.computer-use]\nenabled=false\ncommand='./missing-server'\ncwd='.'\n",
+        );
+        fs::create_dir(session.cwd.join(".git")).unwrap();
+        fs::write(session.cwd.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        fs::create_dir(session.cwd.join(".codex")).unwrap();
+        fs::write(
+            session.cwd.join(".codex/config.toml"),
+            "[mcp_servers.computer-use]\nenabled=true\n",
+        )
+        .unwrap();
+        let settings = inspect(&environment, &session, None).unwrap();
+        assert!(
+            settings
+                .blockers
+                .iter()
+                .any(|reason| reason.contains("项目配置"))
+        );
+    }
+    #[test]
+    fn project_discovery_does_not_adopt_another_account_above_the_git_root() {
+        let (root, environment, session) = fixture("model='source-model'\n");
+        fs::create_dir(root.path().join("repo/.git")).unwrap();
+        fs::write(root.path().join("repo/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        fs::create_dir(root.path().join(".codex")).unwrap();
+        fs::write(
+            root.path().join(".codex/config.toml"),
+            "model='other-account-model'\nmodel_provider='other-account-provider'\n",
+        )
+        .unwrap();
+        let settings = inspect(&environment, &session, None).unwrap();
+        assert!(settings.blockers.is_empty(), "{:?}", settings.blockers);
+        assert_eq!(settings.model.as_deref(), Some("source-model"));
+        assert!(
+            !settings
+                .details
+                .iter()
+                .any(|(_, path)| path == &display_path(&root.path().join(".codex/config.toml")))
+        );
+    }
+    #[test]
+    fn empty_nested_git_directory_does_not_hide_a_valid_parent_project() {
+        let (root, environment, session) = fixture("model='source-model'\n");
+        let project = root.path().join("repo");
+        fs::create_dir(project.join(".git")).unwrap();
+        fs::write(project.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        fs::create_dir(session.cwd.join(".git")).unwrap();
+        fs::create_dir(project.join(".codex")).unwrap();
+        fs::write(
+            project.join(".codex/config.toml"),
+            "model='project-model'\n",
+        )
+        .unwrap();
+        let settings = inspect(&environment, &session, None).unwrap();
+        assert!(
+            settings
+                .blockers
+                .iter()
+                .any(|reason| reason.contains("项目配置")),
+            "{:?}",
+            settings.blockers
+        );
+        assert_eq!(settings.model.as_deref(), Some("project-model"));
+        // File markers define a worktree boundary without a local HEAD.
+        fs::remove_dir(session.cwd.join(".git")).unwrap();
+        fs::write(
+            session.cwd.join(".git"),
+            "gitdir: ../.git/worktrees/nested\n",
+        )
+        .unwrap();
+        let worktree = inspect(&environment, &session, None).unwrap();
+        assert!(worktree.blockers.is_empty(), "{:?}", worktree.blockers);
+        assert_eq!(worktree.model.as_deref(), Some("source-model"));
+    }
+    #[test]
+    fn without_a_git_root_only_the_working_directory_is_a_project_layer() {
+        let (root, environment, session) = fixture("model='source-model'\n");
+        fs::create_dir(root.path().join("repo/.codex")).unwrap();
+        fs::write(
+            root.path().join("repo/.codex/config.toml"),
+            "model='parent-model'\n",
+        )
+        .unwrap();
+        let settings = inspect(&environment, &session, None).unwrap();
+        assert!(settings.blockers.is_empty(), "{:?}", settings.blockers);
+        assert_eq!(settings.model.as_deref(), Some("source-model"));
+        fs::create_dir(session.cwd.join(".codex")).unwrap();
+        fs::write(
+            session.cwd.join(".codex/config.toml"),
+            "model='project-model'\n",
+        )
+        .unwrap();
+        assert!(
+            inspect(&environment, &session, None)
+                .unwrap()
+                .blockers
+                .iter()
+                .any(|reason| reason.contains("项目配置"))
+        );
     }
     #[test]
     fn rejects_relative_paths_in_nested_arrays_without_exposing_values() {
@@ -560,6 +722,7 @@ mod tests {
     fn project_instructions_stop_at_git_root_and_prefer_override() {
         let (root, environment, session) = fixture("model='gpt-5'\n");
         fs::create_dir(root.path().join("repo/.git")).unwrap();
+        fs::write(root.path().join("repo/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
         fs::write(root.path().join("AGENTS.md"), "OUTSIDE REPO").unwrap();
         fs::write(root.path().join("repo/AGENTS.md"), "ROOT").unwrap();
         fs::write(session.cwd.join("AGENTS.md"), "REGULAR").unwrap();

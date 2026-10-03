@@ -1,8 +1,7 @@
 //! Audited historical command entries, used only by explicit maintenance.
-use crate::managed_tui::{Binding, read_limited, render_wrapper};
+use crate::managed_tui::{Binding, is_native_package_entry, read_limited, render_wrapper};
 use std::{
-    fs::{self, File},
-    io::Read,
+    fs,
     path::{Path, PathBuf},
 };
 const LEGACY_ADAPTER: &str = include_str!("legacy-dodex-adapter-v0.py");
@@ -93,34 +92,11 @@ fn render_primary_template(home: &Path, template: &str) -> Result<Vec<u8>, Strin
         .into_bytes())
 }
 
-fn is_native_package_entry(entry: &Path) -> bool {
-    let mut magic = [0; 4];
-    entry.file_name().is_some_and(|name| name == "codex")
-        && entry
-            .parent()
-            .and_then(Path::parent)
-            .is_some_and(|root| root.join("codex-package.json").is_file())
-        && File::open(entry)
-            .and_then(|mut file| file.read_exact(&mut magic))
-            .is_ok()
-        && matches!(
-            magic,
-            [0xcf, 0xfa, 0xed, 0xfe]
-                | [0xfe, 0xed, 0xfa, 0xcf]
-                | [0xce, 0xfa, 0xed, 0xfe]
-                | [0xfe, 0xed, 0xfa, 0xce]
-                | [0xca, 0xfe, 0xba, 0xbe]
-                | [0xbe, 0xba, 0xfe, 0xca]
-                | [0xca, 0xfe, 0xba, 0xbf]
-                | [0xbf, 0xba, 0xfe, 0xca]
-        )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::managed_tui::{read_binding, render_legacy_wrapper};
-    use std::os::unix::fs::symlink;
+    use std::{fs::File, os::unix::fs::symlink};
 
     fn binding(home: &Path) -> Binding {
         let support = home.join("Library/Application Support/AgentCompanion/Tui");

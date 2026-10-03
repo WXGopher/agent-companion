@@ -6,6 +6,12 @@
 
 在 Windows 任务栏或 macOS 菜单栏查看 Codex 的任务状态与订阅用量。
 
+### v0.3.25 更新
+
+- 修复 `acomp resume` 的配置误拦：显式停用的 MCP 不再因残留相对路径阻止接力，启动前仍核验其保持停用；项目配置扫描遵循原生 Git 根边界。
+- 旧 Dodex 可借用本机官方 App 或固定 standalone 安装中的已验证 0.159.3 原生程序，保留原历史、设置和所选账号，不升级现有入口。
+- macOS 真实来源／账号四组合均进入 TUI 输入就绪状态，Ctrl-D 退出码均为 0；未提交新模型请求，未验证计费。Windows 恢复启动仍禁用。[发布说明](docs/releases/v0.3.25.md)
+
 ### v0.3.24 更新
 
 - 额度与历史绑定实际账号、工作区和认证来源；换号、登出或身份无法确认时清除旧读数，拒绝晚到结果。正常 token 轮换保留缓存，慢历史查询不阻塞额度。
@@ -32,7 +38,7 @@ macOS 双实例额度读取、Dodex 手动刷新和 App/TUI 启动已观察通�
 
 ### 主要功能
 
-- **会话接力 CLI**：`acomp resume` 按当前目录搜索 Codex / Dodex 原会话，展示历史、设置和额度账号的来源，选择本次额度账号。`agent-companion install-cli` 安装用户级入口；未验证或不兼容的组合显示原因并禁用。命令、兼容性和验收边界见 [接力说明](docs/RESUME.md)。
+- **会话接力 CLI**：`acomp resume` 按当前目录搜索 Codex / Dodex 原会话，展示历史、设置和额度账号的来源，选择本次额度账号。显式停用的 MCP 残留相对路径不再阻止接力；macOS 旧 Dodex 可借用通过固定版本检查的本机原生程序，保留原历史、配置和所选账号。`agent-companion install-cli` 安装用户级入口；未验证或不兼容的组合显示原因并禁用，Windows 恢复启动仍禁用。命令、兼容性和验收边界见 [接力说明](docs/RESUME.md)。
 - **更新提示**：主动打开面板时在后台检查 GitHub 正式发布版本，每 24 小时最多检查一次，重启后仍复用本地记录。发现更高版本时显示版本号，点击“查看更新”打开对应 Release 页面。检查不阻塞面板；断网或检查失败时静默保留已有提示，不自动下载或安装。
 - **任务状态**：查看运行中、待处理和已结束的任务，点击返回对应对话或终端。
 - **Tasks / Usage**：切换任务与用量，查看剩余额度、重置时间、累计 Token 和最近七个有记录日期的用量柱状图。
@@ -103,7 +109,13 @@ macOS 重新打开 Agent Companion 会显示弹窗的 Tasks 页。刘海、悬�
 
 See Codex tasks and subscription usage in the Windows taskbar or macOS menu bar.
 
-`acomp resume` searches original Codex / Dodex sessions in the exact current directory and shows history, settings, and quota-account provenance. Install user-level commands with `agent-companion install-cli`. Unverified or incompatible combinations are disabled with a reason; see [resume usage and validation boundaries](docs/RESUME.md).
+`acomp resume` searches original Codex / Dodex sessions in the exact current directory and shows history, settings, and quota-account provenance. Relative paths in explicitly disabled MCP definitions no longer block resume. On macOS, older Dodex installations can borrow a local native runtime that passes the pinned version check while preserving the original history, settings and selected account. Install user-level commands with `agent-companion install-cli`. Unverified or incompatible combinations are disabled with a reason, and Windows resume launch remains disabled; see [resume usage and validation boundaries](docs/RESUME.md).
+
+### New in v0.3.25
+
+- Fix false configuration blockers in `acomp resume`: explicitly disabled MCP definitions can retain relative paths, with their disabled state rechecked before launch. Project configuration scanning follows the native Git-root boundary.
+- Let older Dodex installations borrow a verified 0.159.3 native runtime from the local official App or fixed standalone installation, preserving original history, settings and the selected account without upgrading installed entries.
+- All four real macOS source/account combinations reached the TUI input prompt and exited with status 0 via Ctrl-D. No new model request was submitted, and billing was not verified. Windows resume launch remains disabled. [Release notes](docs/releases/v0.3.25.md)
 
 ### New in v0.3.24
 

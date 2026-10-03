@@ -107,8 +107,10 @@ pub fn discover() -> io::Result<Discovery> {
     let support = home.join(".local/share/agent-companion");
 
     let primary_home = home.join(".codex");
-    let primary_runtime =
-        primary_executable(&home).unwrap_or_else(|| standalone_executable(&primary_home));
+    let official_runtime = primary_executable(&home);
+    let primary_runtime = official_runtime
+        .clone()
+        .unwrap_or_else(|| standalone_executable(&primary_home));
     let mut environments = vec![Environment {
         id: "codex".into(),
         label: "Codex".into(),
@@ -125,7 +127,17 @@ pub fn discover() -> io::Result<Discovery> {
     let managed_entry = crate::managed_tui::command(&home, "dodex");
     #[cfg(not(target_os = "macos"))]
     let managed_entry: Option<PathBuf> = None;
-    match saved_environment(&record, &primary_home, managed_entry.as_deref()) {
+    #[cfg(target_os = "macos")]
+    let secondary = saved_environment_for_resume(
+        &record,
+        &primary_home,
+        managed_entry.as_deref(),
+        official_runtime.as_deref(),
+        agent_companion_core::resume::verify_runtime,
+    );
+    #[cfg(not(target_os = "macos"))]
+    let secondary = saved_environment(&record, &primary_home, managed_entry.as_deref());
+    match secondary {
         Ok(Some(environment)) => environments.push(environment),
         Ok(None) => (),
         Err(error) => warnings.push(error.to_string()),
@@ -232,6 +244,50 @@ fn saved_environment(
     }))
 }
 
+#[cfg(target_os = "macos")]
+fn saved_environment_for_resume(
+    record: &Path,
+    primary_home: &Path,
+    managed_entry: Option<&Path>,
+    official_runtime: Option<&Path>,
+    mut verify_runtime: impl FnMut(&Path) -> Result<(), String>,
+) -> io::Result<Option<Environment>> {
+    // Validate saved and managed bindings first. A compatible binary cannot
+    // make an unknown or redirected deployment trustworthy.
+    let Some(mut environment) = saved_environment(record, primary_home, managed_entry)? else {
+        return Ok(None);
+    };
+    let candidate = official_runtime
+        .map(Path::to_path_buf)
+        .or_else(|| primary_standalone_runtime(primary_home));
+    if let Some(candidate) = candidate.as_deref()
+        && candidate != environment.executable
+        && verify_runtime(&environment.executable).is_err()
+        && verify_runtime(candidate).is_ok()
+    {
+        // Runtime choice is independent of history, settings and quota source.
+        // No installed entry, saved deployment or original resource is changed.
+        environment.executable = candidate.to_path_buf();
+    }
+    Ok(Some(environment))
+}
+
+#[cfg(target_os = "macos")]
+fn primary_standalone_runtime(home: &Path) -> Option<PathBuf> {
+    // This is the same fixed fallback used by the primary environment. Resolve
+    // the vendor's current link, never an arbitrary PATH wrapper or command.
+    let native = standalone_executable(home).canonicalize().ok()?;
+    if !crate::managed_tui::is_native_package_entry(&native) {
+        return None;
+    }
+    let package = native.parent()?.parent()?;
+    if native != package.join("bin/codex") {
+        return None;
+    }
+    crate::managed_tui::package_version(package).ok()?;
+    Some(native)
+}
+
 fn standalone_executable(home: &Path) -> PathBuf {
     home.join("packages/standalone/current/bin")
         .join(if cfg!(windows) { "codex.exe" } else { "codex" })
@@ -327,6 +383,245 @@ mod tests {
             .unwrap();
         assert_eq!(found.id, "dodex");
         assert_eq!(found.home, root.join("dodex/home"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn older_saved_runtime_can_borrow_compatible_official_native_without_changing_sources() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let record = root.join("dual-instance.json");
+        let home = root.join("dodex/home");
+        let database = root.join("dodex/sqlite");
+        let legacy = root.join("legacy/codex");
+        let official = root.join("Applications/ChatGPT.app/Contents/Resources/codex");
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "schema": 1, "enabled": false,
+            "instance": {"codex_home": home, "database_dir": database, "cli_path": legacy}
+        }))
+        .unwrap();
+        fs::write(&record, &bytes).unwrap();
+        let mut checked = Vec::new();
+        let found = saved_environment_for_resume(
+            &record,
+            &root.join(".codex"),
+            None,
+            Some(&official),
+            |path| {
+                checked.push(path.to_path_buf());
+                if path == official {
+                    Ok(())
+                } else {
+                    Err("Codex 版本格式未验证。".into())
+                }
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(found.executable, official);
+        assert_eq!(found.id, "dodex");
+        assert_eq!(found.label, "Dodex");
+        assert_eq!(found.home, home);
+        assert_eq!(found.database_home, Some(database));
+        assert_eq!(checked, vec![legacy, official]);
+        assert_eq!(fs::read(&record).unwrap(), bytes);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn standalone_fixture(primary: &Path) -> PathBuf {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let package = primary.join("packages/standalone/releases/0.159.3-aarch64-apple-darwin");
+        for directory in ["bin", "codex-resources", "codex-path"] {
+            fs::create_dir_all(package.join(directory)).unwrap();
+        }
+        fs::write(
+            package.join("codex-package.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "layoutVersion": 1, "version": "0.159.3", "entrypoint": "bin/codex",
+                "resourcesDir": "codex-resources", "pathDir": "codex-path"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        for file in ["bin/codex", "bin/codex-code-mode-host", "codex-path/rg"] {
+            let path = package.join(file);
+            fs::write(&path, [0xcf, 0xfa, 0xed, 0xfe]).unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        symlink(&package, primary.join("packages/standalone/current")).unwrap();
+        package.join("bin/codex")
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn older_saved_runtime_uses_primary_standalone_when_the_app_has_no_native() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let primary = root.join(".codex");
+        let native = standalone_fixture(&primary);
+        let official = primary_executable_in(&root.join("SystemApps"), &root.join("Applications"));
+        assert_eq!(official, None);
+        let primary_runtime = official
+            .clone()
+            .unwrap_or_else(|| standalone_executable(&primary));
+        assert_eq!(primary_runtime.canonicalize().unwrap(), native);
+        let home = root.join("dodex/home");
+        let database = root.join("dodex/sqlite");
+        let legacy = root.join("legacy/codex");
+        let record = root.join("dual-instance.json");
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "schema": 1, "enabled": false,
+            "instance": {"codex_home":home,"database_dir":database,"cli_path":legacy}
+        }))
+        .unwrap();
+        fs::write(&record, &bytes).unwrap();
+        let mut checked = Vec::new();
+        let found =
+            saved_environment_for_resume(&record, &primary, None, official.as_deref(), |path| {
+                checked.push(path.to_path_buf());
+                if path == native {
+                    Ok(())
+                } else {
+                    Err("Codex 版本格式未验证。".into())
+                }
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.executable, native);
+        assert_eq!(found.home, home);
+        assert_eq!(found.database_home, Some(database));
+        assert_eq!(checked, vec![legacy.clone(), native]);
+        assert_eq!(fs::read(&record).unwrap(), bytes);
+        let unsupported = saved_environment_for_resume(&record, &primary, None, None, |_| {
+            Err("Codex 版本尚未验证。".into())
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(unsupported.executable, legacy);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn standalone_candidate_rejects_incomplete_packages_and_unknown_commands() {
+        for change in [
+            "missing-current",
+            "missing-manifest",
+            "invalid-manifest",
+            "wrong-layout",
+            "missing-host",
+            "missing-resources",
+            "missing-path-tools",
+            "unknown-script",
+        ] {
+            let temporary = tempfile::tempdir().unwrap();
+            let root = temporary.path().canonicalize().unwrap();
+            let primary = root.join(".codex");
+            let native = standalone_fixture(&primary);
+            let package = native.parent().unwrap().parent().unwrap();
+            assert_eq!(primary_standalone_runtime(&primary), Some(native.clone()));
+            match change {
+                "missing-current" => {
+                    fs::remove_file(primary.join("packages/standalone/current")).unwrap()
+                }
+                "missing-manifest" => fs::remove_file(package.join("codex-package.json")).unwrap(),
+                "invalid-manifest" => {
+                    fs::write(package.join("codex-package.json"), b"not JSON").unwrap()
+                }
+                "wrong-layout" => {
+                    let manifest = package.join("codex-package.json");
+                    let mut value: serde_json::Value =
+                        serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+                    value["entrypoint"] = "some/other-codex".into();
+                    fs::write(manifest, serde_json::to_vec(&value).unwrap()).unwrap();
+                }
+                "missing-host" => {
+                    fs::remove_file(package.join("bin/codex-code-mode-host")).unwrap()
+                }
+                "missing-resources" => fs::remove_dir(package.join("codex-resources")).unwrap(),
+                "missing-path-tools" => fs::remove_file(package.join("codex-path/rg")).unwrap(),
+                "unknown-script" => {
+                    fs::write(&native, b"#!/bin/sh\ntouch should-never-exist\n").unwrap()
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(primary_standalone_runtime(&primary), None, "{change}");
+            assert!(!root.join("should-never-exist").exists());
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn resume_runtime_selection_preserves_supported_native_and_rejects_unqualified_candidates() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let record = root.join("dual-instance.json");
+        let original = root.join("dodex/codex");
+        let official = root.join("Applications/Codex.app/Contents/Resources/codex");
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "schema": 1,
+            "instance": {"codex_home":root.join("dodex/home"),"database_dir":root.join("dodex/sqlite"),"cli_path":original}
+        })).unwrap();
+        fs::write(&record, &bytes).unwrap();
+        for (candidate, original_supported, candidate_supported, expected_checks) in [
+            (None, false, false, vec![]),
+            (Some(original.as_path()), false, false, vec![]),
+            (Some(official.as_path()), true, true, vec![original.clone()]),
+            (
+                Some(official.as_path()),
+                false,
+                false,
+                vec![original.clone(), official.clone()],
+            ),
+        ] {
+            let mut checked = Vec::new();
+            let found = saved_environment_for_resume(
+                &record,
+                &root.join(".codex"),
+                None,
+                candidate,
+                |path| {
+                    checked.push(path.to_path_buf());
+                    if (path == original && original_supported)
+                        || (path == official && candidate_supported)
+                    {
+                        Ok(())
+                    } else {
+                        Err("Unverified native runtime".into())
+                    }
+                },
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(found.executable, original);
+            assert_eq!(checked, expected_checks);
+            assert_eq!(fs::read(&record).unwrap(), bytes);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn official_runtime_does_not_bypass_invalid_saved_deployment() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let record = root.join("dual-instance.json");
+        let primary = root.join(".codex");
+        for (schema, home) in [(9, root.join("dodex")), (1, primary.join("nested"))] {
+            fs::write(&record, serde_json::to_vec(&serde_json::json!({
+                "schema":schema,"instance":{"codex_home":home,"database_dir":root.join("sqlite"),"cli_path":root.join("old-codex")}
+            })).unwrap()).unwrap();
+            let before = fs::read(&record).unwrap();
+            assert!(
+                saved_environment_for_resume(
+                    &record,
+                    &primary,
+                    None,
+                    Some(&root.join("official-codex")),
+                    |_| panic!("an invalid deployment must be rejected before runtime checks"),
+                )
+                .is_err()
+            );
+            assert_eq!(fs::read(&record).unwrap(), before);
+        }
     }
 
     fn windows_manifest(root: &Path) -> serde_json::Value {
@@ -488,6 +783,15 @@ mod tests {
         })).unwrap()).unwrap();
         let before = fs::read(&record).unwrap();
         let read = || saved_environment(&record, &home.join(".codex"), Some(&binding.entry));
+        let read_for_resume = || {
+            saved_environment_for_resume(
+                &record,
+                &home.join(".codex"),
+                Some(&binding.entry),
+                Some(&home.join("official-codex")),
+                |_| panic!("a rejected binding must not fall back to another runtime"),
+            )
+        };
         let found = read().unwrap().unwrap();
         assert_eq!(found.executable, executable);
         assert_eq!(found.home, profile);
@@ -500,9 +804,15 @@ mod tests {
         changed.profile_home = home.join("different-second");
         fs::write(&binding.entry, render_wrapper(&changed).unwrap()).unwrap();
         assert!(read().is_err());
+        assert!(read_for_resume().is_err());
+        let mut modified = render_wrapper(&binding).unwrap();
+        modified.extend_from_slice(b"\n# unrecognized local edit\n");
+        fs::write(&binding.entry, modified).unwrap();
+        assert!(read_for_resume().is_err());
         fs::write(&binding.entry, render_wrapper(&binding).unwrap()).unwrap();
         fs::remove_file(&executable).unwrap();
         assert!(read().is_err());
+        assert!(read_for_resume().is_err());
     }
 
     #[cfg(target_os = "macos")]
