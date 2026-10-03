@@ -13,7 +13,7 @@
 - 统一 App、TUI、额度与更新进程的环境隔离，修复 `--` 后提示文本及选项值转发；`dodex app` 和项目跳转进入公共 Dodex App。
 - 两平台增加成对维护：分别对齐 Codex/Dodex App 与 TUI，迁移已知旧入口，同版本也检查入口修订；未知修改不覆盖，较新版本不降级。Windows 桌面通过 WinGet 更新，TUI 使用独立完整包。
 - 新增 `acomp resume`，按当前目录发现原会话并选择本次额度账号。macOS 原生恢复目前仅支持通过校验的 Codex CLI 0.159.3 文件登录组合；Windows 恢复启动仍禁用。[支持边界](docs/RESUME.md)
-- macOS 菜单面板在切回其他应用时自动收起；修复用户级 CLI 安装锁释放及 Windows 启动参数测试。[发布说明](docs/releases/v0.3.24.md)
+- macOS 菜单面板在切回其他应用时自动收起；修复用户级 CLI 安装与接力锁释放及 Windows 启动参数测试。[发布说明](docs/releases/v0.3.24.md)
 
 macOS 双实例额度读取、Dodex 手动刷新和 App/TUI 启动已观察通过；Windows GUI、完整换号/登出及成对升级的实机验收仍未完成。[验收记录](docs/CODEX_DODEX_VALIDATION.md)
 
@@ -112,7 +112,7 @@ See Codex tasks and subscription usage in the Windows taskbar or macOS menu bar.
 - Isolate App, TUI, quota and updater environments consistently, and preserve prompt text after `--` and option values. `dodex app` and project navigation use the public Dodex App.
 - Add paired maintenance on both platforms: align the Codex/Dodex App and TUI pairs separately, migrate known old entries even at matching versions, preserve unknown modifications and avoid downgrades. Windows desktop updates use WinGet; TUI uses a separate complete package.
 - Add `acomp resume` to find original sessions in the current directory and choose the account for this run. Native resume on macOS currently requires a verified Codex CLI 0.159.3 file-login combination; Windows resume launch remains disabled. [Support boundaries](docs/RESUME.md)
-- Dismiss the macOS menu popup when returning to another app, and fix user-level CLI installer lock release and Windows launch-argument tests. [Release notes](docs/releases/v0.3.24.md)
+- Dismiss the macOS menu popup when returning to another app, and fix user-level CLI installer and resume lock release and Windows launch-argument tests. [Release notes](docs/releases/v0.3.24.md)
 
 macOS checks observed both instances' quota, Dodex manual refresh, and Dodex App/TUI startup. Windows GUI, the full account-switch/logout matrix and end-to-end paired upgrades remain unverified on real installations. [Validation record](docs/CODEX_DODEX_VALIDATION.md)
 

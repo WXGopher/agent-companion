@@ -27,6 +27,25 @@ const VERSION: &str = "0.159.3";
 const NATIVE_CHATGPT_BASE_URL: &str = "https://chatgpt.com/backend-api/";
 static NEXT_RUN: AtomicU64 = AtomicU64::new(0);
 
+struct ResumeLock {
+    file: File,
+}
+
+impl ResumeLock {
+    fn acquire(file: File) -> Result<Self, std::fs::TryLockError> {
+        file.try_lock()?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for ResumeLock {
+    fn drop(&mut self) {
+        // A concurrent fork can retain the open-file description until exec.
+        // Release our lock explicitly instead of waiting for every copy to close.
+        let _ = self.file.unlock();
+    }
+}
+
 /// Authentication material deliberately has neither Debug nor Serialize.
 struct Account {
     id: String,
@@ -57,8 +76,8 @@ struct Manifest {
 pub struct PreparedResume {
     directory: PathBuf,
     manifest: Manifest,
-    run_lock: Option<File>,
-    launch_lock: Option<File>,
+    run_lock: Option<ResumeLock>,
+    launch_lock: Option<ResumeLock>,
     source_auth_handle: same_file::Handle,
     settings_model: String,
     database_home: PathBuf,
@@ -260,10 +279,11 @@ fn prepare_impl(
     ensure_real_directory(&locks)?;
     // This lock serializes acomp launchers until the child exits. The child's
     // own original-home writer lock arbitrates with every native client.
-    let launch_lock = open_private(&locks.join(format!("{}.lock", session.id)), false)?;
-    launch_lock
-        .try_lock()
-        .map_err(|_| "另一个 acomp 正在恢复同一会话。")?;
+    let launch_lock = ResumeLock::acquire(open_private(
+        &locks.join(format!("{}.lock", session.id)),
+        false,
+    )?)
+    .map_err(|_| "另一个 acomp 正在恢复同一会话。")?;
     if discovery::writer_busy(&source.home, &session.id)? {
         return Err("原会话仍被占用，请先退出。".into());
     }
@@ -279,8 +299,8 @@ fn prepare_impl(
     let directory = managed_root.join(&run_id);
     fs::create_dir(&directory).map_err(|_| "无法创建接力运行目录。")?;
     private_permissions(&directory)?;
-    let run_lock = open_private(&directory.join("run.lock"), true)?;
-    run_lock.try_lock().map_err(|_| "无法锁定接力运行目录。")?;
+    let run_lock = ResumeLock::acquire(open_private(&directory.join("run.lock"), true)?)
+        .map_err(|_| "无法锁定接力运行目录。")?;
     let auth_path = account_home.join("auth.json");
     let source_auth_handle =
         same_file::Handle::from_path(&auth_path).map_err(|_| "无法检查认证文件标识。")?;
@@ -870,9 +890,9 @@ pub fn cleanup_stale(managed_root: &Path) -> Result<usize, String> {
         let Ok(lock) = open_private(&path.join("run.lock"), false) else {
             continue;
         };
-        if lock.try_lock().is_err() {
+        let Ok(lock) = ResumeLock::acquire(lock) else {
             continue;
-        }
+        };
         if discovery::writer_busy(&manifest.source.home, &manifest.session.id) != Ok(false) {
             continue;
         }
@@ -1180,8 +1200,8 @@ mod tests {
             &directory.join("home/auth.json"),
         )
         .unwrap();
-        let run_lock = open_private(&directory.join("run.lock"), true).unwrap();
-        run_lock.try_lock().unwrap();
+        let run_lock =
+            ResumeLock::acquire(open_private(&directory.join("run.lock"), true).unwrap()).unwrap();
         let prepared = PreparedResume {
             source_auth_handle: same_file::Handle::from_path(account.join("auth.json")).unwrap(),
             manifest: Manifest {
@@ -1427,6 +1447,28 @@ mod tests {
         prepared.write_manifest().unwrap();
         assert_eq!(cleanup_stale(&managed).unwrap(), 1);
     }
+    #[cfg(unix)]
+    #[test]
+    fn recovery_releases_run_lock_while_an_inherited_descriptor_remains_open() {
+        let (_root, mut prepared) = fixture();
+        let managed = prepared.directory.parent().unwrap().to_owned();
+        // Like fork(), try_clone retains the same open-file description.
+        let inherited = prepared
+            .run_lock
+            .as_ref()
+            .unwrap()
+            .file
+            .try_clone()
+            .unwrap();
+        prepared.manifest.owner_pid = 0;
+        prepared.write_manifest().unwrap();
+        prepared.keep = true;
+        assert_eq!(cleanup_stale(&managed).unwrap(), 0);
+        prepared.run_lock.take();
+        assert_eq!(cleanup_stale(&managed).unwrap(), 1);
+        assert!(prepared.manifest.auth_path.is_file());
+        drop(inherited);
+    }
     #[test]
     fn cleanup_rejects_redirected_managed_home_without_reading_its_children() {
         let (_root, mut prepared) = fixture();
@@ -1443,12 +1485,15 @@ mod tests {
     fn launch_locks_exclude_a_second_companion_process() {
         let root = TempDir::new().unwrap();
         let path = root.path().join("launch.lock");
-        let first = open_private(&path, true).unwrap();
-        first.try_lock().unwrap();
+        let first = ResumeLock::acquire(open_private(&path, true).unwrap()).unwrap();
+        #[cfg(unix)]
+        let inherited = first.file.try_clone().unwrap();
         let second = open_private(&path, false).unwrap();
         assert!(second.try_lock().is_err());
         drop(first);
-        second.try_lock().unwrap();
+        let _second = ResumeLock::acquire(second).unwrap();
+        #[cfg(unix)]
+        drop(inherited);
     }
     #[test]
     fn auth_parsing_failures_never_echo_material() {
