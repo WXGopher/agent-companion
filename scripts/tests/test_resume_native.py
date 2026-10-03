@@ -7,17 +7,22 @@ No real credentials are read, and all model/auth responses are deterministic
 fixtures. These tests establish native persistence/auth plumbing, not billing.
 The shared-usage contract also accepts the legacy bundled 0.155.0-alpha.16.4;
 select that one test explicitly when checking that runtime.
+Set ACOMP_TEST_LEGACY_CODEX_BINARY to a native 0.155.0-alpha.16.4 executable
+to also verify that its history can be resumed by 0.159.3 and reopened by 0.155.
 Additionally set ACOMP_TEST_ACOMP_BINARY to an absolute production acomp binary
 on macOS for its denied-preflight cleanup smoke (requires sandbox-exec).
 """
 
 import base64
+from contextlib import closing
 import datetime
 import http.server
 import json
 import os
 from pathlib import Path
 import queue
+import shlex
+import sqlite3
 import subprocess
 import struct
 import sys
@@ -29,8 +34,19 @@ import zlib
 
 
 NATIVE = os.environ.get("ACOMP_TEST_CODEX_BINARY")
+LEGACY_NATIVE = os.environ.get("ACOMP_TEST_LEGACY_CODEX_BINARY")
 ACOMP = os.environ.get("ACOMP_TEST_ACOMP_BINARY")
 VERSION = "codex-cli 0.159.3"
+
+
+def verify_native_executable(value, variable):
+    path = Path(value)
+    if not path.is_absolute():
+        raise ValueError(variable + " must be an absolute native executable path")
+    with path.open("rb") as executable:
+        magic = executable.read(4)
+    if magic not in (b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\x7fELF") and magic[:2] != b"MZ":
+        raise ValueError("Use the native binary: wrappers may reset the disposable CODEX_HOME")
 
 
 def fake_token(account, marker="initial"):
@@ -211,9 +227,9 @@ class LoopbackServer:
 
 
 class AppServer:
-    def __init__(self, fixture, home, arguments=None):
+    def __init__(self, fixture, home, arguments=None, native=None):
         self.messages = queue.Queue()
-        self.process = fixture.start(home, arguments or ["app-server"])
+        self.process = fixture.start(home, arguments or ["app-server"], native=native)
         self.reader = threading.Thread(target=self.read, daemon=True)
         self.reader.start()
         self.call(1, "initialize", {
@@ -266,13 +282,7 @@ class AppServer:
 class NativeResumeContracts(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        path = Path(NATIVE)
-        if not path.is_absolute():
-            raise ValueError("ACOMP_TEST_CODEX_BINARY must be an absolute native executable path")
-        with path.open("rb") as executable:
-            magic = executable.read(4)
-        if magic not in (b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\x7fELF") and magic[:2] != b"MZ":
-            raise ValueError("Use the native binary: wrappers may reset the disposable CODEX_HOME")
+        verify_native_executable(NATIVE, "ACOMP_TEST_CODEX_BINARY")
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="acomp-native-")
@@ -409,20 +419,20 @@ class NativeResumeContracts(unittest.TestCase):
         })
         return environment
 
-    def run_native(self, home, arguments, input_text=None, check=True):
+    def run_native(self, home, arguments, input_text=None, check=True, native=None):
         result = subprocess.run(
-            [NATIVE] + arguments, env=self.environment(home), cwd=self.project,
+            [native or NATIVE] + arguments, env=self.environment(home), cwd=self.project,
             input=input_text, capture_output=True, text=True, timeout=40,
         )
         if check:
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         return result
 
-    def start(self, home, arguments):
+    def start(self, home, arguments, native=None):
         environment = self.environment(home)
         environment["CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED"] = "1"
         return subprocess.Popen(
-            [NATIVE] + arguments, env=environment, cwd=self.project,
+            [native or NATIVE] + arguments, env=environment, cwd=self.project,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.stderr, text=True,
         )
 
@@ -533,6 +543,146 @@ class NativeResumeContracts(unittest.TestCase):
             self.server.release.set()
             owner.communicate(timeout=20)
 
+    @unittest.skipUnless(LEGACY_NATIVE, "set ACOMP_TEST_LEGACY_CODEX_BINARY for cross-version history acceptance")
+    def test_legacy_history_survives_pinned_resume_and_reopen_with_shared_writer_locks(self):
+        verify_native_executable(LEGACY_NATIVE, "ACOMP_TEST_LEGACY_CODEX_BINARY")
+        version = self.run_native(self.source, ["--version"], native=LEGACY_NATIVE)
+        self.assertEqual(version.stdout.strip(), "codex-cli 0.155.0-alpha.16.4")
+        # Both versions use the explicit standalone app-server path. The legacy
+        # strict parser does not know the newer daemon_auto_start feature key.
+        for home in (self.source, self.selected):
+            config = home / "config.toml"
+            config.write_text(config.read_text().replace("daemon_auto_start=false\n", ""))
+        config_before = (self.source / "config.toml").read_bytes()
+        auth_before = (self.source / "auth.json").read_bytes()
+        arguments = ["app-server", "--listen", "stdio://", "--strict-config"]
+
+        def complete_turn(app, thread_id, marker, request_id):
+            app.call(request_id, "turn/start", {
+                "threadId": thread_id, "input": [{"type": "text", "text": marker}],
+            })
+            self.assertEqual(app.wait_notification("turn/completed")["turn"]["status"], "completed")
+
+        def paginated_ids(app):
+            cursor = None
+            ids = []
+            for request_id in range(30, 35):
+                page = app.call(request_id, "thread/list", {"limit": 1, "cursor": cursor})
+                ids.extend(thread["id"] for thread in page["data"])
+                cursor = page.get("nextCursor")
+                if cursor is None:
+                    return ids
+            self.fail("legacy history pagination did not terminate")
+
+        def database_schema():
+            result = {}
+            columns = {}
+            for path in self.source.glob("*.sqlite"):
+                with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as database:
+                    result[path.name] = database.execute(
+                        "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+                    ).fetchall()
+                    for table in ("threads", "thread_items"):
+                        values = database.execute("PRAGMA table_info(" + table + ")").fetchall()
+                        if values:
+                            columns[path.name, table] = values
+            return result, columns
+
+        with closing(AppServer(self, self.source, arguments, native=LEGACY_NATIVE)) as old:
+            ids = []
+            for index in range(2):
+                thread = old.call(10 + index * 2, "thread/start", {"cwd": str(self.project)})["thread"]
+                ids.append(thread["id"])
+                self.assertEqual(thread["historyMode"], "paginated")
+                complete_turn(old, thread["id"], "legacy-seed-" + str(index), 11 + index * 2)
+                if index == 0:
+                    # The legacy list cursor has second precision. Distinct
+                    # timestamps exercise two pages without its same-second tie.
+                    time.sleep(1.1)
+            self.assertCountEqual(paginated_ids(old), ids)
+            schema_before, columns_before = database_schema()
+            self.assertIn("state_5.sqlite", schema_before)
+            self.assertIn("thread_history_1.sqlite", schema_before)
+            rollouts_before = sorted((self.source / "sessions").rglob("*.jsonl"))
+            self.assertEqual(len(rollouts_before), 2)
+            self.make_overlay()
+            coordination = self.source / "thread-writer-locks" / ".coordination.lock"
+            self.assertTrue(coordination.is_file())
+            self.assertTrue(os.path.samefile(
+                coordination, self.overlay / "thread-writer-locks" / ".coordination.lock"))
+            self.server.hold_next_response = True
+            old.send({"id": 20, "method": "turn/start", "params": {
+                "threadId": ids[0], "input": [{"type": "text", "text": "legacy-held-marker"}],
+            }})
+            try:
+                self.assertTrue(self.server.started.wait(10), "legacy writer did not reach the fixture")
+                with closing(AppServer(self, self.overlay, arguments)) as new:
+                    with self.assertRaisesRegex(AssertionError, "active writer"):
+                        new.call(2, "thread/resume", {"threadId": ids[0]})
+            finally:
+                self.server.release.set()
+            self.assertEqual(old.wait_notification("turn/completed")["turn"]["status"], "completed")
+
+        with closing(AppServer(self, self.overlay, arguments)) as new:
+            resumed = new.call(2, "thread/resume", {"threadId": ids[0]})
+            self.assertEqual(resumed["thread"]["id"], ids[0])
+            self.server.started.clear()
+            self.server.release.clear()
+            self.server.hold_next_response = True
+            new.send({"id": 3, "method": "turn/start", "params": {
+                "threadId": ids[0], "input": [{"type": "text", "text": "pinned-resume-marker"}],
+            }})
+            try:
+                self.assertTrue(self.server.started.wait(10), "pinned writer did not reach the fixture")
+                with closing(AppServer(self, self.source, arguments, native=LEGACY_NATIVE)) as old:
+                    with self.assertRaisesRegex(AssertionError, "active writer"):
+                        old.call(2, "thread/resume", {"threadId": ids[0]})
+            finally:
+                self.server.release.set()
+            self.assertEqual(new.wait_notification("turn/completed")["turn"]["status"], "completed")
+        schema_after, columns_after = database_schema()
+        # Opening legacy databases invokes native migrations. This audited pair
+        # adds nullable columns and archive indexes; old clients must continue
+        # to list, read and append the same paginated histories afterward.
+        additions = {
+            ("state_5.sqlite", "threads"): [("creator_user_id", "TEXT"), ("creator_account_id", "TEXT")],
+            ("thread_history_1.sqlite", "thread_items"): [("started_at_ms", "INTEGER"), ("completed_at_ms", "INTEGER")],
+        }
+        self.assertEqual(schema_after.keys(), schema_before.keys())
+        self.assertEqual(columns_after.keys(), columns_before.keys())
+        for key, before in columns_before.items():
+            added = [(len(before) + index, name, kind, 0, None, 0)
+                     for index, (name, kind) in enumerate(additions.get(key, []))]
+            self.assertEqual(columns_after[key], before + added)
+        archive_indexes = {"idx_threads_archive_" + field
+                           for field in ("created_at_ms", "recency_at_ms", "updated_at_ms")}
+        for database, before in schema_before.items():
+            old_objects = {(kind, name): (table, sql) for kind, name, table, sql in before}
+            new_objects = {(kind, name): (table, sql) for kind, name, table, sql in schema_after[database]}
+            expected_added = {("index", name) for name in archive_indexes} if database == "state_5.sqlite" else set()
+            self.assertEqual(new_objects.keys() - old_objects.keys(), expected_added)
+            self.assertFalse(old_objects.keys() - new_objects.keys())
+            for key, value in old_objects.items():
+                if key[0] != "table" or (database, key[1]) not in additions:
+                    self.assertEqual(new_objects[key], value)
+
+        with closing(AppServer(self, self.source, arguments, native=LEGACY_NATIVE)) as old:
+            self.assertCountEqual(paginated_ids(old), ids)
+            read = old.call(40, "thread/read", {"threadId": ids[0], "includeTurns": True})
+            self.assertEqual(read["thread"]["historyMode"], "paginated")
+            for marker in ("legacy-seed-0", "legacy-held-marker", "pinned-resume-marker"):
+                self.assertIn(marker, json.dumps(read))
+            self.assertEqual(old.call(41, "thread/resume", {"threadId": ids[0]})["thread"]["id"], ids[0])
+            complete_turn(old, ids[0], "legacy-reopen-marker", 42)
+        body = json.dumps(self.server.model_requests()[-1][2])
+        for marker in ("legacy-seed-0", "legacy-held-marker", "pinned-resume-marker", "legacy-reopen-marker"):
+            self.assertIn(marker, body)
+        self.assertEqual(sorted((self.source / "sessions").rglob("*.jsonl")), rollouts_before)
+        self.assertEqual(database_schema(), (schema_after, columns_after))
+        self.assertFalse(list(self.overlay.glob("state_*.sqlite")))
+        self.assertEqual((self.source / "config.toml").read_bytes(), config_before)
+        self.assertEqual((self.source / "auth.json").read_bytes(), auth_before)
+
     def test_tool_results_and_image_attachment_survive_native_resume(self):
         image = self.project / "fixture.png"
 
@@ -640,6 +790,90 @@ class NativeResumeContracts(unittest.TestCase):
             self.assertEqual(trusted["origins"]["model"]["name"]["type"], "project")
         finally:
             app.close()
+
+    @unittest.skipUnless(os.name == "posix", "disabled MCP executable probe uses a POSIX fixture")
+    def test_disabled_relative_mcp_config_survives_overlay_without_starting_the_tool(self):
+        relative = Path("Codex Computer Use.app/Contents/SharedSupport/"
+                        "SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient")
+        marker = self.root / "disabled-mcp-must-not-run"
+        executable = self.project / relative
+        executable.parent.mkdir(parents=True)
+        executable.write_text("#!/bin/sh\nprintf started >> " + shlex.quote(str(marker)) + "\nexit 42\n")
+        executable.chmod(0o755)
+        config = self.source / "config.toml"
+        config.write_text(config.read_text() + '\n[mcp_servers.computer-use]\ncommand=' +
+                          json.dumps("./" + str(relative)) + '\ncwd="."\nenabled=false\n')
+        original_config = config.read_bytes()
+        self.make_overlay()
+        effective = []
+        for home in (self.source, self.overlay):
+            with self.subTest(home=home.name):
+                app = AppServer(self, home, ["app-server", "--listen", "stdio://", "--strict-config"])
+                try:
+                    observed = app.call(2, "config/read", {"includeLayers": True, "cwd": str(self.project)})
+                    mcp = observed["config"]["mcp_servers"]["computer-use"]
+                    self.assertIs(mcp["enabled"], False)
+                    self.assertEqual(mcp["command"], "./" + str(relative))
+                    self.assertEqual(mcp["cwd"], ".")
+                    effective.append(observed["config"])
+                    user = [layer for layer in observed["layers"] if layer["name"]["type"] == "user"]
+                    self.assertEqual(user[0]["name"]["file"], str(home / "config.toml"))
+                    self.assertFalse(user[0].get("disabledReason"))
+                    thread = app.call(3, "thread/start", {"cwd": str(self.project)})["thread"]["id"]
+                    app.call(4, "turn/start", {"threadId": thread, "input": [{
+                        "type": "text", "text": "disabled-mcp-config-contract",
+                    }]})
+                    self.assertEqual(app.wait_notification("turn/completed")["turn"]["status"], "completed")
+                finally:
+                    app.close()
+                self.assertFalse(marker.exists(), "an explicitly disabled MCP process was started")
+        self.assertEqual(effective[0], effective[1])
+        self.assertEqual(config.read_bytes(), original_config)
+        self.assertEqual(len(self.server.model_requests()), 2)
+
+    def test_git_root_excludes_primary_home_config_from_secondary_project_layers(self):
+        # Reproduce a Dodex home inside the same user's home as the primary
+        # .codex/config.toml, with a Git checkout farther down that user's tree.
+        primary = self.root / ".codex"
+        primary.mkdir()
+        primary_config = primary / "config.toml"
+        primary_config.write_text('model="primary-home-must-not-load"\n'
+                                  'approval_policy="untrusted"\nsandbox_mode="workspace-write"\n'
+                                  '[mcp_servers.primary-only]\ncommand="must-not-run"\nenabled=false\n')
+        repository = self.root / "Github" / "project"
+        self.project = repository / "nested"
+        self.project.mkdir(parents=True)
+        (repository / ".git").mkdir()
+        (repository / ".git" / "HEAD").write_text("ref: refs/heads/fixture\n")
+        # An untrusted config at the real repository root proves that discovery
+        # walks above cwd, while stopping before the primary home farther up.
+        project_settings = repository / ".codex"
+        project_settings.mkdir()
+        (project_settings / "config.toml").write_text('model="untrusted-project-must-not-load"\n')
+        self.make_overlay()
+        original_primary = primary_config.read_bytes()
+        effective = []
+        for home in (self.source, self.overlay):
+            with self.subTest(home=home.name):
+                app = AppServer(self, home, ["app-server", "--listen", "stdio://", "--strict-config"])
+                try:
+                    observed = app.call(2, "config/read", {"includeLayers": True, "cwd": str(self.project)})
+                    effective.append(observed["config"])
+                    self.assertEqual(observed["config"]["model"], "gpt-5.2")
+                    self.assertEqual(observed["config"]["approval_policy"], "never")
+                    self.assertEqual(observed["config"]["sandbox_mode"], "read-only")
+                    self.assertNotIn("primary-only", observed["config"]["mcp_servers"])
+                    self.assertNotIn(str(primary_config), [layer["name"].get("file")
+                                                          for layer in observed["layers"]])
+                    project_layers = [layer for layer in observed["layers"] if layer["name"]["type"] == "project"]
+                    self.assertEqual(len(project_layers), 1)
+                    self.assertIn(str(project_settings), project_layers[0]["name"].values())
+                    self.assertTrue(project_layers[0].get("disabledReason"))
+                finally:
+                    app.close()
+        self.assertEqual(effective[0], effective[1])
+        self.assertEqual(primary_config.read_bytes(), original_primary)
+        self.assertEqual(self.server.model_requests(), [])
 
     @unittest.skipUnless(os.name == "posix", "native Windows TUI needs ConPTY acceptance")
     def test_native_tui_restores_history_uses_current_model_and_exits_cleanly(self):

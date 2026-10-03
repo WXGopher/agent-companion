@@ -689,20 +689,7 @@ fn package_root(native: &Path) -> Result<PathBuf, String> {
     Ok(root.to_path_buf())
 }
 fn validate_package(root: &Path, expected: &Version) -> Result<(), String> {
-    no_redirects(root)?;
-    let value: serde_json::Value =
-        serde_json::from_slice(&read_limited(&root.join("codex-package.json"), 64 * 1024)?)
-            .map_err(|_| "TUI 安装包清单无效。")?;
-    if value["layoutVersion"] != 1
-        || value["version"] != expected.version
-        || value["entrypoint"] != "bin/codex"
-        || value["resourcesDir"] != "codex-resources"
-        || value["pathDir"] != "codex-path"
-        || !root.join("bin/codex-code-mode-host").is_file()
-        || !root.join("codex-resources").is_dir()
-        || !root.join("codex-path").is_dir()
-        || !root.join("codex-path/rg").is_file()
-    {
+    if managed_tui::package_version(root)? != expected.version {
         return Err("官方 TUI 安装包布局或版本不兼容；未发布不完整的 Dodex TUI。".into());
     }
     // Both native executables must retain their valid original code signatures.

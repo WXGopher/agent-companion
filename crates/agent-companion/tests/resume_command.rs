@@ -15,6 +15,8 @@ struct Fixture {
     home: PathBuf,
     project: PathBuf,
     local: PathBuf,
+    dodex_home: PathBuf,
+    record: PathBuf,
 }
 impl Fixture {
     fn new() -> Self {
@@ -57,7 +59,7 @@ impl Fixture {
         #[cfg(not(target_os = "macos"))]
         let record = support.join("Dodex/companion-deployment.json");
         fs::create_dir_all(record.parent().unwrap()).unwrap();
-        fs::write(record, serde_json::to_vec(&json!({"schema":1, "enabled":false, "instance": {
+        fs::write(&record, serde_json::to_vec(&json!({"schema":1, "enabled":false, "instance": {
             "codex_home": dodex_home, "database_dir": support.join("Dodex/sqlite"), "cli_path": support.join("Dodex/missing-codex")
         }})).unwrap()).unwrap();
         Self {
@@ -65,6 +67,8 @@ impl Fixture {
             home,
             project,
             local,
+            dodex_home,
+            record,
         }
     }
     fn command(&self) -> Command {
@@ -133,6 +137,56 @@ fn list_is_exact_directory_and_includes_disabled_dodex() {
     assert!(output.contains(SESSION), "{output}");
     assert!(output.contains(DODEX_SESSION), "{output}");
     assert!(!output.contains(OTHER_SESSION), "{output}");
+}
+
+#[test]
+fn dodex_details_preserve_history_settings_and_the_selected_quota_source() {
+    let fixture = Fixture::new();
+    let primary = fixture.home.join(".codex");
+    let source_config = fixture.dodex_home.join("config.toml");
+    fs::write(&source_config, "model = 'dodex-source-model'\n").unwrap();
+    fs::write(primary.join("config.toml"), "model = 'primary-model'\n").unwrap();
+    let before = fs::read(&fixture.record).unwrap();
+    for (account, selected_home) in [("codex", &primary), ("dodex", &fixture.dodex_home)] {
+        let output = fixture.run(&[
+            "resume",
+            DODEX_SESSION,
+            "--source",
+            "dodex",
+            "--account",
+            account,
+            "--details",
+        ]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let output = String::from_utf8(output.stdout).unwrap();
+        for expected in [
+            format!("会话历史: Dodex · {DODEX_SESSION}"),
+            "模型 / 工具配置: Dodex".into(),
+            format!("历史存储环境: {}", fixture.dodex_home.display()),
+            format!(
+                "本次认证文件: {}",
+                selected_home.join("auth.json").display()
+            ),
+            format!("来源用户配置: {}", source_config.display()),
+        ] {
+            assert!(output.contains(&expected), "missing {expected}: {output}");
+        }
+        assert!(output.contains("原生运行程序:"), "{output}");
+        assert!(
+            output.contains("Disabled:"),
+            "synthetic accounts must not launch: {output}"
+        );
+        assert!(!selected_home.join("auth.json").exists());
+    }
+    assert_eq!(fs::read(&fixture.record).unwrap(), before);
+    assert_eq!(
+        fs::read_to_string(&source_config).unwrap(),
+        "model = 'dodex-source-model'\n"
+    );
 }
 
 #[test]

@@ -81,6 +81,7 @@ pub struct PreparedResume {
     source_auth_handle: same_file::Handle,
     settings_model: String,
     database_home: PathBuf,
+    disabled_mcp: Vec<String>,
     keep: bool,
 }
 
@@ -254,6 +255,9 @@ fn prepare_impl(
         return Err(inspection.blockers.join("\n"));
     }
     let settings = config::inspect(source, session, profile)?;
+    if !settings.blockers.is_empty() {
+        return Err(settings.blockers.join("\n"));
+    }
     let account_info = read_account(&account.home)?;
     if selected.is_some_and(|selected| {
         selected.workspace_id != account_info.id || selected.user_id != account_info.user_id
@@ -331,6 +335,7 @@ fn prepare_impl(
         source_auth_handle,
         settings_model: settings.model.ok_or("无法确认最终模型。")?,
         database_home: settings.database_home,
+        disabled_mcp: settings.disabled_mcp,
         keep: false,
     };
     prepared.write_manifest()?;
@@ -465,6 +470,7 @@ impl PreparedResume {
             json!({"includeLayers":true,"cwd":self.manifest.session.cwd}),
         )?;
         let effective = &config["config"];
+        validate_disabled_mcp(&self.disabled_mcp, effective)?;
         if effective["model"].as_str() != Some(&self.settings_model) {
             return Err("原生最终模型与来源标记不一致，接力已禁用。".into());
         }
@@ -619,6 +625,15 @@ impl PreparedResume {
     }
 }
 
+fn validate_disabled_mcp(disabled: &[String], effective: &Value) -> Result<(), String> {
+    for name in disabled {
+        if effective["mcp_servers"][name]["enabled"].as_bool() != Some(false) {
+            return Err("原生最终配置无法确认来源中已停用的 MCP 仍停用，接力已禁用。".into());
+        }
+    }
+    Ok(())
+}
+
 fn validate_endpoints(config: &Value, effective: bool) -> Result<(), String> {
     for key in [
         "openai_base_url",
@@ -719,6 +734,16 @@ fn masked_id(value: &str) -> String {
         )
     } else {
         value.to_owned()
+    }
+}
+
+/// Check a candidate native executable against the same resume compatibility
+/// gate used by inspection and launch. This never relaxes the supported version.
+pub fn verify_runtime(executable: &Path) -> Result<(), String> {
+    if runtime_version(executable)? == VERSION {
+        Ok(())
+    } else {
+        Err(format!("此 Codex 运行版本未验证；首版仅支持 {VERSION}。"))
     }
 }
 
@@ -1121,6 +1146,21 @@ mod tests {
 
     const ID: &str = "01999999-0000-7000-8000-000000000001";
     #[test]
+    fn skipped_mcp_definitions_must_remain_disabled_in_native_effective_config() {
+        let disabled = vec!["computer-use".to_owned(), "name.with.dots".to_owned()];
+        let mut effective = json!({"mcp_servers":{
+            "computer-use":{"enabled":false,"command":"./missing-server","cwd":"."},
+            "name.with.dots":{"enabled":false}
+        }});
+        assert!(validate_disabled_mcp(&disabled, &effective).is_ok());
+        for enabled in [json!(true), Value::Null, json!("false")] {
+            effective["mcp_servers"]["computer-use"]["enabled"] = enabled;
+            assert!(validate_disabled_mcp(&disabled, &effective).is_err());
+        }
+        assert!(validate_disabled_mcp(&disabled, &json!({})).is_err());
+        assert!(validate_disabled_mcp(&[], &json!({})).is_ok());
+    }
+    #[test]
     fn endpoint_preflight_allows_only_the_pinned_resolved_native_default() {
         // Shape observed from the real 0.159.3 config/read response with only
         // model and file-auth settings in the source configuration.
@@ -1241,6 +1281,7 @@ mod tests {
             launch_lock: None,
             settings_model: "gpt-5".into(),
             database_home: source,
+            disabled_mcp: Vec::new(),
             keep: false,
         };
         prepared.write_manifest().unwrap();

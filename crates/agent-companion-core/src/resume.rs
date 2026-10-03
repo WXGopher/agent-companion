@@ -13,7 +13,9 @@ mod discovery;
 mod runtime;
 
 pub use discovery::discover_sessions;
-pub use runtime::{PreparedResume, cleanup_stale, inspect, prepare, prepare_from_inspection};
+pub use runtime::{
+    PreparedResume, cleanup_stale, inspect, prepare, prepare_from_inspection, verify_runtime,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Environment {
