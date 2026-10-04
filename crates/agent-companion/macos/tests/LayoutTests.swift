@@ -103,6 +103,7 @@ struct LayoutTests {
         let suites: [(String, () throws -> Void)] = [
             ("--menu-lifecycle", { MenuBarPlacementTests.run(); MenuBarLifecycleTests.run() }),
             ("--software-actions", { SoftwareActionTests.run() }),
+            ("--login-items", { LoginItemTests.run() }),
             ("--menu-bar", { try MenuBarUsageTests.run(output: output) }),
             ("--subscription-usage", { try SubscriptionUsageTests.run(output: output) }),
             ("--instance-quotas", { try InstanceQuotaTests.run(output: output) }),

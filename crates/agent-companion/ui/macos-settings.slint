@@ -16,6 +16,13 @@ export component MacSettings inherits Rectangle {
     in property <int> usage-refresh-minutes: 5;
     in property <string> usage-settings-message;
     callback set-usage-refresh-minutes(string);
+    in-out property <bool> run-at-login;
+    in property <bool> login-item-available;
+    in property <bool> login-item-requires-approval;
+    in property <bool> login-item-error;
+    in property <string> login-item-message;
+    callback set-run-at-login(bool);
+    callback open-login-item-settings();
     in-out property <int> current-page: 0;
     in property <[StatusComponent]> left-components;
     in property <[StatusComponent]> right-components;
@@ -94,45 +101,86 @@ export component MacSettings inherits Rectangle {
             }
         }
 
-        SettingsCard {
-            vertical-stretch: 0;
-            HorizontalLayout {
-                padding: 16px;
-                spacing: 16px;
-                VerticalLayout {
-                    spacing: 4px;
-                    Text { text: "额度自动刷新间隔（分钟）"; font-size: 12px; color: SettingsColors.text; }
-                    Text {
-                        text: root.usage-settings-message == "" ? "所有实例共用，1–60 分钟；保存后重新计时。" : root.usage-settings-message;
-                        wrap: word-wrap;
-                        font-size: 12px;
-                        color: SettingsColors.secondary;
-                    }
-                }
-                usage-interval := SettingsTextField {
-                    width: 72px;
-                    height: 32px;
-                    text: root.usage-refresh-minutes;
-                    accessible-label: "额度自动刷新间隔（分钟）";
-                    accepted => { root.set-usage-refresh-minutes(self.text); }
-                }
-                SettingsButton {
-                    width: 80px;
-                    text: "保存";
-                    clicked => { root.set-usage-refresh-minutes(usage-interval.text); }
-                }
-            }
-        }
-
         HorizontalLayout {
             height: 32px;
             spacing: 8px;
+            SettingsButton { text: "通用"; width: 100px; primary: root.current-page == 2; clicked => { root.current-page = 2; } }
             SettingsButton { text: "Codex CLI"; width: 132px; primary: root.current-page == 0; clicked => { root.current-page = 0; } }
             SettingsButton { text: "Codex 双开"; width: 132px; primary: root.current-page == 1; clicked => { root.current-page = 1; } }
             Rectangle { horizontal-stretch: 1; }
         }
         Rectangle {
             vertical-stretch: 1;
+            if root.current-page == 2: VerticalLayout {
+                padding-top: 4px;
+                spacing: 16px;
+                alignment: start;
+                SettingsCard {
+                    vertical-stretch: 0;
+                    VerticalLayout {
+                        padding: 18px;
+                        spacing: 10px;
+                        HorizontalLayout {
+                            Text { text: "开机自动启动"; font-size: 13px; font-weight: 600; color: SettingsColors.text; vertical-alignment: center; }
+                            login-switch := Switch {
+                                text: "登录时自动启动";
+                                checked <=> root.run-at-login;
+                                enabled: root.login-item-available;
+                                toggled => { root.set-run-at-login(self.checked); }
+                            }
+                        }
+                        Text {
+                            text: root.login-item-message;
+                            font-size: 12px;
+                            color: root.login-item-error ? SettingsColors.error : SettingsColors.secondary;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            SettingsButton {
+                                text: "系统登录项设置";
+                                width: 156px;
+                                clicked => { root.open-login-item-settings(); }
+                            }
+                            if root.login-item-requires-approval: SettingsButton {
+                                text: "取消自动启动";
+                                width: 132px;
+                                clicked => { root.set-run-at-login(false); }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                    }
+                }
+                SettingsCard {
+                    vertical-stretch: 0;
+                    HorizontalLayout {
+                        padding: 18px;
+                        spacing: 16px;
+                        VerticalLayout {
+                            spacing: 4px;
+                            Text { text: "额度自动刷新间隔（分钟）"; font-size: 12px; color: SettingsColors.text; }
+                            Text {
+                                text: root.usage-settings-message == "" ? "所有实例共用，1–60 分钟；保存后重新计时。" : root.usage-settings-message;
+                                wrap: word-wrap;
+                                font-size: 12px;
+                                color: SettingsColors.secondary;
+                            }
+                        }
+                        usage-interval := SettingsTextField {
+                            width: 72px;
+                            height: 32px;
+                            text: root.usage-refresh-minutes;
+                            accessible-label: "额度自动刷新间隔（分钟）";
+                            accepted => { root.set-usage-refresh-minutes(self.text); }
+                        }
+                        SettingsButton {
+                            width: 80px;
+                            text: "保存";
+                            clicked => { root.set-usage-refresh-minutes(usage-interval.text); }
+                        }
+                    }
+                }
+            }
             if root.current-page == 0: VerticalLayout {
                     padding-top: 4px;
                     spacing: 10px;

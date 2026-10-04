@@ -36,6 +36,45 @@ unsafe extern "C" {
     fn agent_companion_run_menu_bar() -> i32;
     fn agent_companion_reopen_menu();
     fn agent_companion_listen_software_updates();
+    fn agent_companion_login_item_snapshot_json() -> *mut c_char;
+    fn agent_companion_set_login_item(enabled: bool) -> *mut c_char;
+    fn agent_companion_release_login_item_json(pointer: *mut c_char);
+    fn agent_companion_open_login_item_settings();
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoginItemSnapshot {
+    pub enabled: bool,
+    pub available: bool,
+    pub requires_approval: bool,
+    pub error: bool,
+    pub message: String,
+}
+
+fn read_login_item_snapshot(pointer: *mut c_char) -> Result<LoginItemSnapshot, String> {
+    if pointer.is_null() {
+        return Err("无法读取系统登录项状态。".into());
+    }
+    // SAFETY: Swift returns an owned NUL-terminated JSON allocation and only
+    // the paired Swift release function frees it, including on parse failure.
+    let result = serde_json::from_slice(unsafe { CStr::from_ptr(pointer) }.to_bytes());
+    unsafe { agent_companion_release_login_item_json(pointer) };
+    result.map_err(|_| "无法读取系统登录项状态。".into())
+}
+
+/// The editor invokes the native bridge on its AppKit main thread.
+pub fn login_item_snapshot() -> Result<LoginItemSnapshot, String> {
+    read_login_item_snapshot(unsafe { agent_companion_login_item_snapshot_json() })
+}
+
+pub fn set_run_at_login(enabled: bool) -> Result<LoginItemSnapshot, String> {
+    read_login_item_snapshot(unsafe { agent_companion_set_login_item(enabled) })
+}
+
+pub fn open_login_item_settings() {
+    // SAFETY: called only by an explicit settings button on the main thread.
+    unsafe { agent_companion_open_login_item_settings() }
 }
 
 pub fn listen_software_updates() {
