@@ -59,7 +59,7 @@ fn check_editor_startup() {
     let started = Instant::now();
     eprintln!("[editor-fixture] startup at {:?}", started.elapsed());
 
-    // The fixture has 34 validated phases. The watchdog measures a stalled
+    // The fixture has 37 validated phases. The watchdog measures a stalled
     // startup or phase, not their cumulative render and filesystem work.
     let (finished, deadline) = mpsc::channel::<Option<usize>>();
     let watchdog = std::thread::spawn(move || {
@@ -100,6 +100,14 @@ fn check_editor_startup() {
         "[editor-fixture] editor constructed at {:?}",
         started.elapsed()
     );
+    // Isolated callbacks must not read or mutate real login items, even when
+    // explicitly invoked by the UI fixture.
+    assert!(!editor.login_item_timer.running());
+    editor.window.invoke_set_run_at_login(true);
+    editor.window.invoke_open_login_item_settings();
+    assert!(!editor.window.get_run_at_login());
+    assert!(!editor.window.get_login_item_available());
+    assert!(editor.window.get_login_item_message().is_empty());
     let usage_path = config_path.parent().unwrap().join("usage.json");
     for invalid in ["", "0", "61", "1.5", "1e1", "abc"] {
         editor
@@ -149,7 +157,7 @@ fn check_editor_startup() {
         let window = weak.upgrade().unwrap();
         assert!(window.get_macos_preferences());
         assert!(window.get_ready());
-        assert!((0..=1).contains(&window.get_settings_page()));
+        assert!((0..=2).contains(&window.get_settings_page()));
         let mut created = false;
         window.window().with_winit_window(|native| {
             created = native.is_visible() == Some(true);
@@ -223,6 +231,9 @@ fn check_editor_startup() {
                         "dual-app-enabled-dark",
                         "software-progress-dark",
                         "software-error-light",
+                        "general-light",
+                        "general-enabled-dark",
+                        "general-approval-error-light",
                     ][phase]
                 ))
             };
@@ -554,8 +565,66 @@ fn check_editor_startup() {
                 window.set_software_notice("已有操作正在等待或进行中；重复请求已忽略。请等待结果后再操作。".into());
                 window.global::<ui::Palette>().set_color_scheme(ColorScheme::Light);
             }
-            _ => {
+            33 => {
                 assert!(window.get_software_error() && !window.get_software_busy());
+                window.set_settings_page(2);
+                window.set_login_item_available(true);
+                window.set_login_item_message("未开启；开启后会在登录此 Mac 时启动菜单栏应用。".into());
+            }
+            34 => {
+                assert!(!window.get_run_at_login());
+                // Exercise the real Switch, including its internal tentative
+                // checked change. Failed writes must restore both directions;
+                // later OS changes must retain the binding after a click.
+                let requested = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+                let actual = std::rc::Rc::new(std::cell::Cell::new(false));
+                let requests = requested.clone();
+                let state = actual.clone();
+                let settings = window.as_weak();
+                window.on_set_run_at_login(move |enabled| {
+                    let settings = settings.upgrade().unwrap();
+                    assert_eq!(settings.get_run_at_login(), enabled);
+                    requests.borrow_mut().push(enabled);
+                    settings.set_run_at_login(state.get());
+                });
+                // The fixture uses the minimum 820×720 logical layout here.
+                let click_switch = || {
+                    use slint::platform::{PointerEventButton, WindowEvent};
+                    let position = slint::LogicalPosition::new(398.0, 163.0);
+                    window.window().dispatch_event(WindowEvent::PointerPressed {
+                        position,
+                        button: PointerEventButton::Left,
+                    });
+                    window.window().dispatch_event(WindowEvent::PointerReleased {
+                        position,
+                        button: PointerEventButton::Left,
+                    });
+                };
+                click_switch();
+                assert!(!window.get_run_at_login());
+                click_switch();
+                assert_eq!(*requested.borrow(), vec![true, true]);
+                actual.set(true);
+                window.set_run_at_login(true);
+                click_switch();
+                assert!(window.get_run_at_login());
+                assert_eq!(*requested.borrow(), vec![true, true, false]);
+                click_switch();
+                assert_eq!(*requested.borrow(), vec![true, true, false, false]);
+                window.set_run_at_login(true);
+                window.set_login_item_message("已开启；登录此 Mac 时自动启动 Agent Companion。".into());
+                window.global::<ui::Palette>().set_color_scheme(ColorScheme::Dark);
+            }
+            35 => {
+                assert!(window.get_run_at_login());
+                window.set_run_at_login(false);
+                window.set_login_item_requires_approval(true);
+                window.set_login_item_error(true);
+                window.set_login_item_message("无法开启登录时自动启动：Operation not permitted（SMAppServiceErrorDomain / 1）。\n尚未生效；请在系统登录项设置中允许 Agent Companion。".into());
+                window.global::<ui::Palette>().set_color_scheme(ColorScheme::Light);
+            }
+            _ => {
+                assert!(!window.get_run_at_login() && window.get_login_item_requires_approval());
                 completed_check.set(true);
                 slint::quit_event_loop().unwrap();
             }
@@ -574,6 +643,6 @@ fn check_editor_startup() {
     finished.send(None).unwrap();
     watchdog.join().unwrap();
     println!(
-        "PASS: opaque AppKit editor; two menu-only settings sections, light/dark/minimum-size layouts, separate status-bar drafts; fresh/legacy/App-only/monitored desktop states; manual bidirectional config/AGENTS sync with backups, no-op/error feedback, disabled-monitoring and missing-target support, override warnings, dirty/busy guards and retained selection; all file writes stayed in isolated fixtures"
+        "PASS: opaque AppKit editor; three menu-only settings sections, light/dark/minimum-size layouts, login-item disabled/enabled/approval/error states and isolated callbacks; separate status-bar drafts; fresh/legacy/App-only/monitored desktop states; manual bidirectional config/AGENTS sync with backups, no-op/error feedback, disabled-monitoring and missing-target support, override warnings, dirty/busy guards and retained selection; all file writes stayed in isolated fixtures"
     );
 }

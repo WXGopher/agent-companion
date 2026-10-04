@@ -6,6 +6,12 @@
 
 在 Windows 任务栏或 macOS 菜单栏查看 Codex 的任务状态与订阅用量。
 
+### v0.3.26 更新
+
+- macOS 设置新增“通用”页，集中管理额度自动刷新间隔和“登录时自动启动”；登录项使用系统原生机制，关闭后当前应用继续运行。
+- 自动启动开关显示 macOS 实际状态，跟随系统设置变化；等待批准或操作失败时显示原因，并提供系统登录项设置入口。
+- 已验证安装后的开启、关闭、再次开启及设置进程重启后的状态读取；完整注销／重新登录和 Windows GUI 尚未实机验证。[发布说明](docs/releases/v0.3.26.md)
+
 ### v0.3.25 更新
 
 - 修复 `acomp resume` 的配置误拦：显式停用的 MCP 不再因残留相对路径阻止接力，启动前仍核验其保持停用；项目配置扫描遵循原生 Git 根边界。
@@ -101,6 +107,8 @@ dodex -C C:\projects\demo
 
 macOS 重新打开 Agent Companion 会显示弹窗的 Tasks 页。刘海、悬停展开、显示器选择与独立 Dock 入口已移除；旧版入口偏好不会隐藏菜单栏，已保存的菜单栏位置继续保留。设置从弹窗底部打开。详见[菜单栏说明](docs/MACOS_MENU_BAR.md)。
 
+**macOS 开机自动启动**：设置 → 通用 → 登录时自动启动。开启后在当前用户登录此 Mac 时启动菜单栏应用；关闭不退出当前应用。开关读取 macOS 实际登录项状态；如需系统批准或操作失败，会显示原因，并提供“系统登录项设置”入口。额度自动刷新间隔也在“通用”页。
+
 **双开隔离与停用**：两个平台的新环境均使用独立文件凭证、历史、数据库和个人配置，不复制原实例的账号数据。已有环境只有通过兼容性和隔离校验才会接入，冲突时停止且不覆盖。停用只关闭 Companion 对第二实例的监控，不退出 Dodex、不删除环境。macOS Dodex App 在启动时同步本机官方应用；两平台的成对维护均须明确发起；Windows 桌面通过精确 Store 产品 ID 调用 WinGet，重新定位和验签后同步 Dodex，TUI 独立维护完整包。暂不提供卸载功能。
 
 **升级**：先退出旧程序及设置窗口，再替换文件；已安装 Windows hooks 的用户需重新执行安装命令。Codex 配置、账号和双开环境会保留。
@@ -110,6 +118,12 @@ macOS 重新打开 Agent Companion 会显示弹窗的 Tasks 页。刘海、悬�
 See Codex tasks and subscription usage in the Windows taskbar or macOS menu bar.
 
 `acomp resume` searches original Codex / Dodex sessions in the exact current directory and shows history, settings, and quota-account provenance. Relative paths in explicitly disabled MCP definitions no longer block resume. On macOS, older Dodex installations can borrow a local native runtime that passes the pinned version check while preserving the original history, settings and selected account. Install user-level commands with `agent-companion install-cli`. Unverified or incompatible combinations are disabled with a reason, and Windows resume launch remains disabled; see [resume usage and validation boundaries](docs/RESUME.md).
+
+### New in v0.3.26
+
+- Add a macOS General tab (通用) for the quota refresh interval and launch at login. The native login item starts the app when you sign in; disabling it leaves the running app open.
+- Show the actual macOS login-item state and refresh it after changes in System Settings. Pending approval and operation failures show a reason and a link to login-item settings.
+- Verified enabling, disabling, re-enabling and reading the saved system state after restarting Settings in an installed app. A full logout/login cycle and Windows GUI remain unverified. [Release notes](docs/releases/v0.3.26.md)
 
 ### New in v0.3.25
 
@@ -205,6 +219,8 @@ The app is not Apple-notarized. If the first launch is blocked, follow [Apple's 
 **macOS version maintenance**: right-click the menu-bar readout or open Settings → Codex 双开. **对齐 Codex/Dodex 版本** aligns against local Codex without a network request; **全部更新到最新** checks official stable releases, updates Codex, then aligns each App and TUI pair. Newer Dodex versions are retained. Opening Settings only reads local versions. Close affected Apps and terminals before replacement; existing sessions are never terminated or restarted automatically. TUI alignment currently requires the full official standalone package and a compatible existing Dodex adapter. It backs up the adapter and preserves the complete package, auxiliary programs, resources and existing secondary account/session/SQLite/log paths; npm and Homebrew installations are not migrated. The context menu also includes **Exit**. See [maintenance details](docs/macos-dual-instance.md#explicit-version-maintenance).
 
 On macOS, reopening Agent Companion shows the popup's Tasks page. The notch, hover expansion, display selection and separate Dock entry have been removed. Legacy entry preferences cannot hide the menu bar, and its saved position is retained. Open Settings from the popup footer. See the [menu-bar guide](docs/MACOS_MENU_BAR.md).
+
+**macOS launch at login**: Settings → 通用 → 登录时自动启动 starts the menu-bar app when the current user logs in. Disabling it leaves the running app open. The switch reads the actual macOS login-item status; pending approval and failures remain visible with a link to System Settings. The quota refresh interval also lives in 通用.
 
 **Isolation and disabling**: on both platforms, a fresh environment has separate file credentials, history, databases and personal settings, without copying account data from the original instance. Existing environments are adopted only after compatibility and isolation checks; conflicts stop without overwriting. Disabling integration stops Companion monitoring the second instance without quitting Dodex or deleting its environment. macOS Dodex App syncs from the local official App at startup; paired maintenance requires an explicit action on both platforms. Windows uses the exact Store product ID with WinGet, rediscovers and verifies the desktop signature before synchronizing Dodex, and maintains the complete TUI package separately. Uninstall is not included.
 

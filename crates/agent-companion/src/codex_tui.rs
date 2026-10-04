@@ -1,6 +1,6 @@
-//! Status-bar draft state and the native editor. Opening/toggling never writes;
-//! Apply/Restore save status-line drafts; explicit profile sync overwrites one
-//! selected file after backing up the target. Opening/toggling never writes.
+//! Status-bar drafts and settings. Opening the editor only reads. Apply/Restore
+//! save status-line drafts; other explicit settings actions update their own
+//! settings, and profile sync backs up its target before overwriting it.
 
 #[cfg(target_os = "macos")]
 use crate::macos_deployment as deployment;
@@ -246,6 +246,8 @@ pub(crate) struct Editor {
     deployment_error: RefCell<Option<String>>,
     #[cfg(any(target_os = "macos", windows))]
     live_deployment: bool,
+    #[cfg(target_os = "macos")]
+    pub(crate) login_item_timer: slint::Timer,
 }
 
 impl Editor {
@@ -362,6 +364,8 @@ impl Editor {
             deployment_error: RefCell::new(None),
             #[cfg(any(target_os = "macos", windows))]
             live_deployment: _live_deployment,
+            #[cfg(target_os = "macos")]
+            login_item_timer: slint::Timer::default(),
         });
         editor
             .window
@@ -437,6 +441,39 @@ impl Editor {
                 .window
                 .set_window_title("Agent Companion · Settings".into());
             editor.window.set_macos_preferences(true);
+            editor.refresh_login_item();
+            let weak = Rc::downgrade(&editor);
+            editor.window.on_set_run_at_login(move |enabled| {
+                if let Some(editor) = weak.upgrade()
+                    && editor.live_deployment
+                {
+                    editor.update_login_item(crate::macos::set_run_at_login(enabled));
+                }
+            });
+            let weak = Rc::downgrade(&editor);
+            editor.window.on_open_login_item_settings(move || {
+                if let Some(editor) = weak.upgrade()
+                    && editor.live_deployment
+                {
+                    crate::macos::open_login_item_settings();
+                }
+            });
+            // Refresh while settings remain open so revoking/granting consent
+            // in System Settings is reflected without restarting the editor.
+            if _live_deployment {
+                let weak = Rc::downgrade(&editor);
+                editor.login_item_timer.start(
+                    slint::TimerMode::Repeated,
+                    std::time::Duration::from_secs(2),
+                    move || {
+                        if let Some(editor) = weak.upgrade()
+                            && editor.window.window().is_visible()
+                        {
+                            editor.refresh_login_item();
+                        }
+                    },
+                );
+            }
             let usage_settings_path = if _live_deployment {
                 agent_companion_core::usage_service::settings_path().ok()
             } else {
@@ -595,6 +632,34 @@ impl Editor {
             }
         });
         Ok(editor)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn refresh_login_item(&self) {
+        if self.live_deployment {
+            self.update_login_item(crate::macos::login_item_snapshot());
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn update_login_item(&self, result: Result<crate::macos::LoginItemSnapshot, String>) {
+        match result {
+            Ok(snapshot) => {
+                self.window.set_run_at_login(snapshot.enabled);
+                self.window.set_login_item_available(snapshot.available);
+                self.window
+                    .set_login_item_requires_approval(snapshot.requires_approval);
+                self.window.set_login_item_error(snapshot.error);
+                self.window.set_login_item_message(snapshot.message.into());
+            }
+            Err(error) => {
+                self.window.set_run_at_login(false);
+                self.window.set_login_item_available(false);
+                self.window.set_login_item_requires_approval(false);
+                self.window.set_login_item_error(true);
+                self.window.set_login_item_message(error.into());
+            }
+        }
     }
 
     #[cfg(any(target_os = "macos", windows))]
@@ -1149,6 +1214,8 @@ impl Editor {
     }
 
     pub fn show(&self) -> Result<(), slint::PlatformError> {
+        #[cfg(target_os = "macos")]
+        self.refresh_login_item();
         if !self.window.window().is_visible() {
             match self.drafts.borrow_mut().active_mut().load() {
                 Ok(()) => {
