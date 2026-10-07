@@ -24,6 +24,41 @@ pub(crate) fn managed_cli() -> Option<std::path::PathBuf> {
     platform::System::new().ok()?.managed_cli().ok().flatten()
 }
 
+#[cfg(target_os = "macos")]
+pub(crate) fn cli_is_configured(app: &std::path::Path) -> bool {
+    platform::System::new().is_ok_and(|system| system.cli_is_configured(app))
+}
+
+/// One maintenance transaction shared by the settings worker and --install.
+/// Alignment completes the App before publishing its terminal entry. Monitoring
+/// is enabled only after both components and their common profile are verified.
+#[cfg(target_os = "macos")]
+pub(crate) fn install_and_configure(
+    mut report: impl FnMut(&str),
+) -> Result<crate::macos_deployment::CompletedDeployment, String> {
+    let ops = platform::System::new()?;
+    let _lock = ops.lock()?;
+    install_local(&ops, &mut report, || {
+        ops.configure_shell()?;
+        crate::macos_deployment::complete_install_under_maintenance_lock()
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn install_local<T>(
+    ops: &dyn Operations,
+    mut report: impl FnMut(&str),
+    complete: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let mut snapshot = Snapshot::default();
+    execute(ops, Some(Action::Align), |change| {
+        change(&mut snapshot);
+        report(&snapshot.message);
+    })?;
+    report("正在注册 dodex 命令并启用 Companion 监控…");
+    complete()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Action {
     Align,
@@ -187,6 +222,9 @@ trait Operations {
     fn recover(&self) -> Result<(), String> {
         Ok(())
     }
+    fn recover_secondary(&self) -> Result<(), String> {
+        Ok(())
+    }
     fn always_update_primary(&self, _app: bool) -> bool {
         false
     }
@@ -208,6 +246,11 @@ trait Operations {
     }
     /// Checks all affected desktop and terminal processes before any changes.
     fn require_stopped(&self) -> Result<(), String>;
+    /// Alignment reads the primary installation without changing it. Only the
+    /// secondary components actually being replaced need to be stopped.
+    fn require_secondary_stopped(&self, _cli: bool, _app: bool) -> Result<(), String> {
+        self.require_stopped()
+    }
     fn update_primary(&self, app: bool, release: &Release) -> Result<(), String>;
     fn align_secondary(&self, app: bool, expected: &Version) -> Result<(), String>;
 }
@@ -229,6 +272,9 @@ impl Service {
     }
     pub fn start(&self, action: Action) {
         self.start_job(Some(action));
+    }
+    pub fn refresh(&self) {
+        self.start_job(None);
     }
     /// Keep the initial menu request until local inspection has completed;
     /// requests during an actual update are rejected, never silently replayed.
@@ -316,8 +362,10 @@ fn execute(
     action: Option<Action>,
     mut report: impl FnMut(Change<'_>),
 ) -> Result<(), String> {
-    if action.is_some() {
-        ops.recover()?;
+    match action {
+        Some(Action::UpdateAll) => ops.recover()?,
+        Some(Action::Align) => ops.recover_secondary()?,
+        None => {}
     }
     let mut installed: [Option<Version>; 4] = Default::default();
     let mut inspection_error = None;
@@ -341,9 +389,7 @@ fn execute(
         }));
     }
     let Some(action) = action else {
-        report(Box::new(|state| {
-            state.message = "已读取本机版本；点击「对齐」或「全部更新」继续。".into()
-        }));
+        report(Box::new(|state| describe_local_versions(&installed, state)));
         return Ok(());
     };
     if let Some(error) = inspection_error {
@@ -436,7 +482,14 @@ fn execute(
             plan.iter()
                 .any(|(app, _, primary, secondary)| *app && (*primary || *secondary)),
         )?;
-        ops.require_stopped()?;
+        if action == Action::Align {
+            ops.require_secondary_stopped(
+                plan.iter().any(|(app, _, _, secondary)| !app && *secondary),
+                plan.iter().any(|(app, _, _, secondary)| *app && *secondary),
+            )?;
+        } else {
+            ops.require_stopped()?;
+        }
     }
     let result = (|| {
         // Publish the App bootstrap before migrating the terminal entry so its
@@ -503,7 +556,7 @@ fn execute(
                         secondary.name()
                     )
                 }));
-                ops.require_stopped()?;
+                ops.require_secondary_stopped(!app, *app)?;
                 ops.align_secondary(*app, &desired)?;
                 verify_result(ops, secondary, &desired)?;
             }
@@ -558,6 +611,85 @@ fn execute(
     }));
     Ok(())
 }
+
+/// Initial inspection and refresh compare only the versions already observed.
+/// They never enter maintenance preflight, recovery, synchronization or lookup
+/// of upstream releases. Inspection errors remain distinct from missing apps.
+fn describe_local_versions(installed: &[Option<Version>; 4], state: &mut Snapshot) {
+    let pairs = [
+        (Target::CodexTui, Target::DodexTui),
+        (Target::CodexApp, Target::DodexApp),
+    ];
+    let mut missing_secondary = Vec::new();
+    let mut missing_reference = false;
+    for (primary, secondary) in pairs {
+        let reference = installed[primary.index()].as_ref();
+        let current = installed[secondary.index()].as_ref();
+        let reference_error = state.rows[primary.index()].error;
+        let target = reference.map(Version::display).unwrap_or_else(|| {
+            if reference_error {
+                "参考读取失败"
+            } else {
+                "缺少本机参考"
+            }
+            .into()
+        });
+        let primary_row = &mut state.rows[primary.index()];
+        primary_row.target.clone_from(&target);
+        if !primary_row.error {
+            primary_row.message = if reference.is_some() {
+                format!("本机对齐参考；用于 {}。", secondary.name())
+            } else {
+                missing_reference = true;
+                format!("未找到本机 {}；请先安装官方程序。", primary.name())
+            };
+        }
+
+        let secondary_row = &mut state.rows[secondary.index()];
+        secondary_row.target = target;
+        if secondary_row.error {
+            continue;
+        }
+        secondary_row.message = match (reference, current) {
+            (_, None) => {
+                missing_secondary.push(secondary.name());
+                format!("未找到 {}；请点击「安装并配置 Dodex」。", secondary.name())
+            }
+            (None, Some(_)) => format!(
+                "无法比较：{}{}。",
+                primary.name(),
+                if reference_error {
+                    " 版本读取失败"
+                } else {
+                    " 未安装"
+                },
+            ),
+            (Some(reference), Some(current)) => match current.compare(reference) {
+                Ok(Ordering::Equal) => format!("与本机 {} 版本一致。", primary.name()),
+                Ok(Ordering::Less) => format!("低于本机 {}，可对齐。", primary.name()),
+                Ok(Ordering::Greater) => "较新，保留，不降级。".into(),
+                Err(error) => {
+                    secondary_row.error = true;
+                    error
+                }
+            },
+        };
+    }
+    state.error = state.rows.iter().any(|row| row.error);
+    state.message = if state.error {
+        "本机版本检查未完成；请查看各项提示。".into()
+    } else if !missing_secondary.is_empty() {
+        format!(
+            "未找到 {}；请点击「安装并配置 Dodex」。",
+            missing_secondary.join("、")
+        )
+    } else if missing_reference {
+        "缺少本机 Codex 参考，无法完成对应版本比较。".into()
+    } else {
+        "已自动比较本机 App 与 TUI 版本。".into()
+    };
+}
+
 fn verify_result(ops: &dyn Operations, target: Target, desired: &Version) -> Result<(), String> {
     if ops.installed(target)?.as_ref() != Some(desired) {
         return Err(format!(

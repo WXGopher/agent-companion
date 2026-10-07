@@ -11,6 +11,8 @@ export struct SoftwareVersion {
 export component SoftwareUpdates inherits SettingsCard {
     in property <[SoftwareVersion]> versions;
     in property <bool> busy;
+    in property <bool> blocked;
+    in property <bool> available: true;
     in property <bool> error;
     in property <string> message;
     in property <string> notice;
@@ -19,15 +21,15 @@ export component SoftwareUpdates inherits SettingsCard {
     VerticalLayout {
         padding: 18px;
         spacing: 12px;
-        Text { text: "版本管理"; font-size: 15px; font-weight: 600; color: SettingsColors.text; }
+        Text { text: "对齐 Codex / Dodex 版本"; font-size: 15px; font-weight: 600; color: SettingsColors.text; }
         Text {
-            text: "对齐以本机 Codex 为准；全部更新检查官方稳定版，再分别对齐 TUI 和 App。较新的 Dodex 不会自动降级。";
+            text: "App 对齐本机 Codex App，TUI 对齐本机 Codex TUI；两者版本可以不同。较新的 Dodex 不会自动降级。";
             font-size: 12px; color: SettingsColors.secondary; wrap: word-wrap;
         }
         HorizontalLayout {
             spacing: 10px;
-            SettingsButton { text: "对齐 Codex/Dodex 版本"; enabled: !root.busy; clicked => { root.maintain("align"); } }
-            SettingsButton { text: "全部更新到最新"; primary: true; enabled: !root.busy; clicked => { root.maintain("update-all"); } }
+            SettingsButton { text: root.busy ? "正在处理版本…" : "对齐版本"; primary: true; enabled: root.available && !root.busy && !root.blocked; accessible-label: "分别对齐 Codex 与 Dodex 的 App 和 TUI 版本"; clicked => { root.maintain("align"); } }
+            if !root.available: Text { text: "先完成上方 Dodex 安装与配置。"; font-size: 12px; color: SettingsColors.secondary; vertical-alignment: center; }
             Rectangle { horizontal-stretch: 1; }
         }
         for version in root.versions: VerticalLayout {
@@ -47,7 +49,7 @@ export component SoftwareUpdates inherits SettingsCard {
         }
         if root.notice != "": Text { text: root.notice; font-size: 12px; color: SettingsColors.error; wrap: word-wrap; }
         Text {
-            text: "检查与下载在后台进行。替换前须自行退出 Codex / Dodex App 和 TUI；不会结束或重启进程。账号、配置和会话目录保持原样。";
+            text: "对齐使用本机程序，不下载新版本。替换前请退出 Dodex App 和 TUI；账号、配置和会话保留。";
             font-size: 11px; color: SettingsColors.secondary; wrap: word-wrap;
         }
     }

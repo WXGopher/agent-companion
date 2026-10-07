@@ -99,7 +99,15 @@ pub(crate) fn is_native_package_entry(entry: &Path) -> bool {
 /// Read-only structural validation shared by maintenance and resume discovery.
 /// Callers still verify the native version (and signatures before publishing).
 pub(crate) fn package_version(root: &Path) -> Result<String, String> {
-    no_redirects(root)?;
+    for member in [
+        "codex-package.json",
+        "bin/codex",
+        "bin/codex-code-mode-host",
+        "codex-resources",
+        "codex-path/rg",
+    ] {
+        no_redirects(&root.join(member))?;
+    }
     let value: serde_json::Value =
         serde_json::from_slice(&read_limited(&root.join("codex-package.json"), 64 * 1024)?)
             .map_err(|_| "TUI 安装包清单无效。")?;
@@ -110,6 +118,7 @@ pub(crate) fn package_version(root: &Path) -> Result<String, String> {
         || value["entrypoint"] != "bin/codex"
         || value["resourcesDir"] != "codex-resources"
         || value["pathDir"] != "codex-path"
+        || !root.join("bin/codex").is_file()
         || !root.join("bin/codex-code-mode-host").is_file()
         || !root.join("codex-resources").is_dir()
         || !root.join("codex-path").is_dir()

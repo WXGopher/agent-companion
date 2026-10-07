@@ -71,6 +71,8 @@ pub struct SettingsPresentation {
     pub app_version: String,
     pub profile_home: Option<PathBuf>,
     pub tui_available: bool,
+    /// Complete managed TUI package and current shell/App binding, metadata only.
+    pub tui_configured: bool,
 }
 
 impl Default for DeploymentStatus {
@@ -96,7 +98,7 @@ struct Manifest {
     instance: InstanceConfig,
 }
 type PreferenceStamp = Option<(u64, u64, u128)>;
-type CompletedDeployment = (InstanceConfig, PreferenceStamp);
+pub(crate) type CompletedDeployment = (InstanceConfig, PreferenceStamp);
 
 #[derive(Clone, Default)]
 struct State {
@@ -317,6 +319,10 @@ pub fn settings_presentation() -> SettingsPresentation {
     // The terminal may have explicitly adopted a complete standalone package;
     // its availability no longer depends on the legacy bundled executable.
     presentation.tui_available |= crate::software_updates::managed_cli().is_some();
+    presentation.tui_configured = presentation
+        .app_path
+        .as_deref()
+        .is_some_and(crate::software_updates::cli_is_configured);
     presentation
 }
 
@@ -359,6 +365,7 @@ fn settings_presentation_for(
         app_version: mirrored.map(|(_, version)| version).unwrap_or_default(),
         profile_home,
         tui_available,
+        tui_configured: false,
     }
 }
 
@@ -614,39 +621,44 @@ fn finish(result: Result<CompletedDeployment, String>) -> Result<DeploymentStatu
     }
 }
 /// Blocking operation. Call on a worker thread; `status` remains pollable.
-pub fn deploy() -> Result<DeploymentStatus, String> {
+pub fn install_and_configure() -> Result<DeploymentStatus, String> {
     begin()?;
-    let result = (|| {
-        let layout = Layout::current()?;
-        private_directory(&layout.support)?;
-        let _maintenance = DeploymentLock::acquire(&layout.support.join("software-updates.lock"))?;
-        let _lock = DeploymentLock::acquire(&layout.support.join("deployment.lock"))?;
-        let saved = existing_monitor_record(&layout)?;
-        if let Some(record) = &saved {
-            validate_record_for_app_sync(&layout, record)?;
-        }
-        let mirrored = mirror::sync(&layout, progress)?;
-        let record = monitor_after_app_sync(&layout, saved, &mirrored.instance)?;
-        let mut state = read_saved_state(&layout);
-        state.status.busy = false;
-        state.status.enabled = record.enabled;
-        state.status.phase = if record.enabled { "ready" } else { "disabled" }.into();
-        state.status.message = desktop::mirror_message(&mirrored);
-        if !record.enabled && !record.instance.cli_path.is_file() {
-            state.status.message.push_str(
-                " 此官方版本未内置 CLI，App 可独立使用；Companion 的第二实例 CLI 监控未启用。",
-            );
-        }
-        Ok(state)
-    })();
-    match result {
-        Ok(state) => {
-            let status = state.status.clone();
-            *shared().lock().unwrap_or_else(|e| e.into_inner()) = state;
-            Ok(status)
-        }
-        Err(error) => finish(Err(error)),
+    let result = crate::software_updates::install_and_configure(|message| {
+        progress("installing", message);
+    });
+    let mut status = finish(result)?;
+    if status.enabled {
+        status.message = "Dodex App、TUI 与独立配置已就绪，Companion 监控已启用。首次使用时打开 Dodex 并登录第二个账号；新终端可使用 dodex。".into();
+        shared()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .status
+            .message
+            .clone_from(&status.message);
     }
+    Ok(status)
+}
+
+/// The caller owns software-updates.lock; keep the established lock ordering.
+pub(crate) fn complete_install_under_maintenance_lock() -> Result<CompletedDeployment, String> {
+    let layout = Layout::current()?;
+    let _lock = DeploymentLock::acquire(&layout.support.join("deployment.lock"))?;
+    let mirrored = mirror::check(&layout)?;
+    if !crate::software_updates::cli_is_configured(&mirrored.instance.launcher_app) {
+        return Err(
+            "Dodex App 已保留，但完整 TUI 或 dodex 命令尚未就绪；监控未启用，请重试安装。".into(),
+        );
+    }
+    let saved = existing_monitor_record(&layout)?;
+    let instance = saved
+        .as_ref()
+        .map(|record| record.instance.clone())
+        .unwrap_or(mirrored.instance);
+    validate_existing(&layout, &SystemOps, &instance)?;
+    if saved.as_ref().is_none_or(|record| !record.enabled) {
+        save_record(&layout, true, &instance)?;
+    }
+    Ok((instance, preference_stamp(&layout)))
 }
 
 fn validate_record_for_app_sync(layout: &Layout, record: &Record) -> Result<(), String> {
@@ -659,36 +671,18 @@ fn validate_record_for_app_sync(layout: &Layout, record: &Record) -> Result<(), 
     validate_existing(layout, &SystemOps, &record.instance)
 }
 
-fn monitor_after_app_sync(
+fn validate_monitor_after_app_sync(
     layout: &Layout,
-    saved: Option<Record>,
+    saved: Option<&Record>,
     mirrored: &InstanceConfig,
-) -> Result<Record, String> {
-    // A saved monitor record belongs to the existing CLI/profile. Desktop
-    // synchronization must not rewrite it or switch its CLI to the new App.
+) -> Result<(), String> {
+    // App-only synchronization never changes monitoring preferences, including
+    // when the source App has no bundled CLI. The unified installer opts in only
+    // after independently installing and validating its complete TUI package.
     if let Some(record) = saved {
         validate_mirror_monitor_binding(layout, &record.instance, mirrored)?;
-        return Ok(record);
     }
-    // A current official App may manage its runtime outside the bundle. Keep
-    // that App usable without inventing a CLI path or falling back to the TUI.
-    if !exists(&mirrored.cli_path) {
-        save_record(layout, false, mirrored)?;
-        return Ok(Record {
-            schema: SCHEMA,
-            enabled: false,
-            instance: mirrored.clone(),
-        });
-    }
-    validate_instance_paths(layout, mirrored)
-        .and_then(|()| validate_config(&mirrored.codex_home.join("config.toml"), mirrored))
-        .map_err(|error| format!("Dodex App 已同步，但监控尚未启用：{error}"))?;
-    save_record(layout, true, mirrored)?;
-    Ok(Record {
-        schema: SCHEMA,
-        enabled: true,
-        instance: mirrored.clone(),
-    })
+    Ok(())
 }
 
 fn existing_monitor_record(layout: &Layout) -> Result<Option<Record>, String> {
@@ -1078,7 +1072,8 @@ fn validate_mirror_monitor(
             .ok_or("Dodex App 部署元数据无效；请点击「检查并同步」。")?
     };
     validate_mirror_monitor_binding(layout, instance, &mirrored)?;
-    validate_instance_paths(layout, instance)?;
+    let runtime_instance = monitor_runtime_instance(layout, instance, &mirrored)?;
+    validate_instance_paths(layout, &runtime_instance)?;
     let config = instance.codex_home.join("config.toml");
     if require_config || exists(&config) {
         validate_config(&config, instance)?;
@@ -1087,6 +1082,34 @@ fn validate_mirror_monitor(
         ops.verify_runtime(&instance.runtime_app)?;
     }
     Ok(())
+}
+
+fn monitor_runtime_instance(
+    layout: &Layout,
+    instance: &InstanceConfig,
+    mirrored: &InstanceConfig,
+) -> Result<InstanceConfig, String> {
+    let mut runtime = instance.clone();
+    if instance == mirrored && !exists(&instance.cli_path) {
+        let entry = crate::managed_tui::command(&layout.user_home, "dodex")
+            .ok_or("Dodex App 未内置 CLI；请完成 TUI 安装后启用监控。")?;
+        let binding = crate::managed_tui::read_binding(&layout.user_home, &entry)?
+            .ok_or("Dodex 完整 TUI 入口尚未就绪。")?;
+        binding.validate_profile(
+            &instance.codex_home,
+            &instance.database_dir,
+            &instance.desktop_user_data,
+        )?;
+        if binding.app != mirrored.launcher_app
+            || crate::managed_tui::package_version(&binding.package)? != binding.version
+        {
+            return Err("Dodex TUI 与已部署 App 的绑定不一致；监控未启用。".into());
+        }
+        runtime.cli_path = binding.executable()?;
+    }
+    // The saved record continues to describe its original installation. Only
+    // validated runtime navigation uses the independently installed TUI.
+    Ok(runtime)
 }
 
 fn validate_mirror_monitor_binding(

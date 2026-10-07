@@ -382,10 +382,12 @@ pub(crate) fn sync_desktop_under_maintenance_lock() -> Result<String, String> {
     let layout = Layout::current()?;
     private_directory(&layout.support)?;
     let _lock = DeploymentLock::acquire(&layout.support.join("deployment.lock"))?;
-    if let Some(record) = existing_monitor_record(&layout)? {
-        validate_record_for_app_sync(&layout, &record)?;
+    let saved = existing_monitor_record(&layout)?;
+    if let Some(record) = &saved {
+        validate_record_for_app_sync(&layout, record)?;
     }
     let status = mirror::sync(&layout, |_, _| {})?;
+    validate_monitor_after_app_sync(&layout, saved.as_ref(), &status.instance)?;
     Ok(mirror_message(&status))
 }
 

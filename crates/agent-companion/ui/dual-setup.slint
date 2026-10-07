@@ -1,0 +1,56 @@
+import { SettingsButton, SettingsCard, SettingsColors } from "settings-common.slint";
+
+export component DualSetup inherits SettingsCard {
+    in property <bool> app-installed;
+    in property <bool> tui-available;
+    in property <bool> monitored;
+    in property <bool> busy;
+    in property <bool> blocked;
+    in property <bool> error;
+    in property <string> phase;
+    in property <string> message;
+    callback setup();
+    callback open();
+
+    vertical-stretch: 0;
+    VerticalLayout {
+        padding: 18px;
+        spacing: 10px;
+        Text { text: "安装并配置 Dodex"; font-size: 15px; font-weight: 600; color: SettingsColors.text; }
+        Text {
+            text: "一次完成 App、TUI、dodex 命令和 Companion 接入。App 与 TUI 共用独立副账号，首次使用请自行登录。";
+            font-size: 12px;
+            color: SettingsColors.secondary;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            spacing: 22px;
+            Text { text: root.app-installed ? "App · 已安装" : "App · 未安装"; font-size: 12px; color: root.app-installed ? SettingsColors.accent : SettingsColors.secondary; }
+            Text { text: root.tui-available ? "TUI · 已就绪" : "TUI · 未就绪"; font-size: 12px; color: root.tui-available ? SettingsColors.accent : SettingsColors.secondary; }
+            Text { text: root.monitored ? "Companion · 已接入" : "Companion · 未接入"; font-size: 12px; color: root.monitored ? SettingsColors.accent : SettingsColors.secondary; }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        HorizontalLayout {
+            spacing: 10px;
+            SettingsButton {
+                text: root.busy ? "正在配置…" : root.error ? "继续安装并配置" : "安装并配置 Dodex";
+                enabled: !root.busy && !root.blocked;
+                primary: true;
+                accessible-label: "一键安装并配置 Dodex App、TUI 和 Companion 接入";
+                clicked => { root.setup(); }
+            }
+            if root.app-installed: SettingsButton {
+                text: "打开 Dodex";
+                enabled: !root.busy && !root.blocked;
+                clicked => { root.open(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        if root.busy || root.message != "": Text {
+            text: root.busy ? root.phase : root.message;
+            font-size: 12px;
+            color: !root.busy && root.error ? SettingsColors.error : SettingsColors.secondary;
+            wrap: word-wrap;
+        }
+    }
+}
