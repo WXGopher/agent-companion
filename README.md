@@ -6,6 +6,12 @@
 
 在 Windows 任务栏或 macOS 菜单栏查看 Codex 的任务状态与订阅用量。
 
+### v0.3.27 更新
+
+- 修复订阅额度被非认证托管配置误拦：支持常见 hooks、审批、沙箱和网络 requirements，原生策略继续生效；认证限制与未知配置仍明确报错，保留账号隔离。
+- macOS 支持发现已有原生 TUI 和官方 npm 安装中的运行程序，并保留 Codex App 回退；自动复用现有 ChatGPT 登录，无需另设 API Key。
+- macOS 实机已恢复额度、累计 Token 和最近七个有记录日期的用量；原生 CLI 0.160.1 与 App 内置 0.155.0 的配置和额度探测通过。29 项用量测试通过，Windows GUI 尚未实机验证。[发布说明](docs/releases/v0.3.27.md)
+
 ### v0.3.26 更新
 
 - macOS 设置新增“通用”页，集中管理额度自动刷新间隔和“登录时自动启动”；登录项使用系统原生机制，关闭后当前应用继续运行。
@@ -56,7 +62,7 @@ macOS 双实例额度读取、Dodex 手动刷新和 App/TUI 启动已观察通�
 - **可选 Codex 双开（Windows / macOS）**：在设置中手动部署或接入 Dodex，任务标注来源，用量、缓存和 CLI 状态栏设置按实例管理。默认关闭，不自动接入或启动 Dodex。
 - **配置与个人指令同步**：双开页签显示双方文件路径，提供独立的 Codex → Dodex、Dodex → Codex 操作，手动覆盖 `config.toml` 或各自 `CODEX_HOME` 下的全局 `AGENTS.md`，覆盖前备份目标。配置可能含有内嵌密钥，同步时会一并复制；**不复制 `auth.json`**，保留目标实例的登录存储、数据库和日志设置。没有自动同步，详见[同步说明](docs/macos-dual-instance.md#manual-configuration-and-instruction-sync)。
 
-订阅用量复用对应实例的 Codex CLI ChatGPT 登录，无需 API Key。macOS 与 Windows 共用 Rust 查询服务：启动、定时到期和用户主动打开面板时查询所有已启用实例；手动刷新仅查询当前实例。默认每 5 分钟自动查询，设置中的“额度自动刷新间隔（分钟）”支持 1–60 分钟整数，所有实例共用。保存到应用配置目录的独立 `usage.json`，运行中生效并重新计时，不立即查询。
+订阅用量自动复用本机 Codex TUI 或 App 已有的 ChatGPT 登录，无需另设 API Key。常见 hooks、审批、沙箱和网络 requirements 不再仅因文件存在就被身份核验拒绝；原生策略继续生效，无法核验的认证或其他托管配置会显示原因。macOS 与 Windows 共用 Rust 查询服务：启动、定时到期和用户主动打开面板时查询所有已启用实例；手动刷新仅查询当前实例。默认每 5 分钟自动查询，设置中的“额度自动刷新间隔（分钟）”支持 1–60 分钟整数，所有实例共用。保存到应用配置目录的独立 `usage.json`，运行中生效并重新计时，不立即查询。
 
 每次额度刷新在身份、原生配置核验和必要握手后进行一次 `account/rateLimits/read` 业务调用，不附带历史查询、不创建模型任务、不消耗推理 Token；CLI 内部 HTTP 次数不作保证。同一认证目录的额度与历史复用 Companion 自建原生 worker，分别使用独立请求、20 秒超时和结果发布；额度不等待历史。同一实例同类请求合并，成功或失败后均重新等待设定间隔，不额外重试。休眠恢复后最多补查一次。
 
@@ -119,6 +125,12 @@ See Codex tasks and subscription usage in the Windows taskbar or macOS menu bar.
 
 `acomp resume` searches original Codex / Dodex sessions in the exact current directory and shows history, settings, and quota-account provenance. Relative paths in explicitly disabled MCP definitions no longer block resume. On macOS, older Dodex installations can borrow a local native runtime that passes the pinned version check while preserving the original history, settings and selected account. Install user-level commands with `agent-companion install-cli`. Unverified or incompatible combinations are disabled with a reason, and Windows resume launch remains disabled; see [resume usage and validation boundaries](docs/RESUME.md).
 
+### New in v0.3.27
+
+- Fix subscription usage being rejected by non-authentication managed settings. Support common hook, approval, sandbox and network requirements while retaining native policy enforcement, explicit errors for authentication restrictions or unknown settings, and account isolation.
+- On macOS, discover existing native TUI binaries and runtimes in official npm installations, with Codex App fallback. Reuse the existing ChatGPT login without a separate API key.
+- Real macOS checks restored quota, lifetime tokens and the last seven reported days of usage. Native CLI 0.160.1 and bundled App runtime 0.155.0 passed configuration and quota probes. All 29 usage tests passed; Windows GUI remains unverified. [Release notes](docs/releases/v0.3.27.md)
+
 ### New in v0.3.26
 
 - Add a macOS General tab (通用) for the quota refresh interval and launch at login. The native login item starts the app when you sign in; disabling it leaves the running app open.
@@ -167,7 +179,7 @@ macOS checks observed both instances' quota, Dodex manual refresh, and Dodex App
 - **Optional second Codex instance (Windows / macOS)**: explicitly deploy or connect Dodex in Settings. Tasks show their source; usage, caches and CLI status bar settings stay separate. Disabled by default, with no automatic adoption or launch.
 - **Configuration and personal instructions**: the dual-instance tab shows both file paths and separate Codex → Dodex / Dodex → Codex actions for manually overwriting `config.toml` or the global `AGENTS.md` in each `CODEX_HOME`, with destination backups. Config files may contain embedded secrets, which are copied; **`auth.json` is never copied**, and the destination's account storage, database and log settings remain independent. Sync is never automatic. See [sync behavior](docs/macos-dual-instance.md#manual-configuration-and-instruction-sync).
 
-Subscription usage uses each instance's Codex CLI ChatGPT login, with no API key. macOS and Windows share one Rust service. Startup, a due timer, and actively opening the panel query every enabled instance; manual refresh queries only the selected instance. Automatic refresh defaults to five minutes. Settings accepts an integer from 1 to 60 minutes, shared by all instances and stored in the application configuration directory's separate `usage.json`. Saving restarts the interval without an immediate query.
+Subscription usage automatically reuses the existing ChatGPT login from your local Codex TUI or App, with no separate API key. Common hook, approval, sandbox and network requirements are no longer rejected by identity checks merely for being present. Native policies still apply; authentication or other managed settings that cannot be verified show a reason. macOS and Windows share one Rust service. Startup, a due timer, and actively opening the panel query every enabled instance; manual refresh queries only the selected instance. Automatic refresh defaults to five minutes. Settings accepts an integer from 1 to 60 minutes, shared by all instances and stored in the application configuration directory's separate `usage.json`. Saving restarts the interval without an immediate query.
 
 After identity and native configuration checks and the required handshake, each quota refresh makes one `account/rateLimits/read` business call. It does not fetch history, create a model task or spend inference tokens; this does not guarantee a single HTTP request inside the CLI. Quota and history for one authentication directory share a Companion-owned native worker, with independent requests, 20-second deadlines and result publication. Quota does not wait for history. Overlapping requests of the same type and instance merge. Success and failure both restart the interval, with no extra retries; waking from sleep triggers at most one overdue query.
 

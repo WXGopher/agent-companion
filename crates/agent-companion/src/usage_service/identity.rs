@@ -18,6 +18,8 @@ const UNKNOWN: &str =
 const SIGNED_OUT: &str =
     "Sign in to this Codex instance with a ChatGPT subscription, then refresh.";
 const LOCKED: &str = "Could not read system credentials without interaction. Unlock or authorize Codex credentials, then refresh.";
+const MANAGED: &str = "Managed Codex authentication settings could not be verified. Usage is unavailable until their effective configuration is supported.";
+const REQUIREMENTS: &str = "Managed Codex requirements could not be verified. Authentication restrictions or unsupported policy settings prevent usage queries.";
 
 #[derive(Clone)]
 pub(super) struct Config {
@@ -191,21 +193,30 @@ pub(super) fn configuration(source: &Source) -> Result<Config, String> {
         .join("OpenAI/Codex");
     #[cfg(not(windows))]
     let system = PathBuf::from("/etc/codex");
-    #[allow(unused_mut, clippy::useless_vec)] // macOS adds managed preference files below.
-    let mut managed = vec![
-        system.join("managed_config.toml"),
-        system.join("requirements.toml"),
-    ];
+    #[allow(unused_mut)] // macOS adds managed preference files below.
+    let mut preferences = Vec::new();
     #[cfg(target_os = "macos")]
     {
-        managed.push("/Library/Managed Preferences/com.openai.codex.plist".into());
+        preferences.push("/Library/Managed Preferences/com.openai.codex.plist".into());
         if let Some(home) = super::user_home() {
-            managed.push(home.join("Library/Managed Preferences/com.openai.codex.plist"));
+            preferences.push(home.join("Library/Managed Preferences/com.openai.codex.plist"));
         }
     }
-    if managed.iter().any(|path| path.exists()) {
-        return Err("Managed Codex authentication settings could not be verified. Usage is unavailable until their effective configuration is supported.".into());
+    configuration_from(source, &system, &preferences)
+}
+
+fn configuration_from(
+    source: &Source,
+    system: &Path,
+    preferences: &[PathBuf],
+) -> Result<Config, String> {
+    if std::iter::once(&system.join("managed_config.toml"))
+        .chain(preferences)
+        .any(|path| path.try_exists().unwrap_or(true))
+    {
+        return Err(MANAGED.into());
     }
+    verify_requirements(&system.join("requirements.toml"))?;
     let mut config = Config {
         store: "file".into(),
         service: "https://chatgpt.com/backend-api".into(),
@@ -225,6 +236,47 @@ pub(super) fn configuration(source: &Source) -> Result<Config, String> {
         config.store = "file".into();
     }
     Ok(config)
+}
+
+fn verify_requirements(path: &Path) -> Result<(), String> {
+    let Some(doc) = document(path).map_err(|_| REQUIREMENTS.to_owned())? else {
+        return Ok(());
+    };
+    // Requirements constrain native behavior; they are not a config.toml
+    // override layer. Leave these policies in place for --strict-config to
+    // enforce, and still compare the native effective authentication config
+    // before sending a usage request. Unknown keys and authentication policy
+    // (including allowed_login_methods / allowed_chatgpt_workspaces) fail closed.
+    // https://learn.chatgpt.com/docs/config-file/config-reference#requirementstoml
+    let supported = doc.iter().all(|(key, value)| match key {
+        "features" => value.as_table_like().is_some_and(|features| {
+            features.iter().all(|(key, value)| {
+                matches!(key, "hooks" | "remote_control") && value.as_bool().is_some()
+            })
+        }),
+        "allowed_approval_policies"
+        | "allowed_approvals_reviewers"
+        | "allowed_permission_profiles"
+        | "allowed_sandbox_modes"
+        | "allowed_web_search_modes"
+        | "default_permissions"
+        | "allow_managed_hooks_only"
+        | "allow_remote_control"
+        | "allow_login_shell"
+        | "experimental_network"
+        | "hooks"
+        | "rules"
+        | "apps"
+        | "mcp_servers"
+        | "auto_review"
+        | "additional_developer_instructions" => true,
+        _ => false,
+    });
+    if supported {
+        Ok(())
+    } else {
+        Err(REQUIREMENTS.into())
+    }
 }
 
 fn document(path: &Path) -> Result<Option<DocumentMut>, String> {
@@ -438,6 +490,147 @@ mod tests {
             database_path: home.join("db"),
             executable_path: None,
         }
+    }
+
+    #[test]
+    fn hooks_only_requirements_do_not_block_the_signed_in_account() {
+        let directory = tempfile::tempdir().unwrap();
+        let system = directory.path().join("system");
+        let home = directory.path().join("codex");
+        fs::create_dir(&system).unwrap();
+        fs::create_dir(&home).unwrap();
+        fs::write(
+            system.join("requirements.toml"),
+            "[features]\nhooks=true\n[hooks]\nmanaged_dir='/Library/Managed Hooks'\n",
+        )
+        .unwrap();
+        fs::write(
+            home.join("auth.json"),
+            auth("fixture-user", "fixture-workspace"),
+        )
+        .unwrap();
+        let source = source(&home);
+        let config = configuration_from(&source, &system, &[])
+            .unwrap_or_else(|error| panic!("hooks-only requirements blocked usage: {error}"));
+        let identity = read_with(&source, &config, |_| unreachable!()).unwrap();
+        assert_eq!(identity.user, "fixture-user");
+        assert_eq!(identity.workspace, "fixture-workspace");
+        assert!(identity.storage.starts_with("file:file:"));
+    }
+
+    #[test]
+    fn non_authentication_requirements_preserve_each_instances_configuration() {
+        let directory = tempfile::tempdir().unwrap();
+        let system = directory.path().join("system");
+        let home = directory.path().join("codex");
+        fs::create_dir(&system).unwrap();
+        fs::create_dir(&home).unwrap();
+        fs::write(
+            system.join("config.toml"),
+            "cli_auth_credentials_store='auto'\nchatgpt_base_url='https://system.invalid'\n",
+        )
+        .unwrap();
+        fs::write(
+            home.join("config.toml"),
+            "chatgpt_base_url='https://account.invalid/'\n",
+        )
+        .unwrap();
+        fs::write(
+            system.join("requirements.toml"),
+            r#"
+allowed_approval_policies = ["on-request"]
+allowed_approvals_reviewers = ["user"]
+allowed_sandbox_modes = ["read-only", "workspace-write"]
+allowed_web_search_modes = ["cached"]
+default_permissions = ":workspace"
+allow_managed_hooks_only = true
+allow_remote_control = false
+allow_login_shell = false
+[allowed_permission_profiles]
+":workspace" = true
+[experimental_network]
+enabled = true
+allowed_domains = ["example.invalid"]
+[features]
+hooks = true
+remote_control = false
+[hooks]
+managed_dir = "/managed-hooks"
+[rules]
+prefix_rules = []
+[apps.fixture]
+enabled = false
+[mcp_servers.fixture]
+enabled = false
+"#,
+        )
+        .unwrap();
+        let mut source = source(&home);
+        let config = configuration_from(&source, &system, &[]).unwrap();
+        assert_eq!(config.store, "auto");
+        assert_eq!(config.service, "https://account.invalid");
+        source.instance_id = "dodex".into();
+        let secondary = configuration_from(&source, &system, &[]).unwrap();
+        assert_eq!(secondary.store, "file");
+        assert_eq!(secondary.service, config.service);
+    }
+
+    #[test]
+    fn authentication_unknown_and_invalid_requirements_fail_closed() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = source(directory.path());
+        for requirements in [
+            "allowed_login_methods=['chatgpt']",
+            "allowed_chatgpt_workspaces=[]",
+            "cli_auth_credentials_store='keyring'",
+            "chatgpt_base_url='https://unverified.invalid'",
+            "features.secret_auth_storage=true",
+            "features.secret_auth_storage=false",
+            "features.unknown_auth_feature=false",
+            "features.hooks='invalid'",
+            "future_setting=true",
+            "invalid = [",
+        ] {
+            fs::write(directory.path().join("requirements.toml"), requirements).unwrap();
+            assert_eq!(
+                configuration_from(&source, directory.path(), &[])
+                    .err()
+                    .as_deref(),
+                Some(REQUIREMENTS),
+                "unexpectedly accepted managed requirements: {requirements}"
+            );
+        }
+        fs::remove_file(directory.path().join("requirements.toml")).unwrap();
+        fs::create_dir(directory.path().join("requirements.toml")).unwrap();
+        assert_eq!(
+            configuration_from(&source, directory.path(), &[])
+                .err()
+                .as_deref(),
+            Some(REQUIREMENTS)
+        );
+    }
+
+    #[test]
+    fn managed_defaults_and_preferences_still_require_verified_authentication() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = source(directory.path());
+        let defaults = directory.path().join("managed_config.toml");
+        fs::write(&defaults, "cli_auth_credentials_store='keyring'").unwrap();
+        assert_eq!(
+            configuration_from(&source, directory.path(), &[])
+                .err()
+                .as_deref(),
+            Some(MANAGED)
+        );
+        fs::remove_file(defaults).unwrap();
+        let preferences = directory.path().join("com.openai.codex.plist");
+        fs::write(&preferences, "unverified managed preferences").unwrap();
+        assert_eq!(
+            configuration_from(&source, directory.path(), &[preferences])
+                .err()
+                .as_deref(),
+            Some(MANAGED)
+        );
     }
 
     #[test]

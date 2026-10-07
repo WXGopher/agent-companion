@@ -896,7 +896,7 @@ impl Editor {
             }
             let feedback = self.sync_feedback.borrow()[index].clone();
             let available =
-                pair.is_some() && !busy && !deployment_busy && !(kind == FileKind::Config && dirty);
+                !(pair.is_none() || busy || deployment_busy || kind == FileKind::Config && dirty);
             let row = ui::ProfileSyncFile {
                 key: if kind == FileKind::Config {
                     "config"

@@ -376,26 +376,151 @@ fn primary_executable() -> Option<PathBuf> {
             PathBuf::from("/opt/homebrew/bin/codex"),
             PathBuf::from("/usr/local/bin/codex"),
         ]);
-        for path in candidates.into_iter().filter(|path| is_executable(path)) {
-            #[cfg(target_os = "macos")]
-            if let Some(home) = user_home()
-                && let Ok(native) = crate::software_updates::primary_native(&home, &path)
-            {
-                return Some(native);
-            }
-            #[cfg(not(target_os = "macos"))]
-            return Some(path);
-        }
         #[cfg(target_os = "macos")]
-        if let Some(home) = user_home() {
-            return crate::macos_primary_app::discover(
+        {
+            let home = user_home()?;
+            primary_macos_executable(
+                &home,
+                candidates,
                 Path::new("/Applications"),
                 &home.join("Applications"),
             )
-            .and_then(|app| app.executable);
         }
-        None
+        #[cfg(not(target_os = "macos"))]
+        candidates.into_iter().find(|path| is_executable(path))
     }
+}
+
+#[cfg(target_os = "macos")]
+fn primary_macos_executable(
+    home: &Path,
+    candidates: impl IntoIterator<Item = PathBuf>,
+    system_applications: &Path,
+    user_applications: &Path,
+) -> Option<PathBuf> {
+    for path in candidates.into_iter().filter(|path| is_executable(path)) {
+        if let Ok(native) = crate::software_updates::primary_native(home, &path)
+            && primary_runtime_location(home, &native)
+        {
+            return Some(native);
+        }
+        // Reading usage also supports existing native Homebrew/standalone
+        // binaries that predate the updater's complete-package layout. Resolve
+        // links without executing a shell/Node wrapper that could select another
+        // account. Package migration keeps its stricter, separate validation.
+        if let Ok(entry) = path.canonicalize()
+            && primary_runtime_location(home, &entry)
+        {
+            if is_macos_native(&entry) {
+                return Some(entry);
+            }
+            if let Some(native) = npm_native(&entry)
+                && primary_runtime_location(home, &native)
+            {
+                return Some(native);
+            }
+        }
+    }
+    crate::macos_primary_app::discover(system_applications, user_applications)
+        .and_then(|app| app.executable)
+}
+
+#[cfg(target_os = "macos")]
+fn primary_runtime_location(home: &Path, path: &Path) -> bool {
+    !path.components().any(|component| {
+        let name = component.as_os_str().to_string_lossy();
+        name.eq_ignore_ascii_case("Dodex.app") || name.eq_ignore_ascii_case(".Dodex")
+    }) && ![
+        "Library/Application Support/AgentCompanion/Tui",
+        "Library/Application Support/AgentCompanion/Dodex",
+        "Library/Application Support/Codex-B",
+    ]
+    .iter()
+    .map(|relative| home.join(relative))
+    .any(|root| {
+        path.starts_with(&root) || root.canonicalize().is_ok_and(|root| path.starts_with(root))
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn npm_native(entry: &Path) -> Option<PathBuf> {
+    let package = entry.parent()?.parent()?;
+    if entry != package.join("bin/codex.js") {
+        return None;
+    }
+    let manifest = |root: &Path| -> Option<Value> {
+        let path = root.join("package.json");
+        if !path
+            .metadata()
+            .is_ok_and(|metadata| metadata.is_file() && metadata.len() <= 64 * 1024)
+        {
+            return None;
+        }
+        let bytes = crate::managed_tui::read_limited(&path, 64 * 1024).ok()?;
+        serde_json::from_slice(&bytes).ok()
+    };
+    let main = manifest(package)?;
+    if main["name"] != "@openai/codex"
+        || !matches!(
+            main["bin"]["codex"].as_str(),
+            Some("bin/codex.js" | "./bin/codex.js")
+        )
+    {
+        return None;
+    }
+    let (platform, triple) = if cfg!(target_arch = "aarch64") {
+        ("codex-darwin-arm64", "aarch64-apple-darwin")
+    } else if cfg!(target_arch = "x86_64") {
+        ("codex-darwin-x64", "x86_64-apple-darwin")
+    } else {
+        return None;
+    };
+    // Official @openai/codex bin/codex.js resolves its optional platform
+    // package, then falls back to its own vendor directory. npm may nest or
+    // hoist the optional package. Read only these known layouts, never run JS
+    // or infer a command from arbitrary package metadata.
+    for root in [
+        package.join("node_modules/@openai").join(platform),
+        package.parent()?.join(platform),
+        package.to_path_buf(),
+    ] {
+        let Some(info) = manifest(&root) else {
+            continue;
+        };
+        if info["name"] != "@openai/codex"
+            && info["name"].as_str() != Some(format!("@openai/{platform}").as_str())
+        {
+            continue;
+        }
+        // 0.155/0.160 use bin/codex; older releases (e.g. 0.104) use codex/codex.
+        for relative in ["bin/codex", "codex/codex"] {
+            let native = root.join("vendor").join(triple).join(relative);
+            if is_executable(&native) && is_macos_native(&native) {
+                return native.canonicalize().ok();
+            }
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn is_macos_native(path: &Path) -> bool {
+    use std::io::Read;
+    let mut magic = [0; 4];
+    std::fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut magic))
+        .is_ok()
+        && matches!(
+            magic,
+            [0xcf, 0xfa, 0xed, 0xfe]
+                | [0xfe, 0xed, 0xfa, 0xcf]
+                | [0xce, 0xfa, 0xed, 0xfe]
+                | [0xfe, 0xed, 0xfa, 0xce]
+                | [0xca, 0xfe, 0xba, 0xbe]
+                | [0xbe, 0xba, 0xfe, 0xca]
+                | [0xca, 0xfe, 0xba, 0xbf]
+                | [0xbf, 0xba, 0xfe, 0xca]
+        )
 }
 
 fn is_executable(path: &Path) -> bool {

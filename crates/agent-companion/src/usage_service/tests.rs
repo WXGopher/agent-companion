@@ -192,6 +192,188 @@ fn source(root: &Path, id: &str) -> Source {
     }
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn discovery_accepts_existing_native_tui_without_an_updater_package_manifest() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let native = root.join("Caskroom/codex/fixture/codex-aarch64-apple-darwin");
+    fs::create_dir_all(native.parent().unwrap()).unwrap();
+    fs::write(&native, [0xcf, 0xfa, 0xed, 0xfe]).unwrap();
+    fs::set_permissions(&native, fs::Permissions::from_mode(0o755)).unwrap();
+    let entry = root.join("codex");
+    symlink(&native, &entry).unwrap();
+    assert_eq!(
+        primary_macos_executable(
+            &root,
+            [entry],
+            &root.join("Applications"),
+            &root.join("user/Applications"),
+        ),
+        Some(native),
+        "usage discovery must not require an updater-owned package layout"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn discovery_rejects_unknown_wrappers_and_falls_back_to_the_existing_codex_app() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let entry = root.join("codex");
+    fs::write(
+        &entry,
+        "#!/bin/sh\nCODEX_HOME=/another-account exec another-codex \"$@\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&entry, fs::Permissions::from_mode(0o755)).unwrap();
+    let system = root.join("Applications");
+    let user = root.join("user/Applications");
+    assert_eq!(
+        primary_macos_executable(&root, [entry.clone()], &system, &user),
+        None
+    );
+    let app = system.join("ChatGPT.app");
+    fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+    fs::create_dir_all(app.join("Contents/Resources")).unwrap();
+    fs::write(app.join("Contents/Info.plist"), "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>com.openai.codex</string></dict></plist>").unwrap();
+    for relative in ["Contents/MacOS/ChatGPT", "Contents/Resources/codex"] {
+        let path = app.join(relative);
+        fs::write(&path, [0xcf, 0xfa, 0xed, 0xfe]).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    assert_eq!(
+        primary_macos_executable(&root, [entry], &system, &user),
+        Some(app.join("Contents/Resources/codex")),
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn discovery_resolves_official_npm_layouts_without_running_javascript() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let (platform, triple) = if cfg!(target_arch = "aarch64") {
+        ("codex-darwin-arm64", "aarch64-apple-darwin")
+    } else {
+        ("codex-darwin-x64", "x86_64-apple-darwin")
+    };
+    for (layout, relative) in [
+        ("nested", "bin/codex"),
+        ("hoisted", "bin/codex"),
+        ("bundled", "bin/codex"),
+        ("nested", "codex/codex"),
+        ("hoisted", "codex/codex"),
+        ("bundled", "codex/codex"),
+    ] {
+        let prefix = root.join(layout).join(relative.split('/').next().unwrap());
+        let package = prefix.join("lib/node_modules/@openai/codex");
+        fs::create_dir_all(package.join("bin")).unwrap();
+        fs::write(
+            package.join("package.json"),
+            r#"{"name":"@openai/codex","bin":{"codex":"bin/codex.js"}}"#,
+        )
+        .unwrap();
+        let script = package.join("bin/codex.js");
+        fs::write(
+            &script,
+            "#!/usr/bin/env node\nthrow Error('must never execute');\n",
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let platform_package = match layout {
+            "nested" => package.join("node_modules/@openai").join(platform),
+            "hoisted" => package.parent().unwrap().join(platform),
+            _ => package.clone(),
+        };
+        let native = platform_package.join("vendor").join(triple).join(relative);
+        fs::create_dir_all(native.parent().unwrap()).unwrap();
+        if layout != "bundled" {
+            fs::write(
+                platform_package.join("package.json"),
+                r#"{"name":"@openai/codex"}"#,
+            )
+            .unwrap();
+        }
+        fs::write(&native, [0xcf, 0xfa, 0xed, 0xfe]).unwrap();
+        fs::set_permissions(&native, fs::Permissions::from_mode(0o755)).unwrap();
+        let entry = prefix.join("codex");
+        symlink(&script, &entry).unwrap();
+        assert_eq!(
+            primary_macos_executable(
+                &root,
+                [entry.clone()],
+                &root.join("Applications"),
+                &root.join("user/Applications")
+            ),
+            Some(native),
+            "failed to resolve the official {layout} npm layout"
+        );
+        fs::write(
+            package.join("package.json"),
+            r#"{"name":"unrelated-package","bin":{"codex":"bin/codex.js"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            primary_macos_executable(
+                &root,
+                [entry],
+                &root.join("Applications"),
+                &root.join("user/Applications")
+            ),
+            None
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn discovery_does_not_borrow_a_secondary_instances_native_runtime() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let linked_home = root.join("home-alias");
+    symlink(&root, &linked_home).unwrap();
+    for relative in [
+        "Applications/Dodex.app/Contents/Resources/codex",
+        "Applications/.Dodex/runtime/bin/codex",
+        "Library/Application Support/AgentCompanion/Tui/packages/fixture/bin/codex",
+        "Library/Application Support/AgentCompanion/Dodex/Runtime.app/Contents/Resources/codex",
+        "Library/Application Support/Codex-B/runtime/bin/codex",
+    ] {
+        let native = root.join(relative);
+        fs::create_dir_all(native.parent().unwrap()).unwrap();
+        fs::write(&native, [0xcf, 0xfa, 0xed, 0xfe]).unwrap();
+        fs::set_permissions(&native, fs::Permissions::from_mode(0o755)).unwrap();
+        // Also exercise the updater-compatible native branch.
+        fs::write(
+            native
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("codex-package.json"),
+            "{}",
+        )
+        .unwrap();
+        let entry = root.join("codex");
+        symlink(&native, &entry).unwrap();
+        assert_eq!(
+            primary_macos_executable(
+                &linked_home,
+                [entry.clone()],
+                &root.join("PrimaryApplications"),
+                &root.join("user/Applications")
+            ),
+            None
+        );
+        fs::remove_file(entry).unwrap();
+    }
+}
+
 fn write_identity(home: &Path, second: bool) {
     // Synthetic JWTs only. Token material deliberately is not an identity.
     let payload = if second {
