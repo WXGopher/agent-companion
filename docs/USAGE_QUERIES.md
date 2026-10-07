@@ -22,6 +22,10 @@ Each instance has independent quota and history snapshots: the last successful r
 
 Ownership includes user, workspace, authentication storage and service source, and exists only in memory. File credentials and supported OS credential stores are read without interactive authorization; credential contents and identity fingerprints are not logged or serialized into snapshots. A normal token rotation leaves ownership and the refresh schedule unchanged. Changing accounts, signing out, changing authentication sources, or failing to verify ownership clears both caches and invalidates old request generations. Late results cannot restore an earlier account's readings. Responses that identify another workspace are rejected. Unsupported effective authentication configurations display an explicit unavailable state rather than guessing which account is active. Account results are never persisted.
 
+System `requirements.toml` may contain supported non-authentication requirements for hooks, approval policies/reviewers, sandbox and permission profiles, web search, network restrictions, rules, apps and MCP servers. These requirements remain loaded and enforced by the native server; they are never merged as user configuration or removed. Feature requirements currently support `hooks` and `remote_control` booleans. Authentication requirements such as `allowed_login_methods` and `allowed_chatgpt_workspaces`, unknown requirement keys, malformed files, legacy `managed_config.toml` and macOS managed preferences still produce an explicit unavailable state. The native effective authentication store, service and SQLite directory must match before any usage RPC is sent.
+
+On macOS an existing App runtime supplied by instance discovery is used directly. If no runtime was supplied, usage discovery accepts installed native TUI binaries and resolves official npm package layouts to the native binary without executing their JavaScript entry point, then falls back to a Codex-identified `Codex.app` or `ChatGPT.app` in the standard Applications directories. Unknown wrappers and known secondary-instance runtimes are excluded. Reading usage does not require the complete package manifest used for explicit TUI maintenance.
+
 GUI task scans continue independently and no longer read local quota logs. Claude usage and headless monitoring retain their previous behavior.
 
 ## Verification
@@ -32,6 +36,13 @@ GUI task scans continue independently and no longer read local quota logs. Claud
 - Windows lifecycle and presentation tests cover formal panel entry versus preview, query-independent rendering, failed-reading markers and persisted display behavior.
 
 Run the workspace tests on macOS and Windows for native platform coverage. A cross-target `cargo check` verifies Windows compilation but does not execute its native lifecycle tests.
+
+### Local verification (2026-10-07)
+
+- All 29 usage tests passed. New regressions were reproduced before the fix, including hooks-only requirements, native TUI discovery without an updater manifest, official npm layouts and rejection of secondary-instance runtimes. Six npm fixture combinations cover nested, hoisted and bundled packages with both native-path generations; they do not constitute a live npm installation test.
+- Native CLI 0.160.1 and the App's bundled runtime 0.155.0 passed effective-configuration and quota probes with an existing ChatGPT login and the same isolated environment and explicit overrides used by Companion. No model task was created.
+- An installed local macOS fix build restored quota, lifetime tokens and the last seven reported days of usage. The running executable was checked against the installed artifact before UI verification.
+- Strict workspace all-target Clippy (`-D warnings`), formatting and diff checks passed. Windows GUI was not manually tested for this change; CI build and automated test results are separate from native GUI validation.
 
 ### Local verification (2026-09-27)
 
