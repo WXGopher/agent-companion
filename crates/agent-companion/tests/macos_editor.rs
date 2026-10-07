@@ -59,7 +59,7 @@ fn check_editor_startup() {
     let started = Instant::now();
     eprintln!("[editor-fixture] startup at {:?}", started.elapsed());
 
-    // The fixture has 37 validated phases. The watchdog measures a stalled
+    // The watchdog measures a stalled
     // startup or phase, not their cumulative render and filesystem work.
     let (finished, deadline) = mpsc::channel::<Option<usize>>();
     let watchdog = std::thread::spawn(move || {
@@ -145,6 +145,23 @@ fn check_editor_startup() {
     let completed = std::rc::Rc::new(std::cell::Cell::new(false));
     let completed_check = completed.clone();
     let phase_progress = finished.clone();
+    // Capture the production Slint callback chain without starting installers,
+    // launching apps, or touching the user's accounts from this UI fixture.
+    let setup_requests = std::rc::Rc::new(std::cell::Cell::new(0));
+    let setup_calls = setup_requests.clone();
+    editor
+        .window
+        .on_deploy_dual(move || setup_calls.set(setup_calls.get() + 1));
+    let open_requests = std::rc::Rc::new(std::cell::Cell::new(0));
+    let open_calls = open_requests.clone();
+    editor
+        .window
+        .on_open_dual(move || open_calls.set(open_calls.get() + 1));
+    let maintenance_requests = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let maintenance_calls = maintenance_requests.clone();
+    editor.window.on_maintain_software(move |action| {
+        maintenance_calls.borrow_mut().push(action.to_string())
+    });
     let mut phase = 0;
     let mut previous_phase = None;
     timer.start(slint::TimerMode::Repeated, Duration::from_millis(250), move || {
@@ -155,9 +172,14 @@ fn check_editor_startup() {
         }
         let phase_started = Instant::now();
         let window = weak.upgrade().unwrap();
-        assert!(window.get_macos_preferences());
         assert!(window.get_ready());
-        assert!((0..=2).contains(&window.get_settings_page()));
+        if phase < 42 {
+            assert!(window.get_macos_preferences());
+            assert!((0..=2).contains(&window.get_settings_page()));
+        } else {
+            assert!(window.get_windows_preferences());
+            assert_eq!(window.get_settings_page(), 3);
+        }
         let mut created = false;
         window.window().with_winit_window(|native| {
             created = native.is_visible() == Some(true);
@@ -234,6 +256,13 @@ fn check_editor_startup() {
                         "general-light",
                         "general-enabled-dark",
                         "general-approval-error-light",
+                        "setup-fresh",
+                        "setup-partial",
+                        "setup-ready",
+                        "setup-aligning",
+                        "setup-advanced",
+                        "setup-windows-pending",
+                        "setup-windows",
                     ][phase]
                 ))
             };
@@ -247,6 +276,18 @@ fn check_editor_startup() {
             .unwrap();
             image.write_all(pixels.as_bytes()).unwrap();
         }
+        let click = |x, y| {
+            use slint::platform::{PointerEventButton, WindowEvent};
+            let position = slint::LogicalPosition::new(x, y);
+            window.window().dispatch_event(WindowEvent::PointerPressed {
+                position,
+                button: PointerEventButton::Left,
+            });
+            window.window().dispatch_event(WindowEvent::PointerReleased {
+                position,
+                button: PointerEventButton::Left,
+            });
+        };
         match phase {
             0 => window.set_settings_page(1),
             1 => {
@@ -292,12 +333,14 @@ fn check_editor_startup() {
                 window.set_dual_message("创建独立环境，首次使用需要自行登录。".into());
             }
             9 => {
+                assert!(!window.get_dual_advanced_open(), "Advanced controls must not add setup steps to the main flow");
                 assert!(!window.get_dual_enabled());
                 assert!(!window.get_dual_deployed());
                 assert!(!window.get_dual_app_installed());
                 assert!(window.get_dual_app_path().is_empty());
                 assert!(window.get_dual_profile_home().is_empty());
                 assert!(!window.get_dual_tui_available());
+                assert!(!window.get_dual_tui_configured());
                 assert!(!window.get_dual_busy());
                 window.set_dual_busy(true);
                 window.set_dual_phase("正在验证隔离与签名…".into());
@@ -309,11 +352,17 @@ fn check_editor_startup() {
                 assert!(!config_path.exists());
                 window.set_dual_busy(false);
                 window.set_dual_error(true);
-                window.set_dual_message("Codex 应用签名无效或不是 OpenAI 官方签名；未修改现有环境。请检查后重试。".into());
+                window.set_dual_app_installed(true);
+                window.set_dual_tui_available(true);
+                window.set_dual_tui_configured(false);
+                window.set_dual_message("Dodex App 已安装；TUI 配置未完成。已完成的部分保留，请继续安装并配置。".into());
             }
             11 => {
                 assert!(window.get_dual_error());
                 assert!(!window.get_dual_busy(), "A failed operation must allow retry");
+                assert!(window.get_dual_app_installed() && window.get_dual_tui_available());
+                assert!(!window.get_dual_tui_configured(), "An App's bundled CLI must not imply a configured dodex command");
+                window.set_dual_app_installed(false);
                 window.set_dual_deployed(true);
                 window.set_dual_enabled(true);
                 window.set_dual_error(false);
@@ -363,6 +412,7 @@ fn check_editor_startup() {
                 editor.add_isolated_secondary(second_config_path.clone());
                 editor.reload_isolated_drafts();
                 window.set_settings_page(1);
+                window.set_dual_advanced_open(true);
                 window.set_dual_scroll_y(-330.0);
             }
             15 => {
@@ -521,11 +571,13 @@ fn check_editor_startup() {
                     assert_eq!(std::fs::read_to_string(path.with_file_name("session.log")).unwrap(), "log fixture");
                 }
                 assert_eq!(std::fs::read_to_string(second_config_path.with_file_name("AGENTS.override.md")).unwrap(), "Secondary override stays local\n");
+                window.set_dual_advanced_open(false);
                 window.set_dual_scroll_y(0.0);
                 window.set_dual_app_installed(true);
                 window.set_dual_app_path("/Applications/Dodex.app".into());
                 window.set_dual_app_version("26.924.22138 (11645)".into());
                 window.set_dual_tui_available(false);
+                window.set_dual_tui_configured(false);
                 window.set_dual_message("Dodex App 已安装；Companion 监控未启用。".into());
             }
             29 => {
@@ -537,13 +589,16 @@ fn check_editor_startup() {
             }
             30 => {
                 assert!(window.get_dual_app_installed() && window.get_dual_tui_available());
+                assert!(!window.get_dual_tui_configured(), "Discovery alone must not claim that installation completed");
                 assert!(!window.get_dual_enabled(), "Detecting a CLI must not enable monitoring");
+                window.set_dual_tui_configured(true);
                 weak_editor.upgrade().unwrap().set_isolated_monitoring(true);
                 window.set_dual_message("Companion 已接入副账号 CLI。".into());
                 window.global::<ui::Palette>().set_color_scheme(ColorScheme::Dark);
             }
             31 => {
                 assert!(window.get_dual_enabled() && window.get_dual_tui_available());
+                assert!(window.get_dual_tui_configured());
                 assert!(window.get_dual_app_installed());
                 assert_eq!(window.get_dual_app_path(), "/Applications/Dodex.app");
                 window.set_software_versions(slint::ModelRc::new(slint::VecModel::from(vec![
@@ -623,8 +678,94 @@ fn check_editor_startup() {
                 window.set_login_item_message("无法开启登录时自动启动：Operation not permitted（SMAppServiceErrorDomain / 1）。\n尚未生效；请在系统登录项设置中允许 Agent Companion。".into());
                 window.global::<ui::Palette>().set_color_scheme(ColorScheme::Light);
             }
-            _ => {
+            36 => {
                 assert!(!window.get_run_at_login() && window.get_login_item_requires_approval());
+                window.set_settings_page(1);
+                window.set_dual_advanced_open(false);
+                window.set_dual_scroll_y(0.0);
+                window.set_dual_enabled(false);
+                window.set_dual_deployed(false);
+                window.set_dual_app_installed(false);
+                window.set_dual_tui_available(false);
+                window.set_dual_tui_configured(false);
+                window.set_dual_busy(false);
+                window.set_dual_error(false);
+                window.set_dual_message("".into());
+                window.set_software_versions(slint::ModelRc::new(slint::VecModel::from(Vec::<ui::SoftwareVersion>::new())));
+                window.set_software_busy(false);
+                window.set_software_error(false);
+                window.set_software_message("".into());
+                window.set_software_notice("".into());
+            }
+            37 => {
+                assert!(!window.get_dual_advanced_open());
+                assert!(!window.get_dual_app_installed() && !window.get_dual_tui_configured());
+                // Real pointer events at the minimum 820×720 layout verify
+                // forwarding through MacSettings → DualSettings → root.
+                click(100.0, 257.0);
+                assert_eq!(setup_requests.get(), 1);
+                click(80.0, 403.0);
+                assert!(maintenance_requests.borrow().is_empty(), "Alignment requires a configured TUI");
+                window.set_dual_app_installed(true);
+                window.set_dual_tui_available(true);
+                window.set_dual_error(true);
+                window.set_dual_message("Dodex App 已完成，TUI 入口配置失败。已完成内容保留，修正后继续安装并配置。".into());
+            }
+            38 => {
+                assert!(window.get_dual_app_installed() && window.get_dual_tui_available());
+                assert!(!window.get_dual_tui_configured() && window.get_dual_error());
+                click(100.0, 257.0);
+                assert_eq!(setup_requests.get(), 2, "A partial installation must allow retry");
+                click(80.0, 430.0);
+                assert!(maintenance_requests.borrow().is_empty(), "The App's bundled CLI is not a configured TUI entry");
+                window.set_dual_tui_configured(true);
+                window.set_dual_enabled(true);
+                window.set_dual_error(false);
+                window.set_dual_message("安装与配置已完成。打开 Dodex 后，请自行登录第二个账号。".into());
+            }
+            39 => {
+                assert!(window.get_dual_tui_configured() && window.get_dual_enabled());
+                assert!(!window.get_dual_error(), "Waiting for the user's login is a successful installation state");
+                click(235.0, 257.0);
+                assert_eq!(open_requests.get(), 1);
+                click(80.0, 430.0);
+                assert_eq!(*maintenance_requests.borrow(), ["align"]);
+                click(70.0, 524.0);
+                assert!(window.get_dual_advanced_open(), "Advanced controls must be reachable through the visible button");
+                click(70.0, 524.0);
+                assert!(!window.get_dual_advanced_open());
+                window.set_software_busy(true);
+                window.set_software_message("正在对齐 Dodex TUI，保留副账号配置与会话…".into());
+            }
+            40 => {
+                assert!(window.get_software_busy() && !window.get_dual_busy(), "Alignment must not masquerade as installation progress");
+                click(100.0, 257.0);
+                click(235.0, 257.0);
+                click(80.0, 430.0);
+                assert_eq!(setup_requests.get(), 2, "Installing is disabled while alignment owns the maintenance lock");
+                assert_eq!(open_requests.get(), 1);
+                assert_eq!(*maintenance_requests.borrow(), ["align"], "Repeated alignment clicks must be disabled");
+                window.set_software_busy(false);
+                window.set_software_message("".into());
+                window.set_dual_advanced_open(true);
+            }
+            41 => {
+                assert!(window.get_dual_advanced_open());
+                window.set_dual_advanced_open(false);
+                window.set_macos_preferences(false);
+                window.set_windows_preferences(true);
+                window.set_settings_page(3);
+                window.set_dual_scroll_y(0.0);
+                window.window().set_size(slint::LogicalSize::new(820.0, 720.0));
+            }
+            42 => {
+                // Switching the complete platform layout and default font can
+                // need a native redraw after the resize event; let it settle.
+                assert!(window.get_windows_preferences() && !window.get_macos_preferences());
+            }
+            _ => {
+                assert!(window.get_windows_preferences() && !window.get_macos_preferences());
+                assert!(window.get_dual_app_installed() && window.get_dual_tui_configured());
                 completed_check.set(true);
                 slint::quit_event_loop().unwrap();
             }
@@ -643,6 +784,6 @@ fn check_editor_startup() {
     finished.send(None).unwrap();
     watchdog.join().unwrap();
     println!(
-        "PASS: opaque AppKit editor; three menu-only settings sections, light/dark/minimum-size layouts, login-item disabled/enabled/approval/error states and isolated callbacks; separate status-bar drafts; fresh/legacy/App-only/monitored desktop states; manual bidirectional config/AGENTS sync with backups, no-op/error feedback, disabled-monitoring and missing-target support, override warnings, dirty/busy guards and retained selection; all file writes stayed in isolated fixtures"
+        "PASS: opaque AppKit editor; two main dual-instance actions with fresh/partial/ready/alignment states and collapsed advanced settings on macOS and Windows layouts; login-item states and isolated callbacks; separate status-bar drafts; manual config/AGENTS sync with backups and dirty/busy guards; all file writes stayed in isolated fixtures"
     );
 }

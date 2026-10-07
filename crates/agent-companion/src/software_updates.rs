@@ -24,6 +24,41 @@ pub(crate) fn managed_cli() -> Option<std::path::PathBuf> {
     platform::System::new().ok()?.managed_cli().ok().flatten()
 }
 
+#[cfg(target_os = "macos")]
+pub(crate) fn cli_is_configured(app: &std::path::Path) -> bool {
+    platform::System::new().is_ok_and(|system| system.cli_is_configured(app))
+}
+
+/// One maintenance transaction shared by the settings worker and --install.
+/// Alignment completes the App before publishing its terminal entry. Monitoring
+/// is enabled only after both components and their common profile are verified.
+#[cfg(target_os = "macos")]
+pub(crate) fn install_and_configure(
+    mut report: impl FnMut(&str),
+) -> Result<crate::macos_deployment::CompletedDeployment, String> {
+    let ops = platform::System::new()?;
+    let _lock = ops.lock()?;
+    install_local(&ops, &mut report, || {
+        ops.configure_shell()?;
+        crate::macos_deployment::complete_install_under_maintenance_lock()
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn install_local<T>(
+    ops: &dyn Operations,
+    mut report: impl FnMut(&str),
+    complete: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let mut snapshot = Snapshot::default();
+    execute(ops, Some(Action::Align), |change| {
+        change(&mut snapshot);
+        report(&snapshot.message);
+    })?;
+    report("正在注册 dodex 命令并启用 Companion 监控…");
+    complete()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Action {
     Align,
@@ -187,6 +222,9 @@ trait Operations {
     fn recover(&self) -> Result<(), String> {
         Ok(())
     }
+    fn recover_secondary(&self) -> Result<(), String> {
+        Ok(())
+    }
     fn always_update_primary(&self, _app: bool) -> bool {
         false
     }
@@ -208,6 +246,11 @@ trait Operations {
     }
     /// Checks all affected desktop and terminal processes before any changes.
     fn require_stopped(&self) -> Result<(), String>;
+    /// Alignment reads the primary installation without changing it. Only the
+    /// secondary components actually being replaced need to be stopped.
+    fn require_secondary_stopped(&self, _cli: bool, _app: bool) -> Result<(), String> {
+        self.require_stopped()
+    }
     fn update_primary(&self, app: bool, release: &Release) -> Result<(), String>;
     fn align_secondary(&self, app: bool, expected: &Version) -> Result<(), String>;
 }
@@ -229,6 +272,9 @@ impl Service {
     }
     pub fn start(&self, action: Action) {
         self.start_job(Some(action));
+    }
+    pub fn refresh(&self) {
+        self.start_job(None);
     }
     /// Keep the initial menu request until local inspection has completed;
     /// requests during an actual update are rejected, never silently replayed.
@@ -316,8 +362,10 @@ fn execute(
     action: Option<Action>,
     mut report: impl FnMut(Change<'_>),
 ) -> Result<(), String> {
-    if action.is_some() {
-        ops.recover()?;
+    match action {
+        Some(Action::UpdateAll) => ops.recover()?,
+        Some(Action::Align) => ops.recover_secondary()?,
+        None => {}
     }
     let mut installed: [Option<Version>; 4] = Default::default();
     let mut inspection_error = None;
@@ -436,7 +484,14 @@ fn execute(
             plan.iter()
                 .any(|(app, _, primary, secondary)| *app && (*primary || *secondary)),
         )?;
-        ops.require_stopped()?;
+        if action == Action::Align {
+            ops.require_secondary_stopped(
+                plan.iter().any(|(app, _, _, secondary)| !app && *secondary),
+                plan.iter().any(|(app, _, _, secondary)| *app && *secondary),
+            )?;
+        } else {
+            ops.require_stopped()?;
+        }
     }
     let result = (|| {
         // Publish the App bootstrap before migrating the terminal entry so its
@@ -503,7 +558,7 @@ fn execute(
                         secondary.name()
                     )
                 }));
-                ops.require_stopped()?;
+                ops.require_secondary_stopped(!app, *app)?;
                 ops.align_secondary(*app, &desired)?;
                 verify_result(ops, secondary, &desired)?;
             }

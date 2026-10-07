@@ -88,6 +88,9 @@ enum Command {
     /// Check Dodex App; --sync copies the locally installed official Codex App.
     #[cfg(target_os = "macos")]
     DodexApp {
+        /// Install and configure both Dodex App and TUI without opening or signing in.
+        #[arg(long, conflicts_with_all = ["repair", "sync", "sync_on_launch"])]
+        install: bool,
         #[arg(long, conflicts_with = "sync")]
         repair: bool,
         #[arg(long, conflicts_with = "repair")]
@@ -279,13 +282,16 @@ fn main() -> ExitCode {
         Some(Command::InstallCli) => cli_install::run(),
         #[cfg(target_os = "macos")]
         Some(Command::DodexApp {
+            install,
             repair,
             sync,
             sync_on_launch,
         }) => if let Some(app) = sync_on_launch {
             macos_deployment::sync_desktop_on_launch(&app)
         } else {
-            (if sync {
+            (if install {
+                macos_deployment::install_and_configure().map(|status| status.message)
+            } else if sync {
                 macos_deployment::sync_desktop()
             } else {
                 macos_deployment::desktop_entry(repair)
@@ -353,12 +359,13 @@ mod macos_cli_tests {
                 .unwrap()
                 .command,
             Some(Command::DodexApp {
+                install: false,
                 repair: false,
                 sync: false,
                 sync_on_launch: Some(path),
             }) if path == std::path::Path::new(app)
         ));
-        for option in ["--repair", "--sync"] {
+        for option in ["--repair", "--sync", "--install"] {
             assert!(
                 Cli::try_parse_from([
                     "agent-companion",
@@ -377,7 +384,24 @@ mod macos_cli_tests {
             .unwrap_err()
             .to_string();
         assert!(help.contains("--sync"));
+        assert!(help.contains("--install"));
         assert!(!help.contains("--sync-on-launch"));
+        assert!(matches!(
+            Cli::try_parse_from(["agent-companion", "dodex-app", "--install"])
+                .unwrap()
+                .command,
+            Some(Command::DodexApp {
+                install: true,
+                repair: false,
+                sync: false,
+                sync_on_launch: None
+            })
+        ));
+        for option in ["--repair", "--sync"] {
+            assert!(
+                Cli::try_parse_from(["agent-companion", "dodex-app", "--install", option]).is_err()
+            );
+        }
     }
 }
 

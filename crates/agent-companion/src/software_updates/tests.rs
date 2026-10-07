@@ -1,11 +1,14 @@
 use super::*;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 struct Fake {
     versions: RefCell<[Option<Version>; 4]>,
     calls: RefCell<Vec<String>>,
     offline: bool,
     running: bool,
+    primary_running: bool,
+    secondary_running: [bool; 2],
+    fail_align_cli: Cell<bool>,
     fail_align_app: bool,
     unsupported: bool,
     app_needs_sync: bool,
@@ -38,6 +41,9 @@ impl Default for Fake {
             calls: RefCell::new(Vec::new()),
             offline: false,
             running: false,
+            primary_running: false,
+            secondary_running: [false; 2],
+            fail_align_cli: Cell::new(false),
             fail_align_app: false,
             unsupported: false,
             app_needs_sync: false,
@@ -103,8 +109,19 @@ impl Operations for Fake {
         }
     }
     fn require_stopped(&self) -> Result<(), String> {
-        if self.running {
+        if self.running
+            || self.primary_running
+            || self.secondary_running.iter().any(|running| *running)
+        {
             Err("quit running TUI first".into())
+        } else {
+            Ok(())
+        }
+    }
+    fn require_secondary_stopped(&self, cli: bool, app: bool) -> Result<(), String> {
+        if self.running || (cli && self.secondary_running[0]) || (app && self.secondary_running[1])
+        {
+            Err("quit affected Dodex first".into())
         } else {
             Ok(())
         }
@@ -126,6 +143,9 @@ impl Operations for Fake {
         self.calls.borrow_mut().push(format!("align-{app}"));
         if app && self.fail_align_app {
             return Err("app mirror failed".into());
+        }
+        if !app && self.fail_align_cli.get() {
+            return Err("terminal publication failed".into());
         }
         self.versions.borrow_mut()[if app { 3 } else { 1 }] = Some(expected.clone());
         Ok(())
@@ -149,6 +169,86 @@ fn observing_and_alignment_do_not_contact_upstream_and_preserve_primary() {
     assert_eq!(fake.versions.borrow()[0], original);
     assert_eq!(snapshot.rows[0].current, snapshot.rows[1].current);
     assert_eq!(snapshot.rows[2].current, snapshot.rows[3].current);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn fresh_setup_completes_both_components_before_monitoring_and_is_idempotent() {
+    let fake = Fake {
+        primary_running: true,
+        ..Fake::default()
+    };
+    fake.versions.borrow_mut()[1] = None;
+    fake.versions.borrow_mut()[3] = None;
+    let primary = [
+        fake.versions.borrow()[0].clone(),
+        fake.versions.borrow()[2].clone(),
+    ];
+    let complete = || {
+        assert_eq!(fake.versions.borrow()[0], fake.versions.borrow()[1]);
+        assert_eq!(fake.versions.borrow()[2], fake.versions.borrow()[3]);
+        Ok(())
+    };
+    install_local(&fake, |_| {}, complete).unwrap();
+    assert_eq!(*fake.calls.borrow(), ["align-true", "align-false"]);
+    install_local(&fake, |_| {}, complete).unwrap();
+    assert_eq!(*fake.calls.borrow(), ["align-true", "align-false"]);
+    assert_eq!(
+        [
+            fake.versions.borrow()[0].clone(),
+            fake.versions.borrow()[2].clone()
+        ],
+        primary
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn setup_resumes_after_app_success_without_publishing_monitoring_on_tui_failure() {
+    let fake = Fake {
+        fail_align_cli: Cell::new(true),
+        ..Fake::default()
+    };
+    fake.versions.borrow_mut()[1] = None;
+    fake.versions.borrow_mut()[3] = None;
+    let enabled = Cell::new(false);
+    let complete = || {
+        enabled.set(true);
+        Ok(())
+    };
+    assert!(install_local(&fake, |_| {}, complete).is_err());
+    assert!(!enabled.get());
+    assert_eq!(fake.versions.borrow()[2], fake.versions.borrow()[3]);
+    assert!(fake.versions.borrow()[1].is_none());
+    fake.fail_align_cli.set(false);
+    install_local(&fake, |_| {}, complete).unwrap();
+    assert!(enabled.get());
+    assert_eq!(
+        *fake.calls.borrow(),
+        ["align-true", "align-false", "align-false"]
+    );
+}
+
+#[test]
+fn alignment_allows_primary_and_untouched_secondary_but_stops_affected_dodex() {
+    let fake = Fake {
+        primary_running: true,
+        secondary_running: [false, true],
+        ..Fake::default()
+    };
+    let current_app = fake.versions.borrow()[2].clone();
+    fake.versions.borrow_mut()[3] = current_app;
+    run(&fake, Some(Action::Align)).1.unwrap();
+    assert_eq!(*fake.calls.borrow(), ["align-false"]);
+    assert!(run(&fake, Some(Action::UpdateAll)).1.is_err());
+    let fake = Fake {
+        secondary_running: [true, false],
+        ..Fake::default()
+    };
+    let original = fake.versions.borrow().clone();
+    assert!(run(&fake, Some(Action::Align)).1.is_err());
+    assert_eq!(*fake.versions.borrow(), original);
+    assert!(fake.calls.borrow().is_empty());
 }
 #[test]
 fn alignment_never_downgrades_newer_dodex() {

@@ -1397,7 +1397,12 @@ mod tests {
         assert_eq!(ops.copies.load(Ordering::SeqCst), 1);
         assert_eq!(ops.registrations.load(Ordering::SeqCst), 1);
 
-        let record = monitor_after_app_sync(&fixture.layout, None, &result.instance).unwrap();
+        validate_monitor_after_app_sync(&fixture.layout, None, &result.instance).unwrap();
+        assert!(!fixture.layout.settings().exists());
+        // A pre-existing disabled preference remains readable without a
+        // bundled CLI; App-only sync itself never creates that preference.
+        save_record(&fixture.layout, false, &result.instance).unwrap();
+        let record = existing_monitor_record(&fixture.layout).unwrap().unwrap();
         assert!(!record.enabled);
         let settings = fs::read(fixture.layout.settings()).unwrap();
         let config = fs::read(profile.codex_home.join("config.toml")).unwrap();

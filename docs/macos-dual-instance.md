@@ -11,18 +11,31 @@ identify last-known readings awaiting an update. Missing readings show `—`.
 Second-instance support remains disabled until explicit opt-in. Settings reads
 installed App metadata and saved directory paths for display; opening the page
 does not verify or synchronize the App, deploy, adopt, or launch Dodex, or read
-account credentials. App checks and synchronization on this page start only
-when **安装 Dodex App** or **检查并同步** is clicked. Enabling monitoring and
-explicit configuration writes retain their own validation.
+account credentials. Installation and synchronization start only after an explicit setup, alignment
+or update action. Advanced monitoring controls and explicit configuration writes
+retain their own validation.
 
-## Create and update Dodex App
+## Install and configure Dodex
 
-The settings page separates **Dodex App**, **Companion 接入**, and the secondary
-account's **副账号与 TUI**. App installation is reported independently
-of Companion monitoring: an existing TUI profile does not mean the new App is
-installed, and disabling monitoring does not uninstall the App. The account
-configuration actions below these sections copy files between Codex and Dodex;
-they do not update either application's program files.
+The **Codex 双开** page has two main actions:
+
+- **安装并配置 Dodex** prepares the App, complete TUI package, shared independent secondary profile, `dodex` shell command and Companion monitoring. The button reports progress and preserves completed work after a partial failure; **继续安装并配置** retries the workflow.
+- **对齐版本** aligns each Dodex App/TUI with its corresponding local Codex App/TUI. The App and TUI can legitimately have different versions.
+
+App installation, a configured TUI command and monitoring have separate status
+indicators. An App's bundled CLI alone does not mean TUI setup is complete.
+Successful setup does not require a signed-in account: click **打开 Dodex** and
+sign in with the second account yourself. Installation never copies primary
+credentials, personal config or AGENTS instructions. Manual file synchronization,
+the monitoring switch, paths and online updates are under **高级设置**.
+
+The setup pipeline can also be run without the settings UI:
+
+```sh
+agent-companion dodex-app --install
+```
+
+## Dodex App updates
 
 The **Codex 双开** page creates Dodex App from the official Codex App already
 installed on this Mac. Thereafter, opening Dodex from Finder or Dock checks the
@@ -38,16 +51,15 @@ the launcher reports the failure and does not start an unverified profile. Concu
 startup and manual synchronization share a deployment lock; an already running
 Dodex process is never replaced.
 
-To install, click **安装 Dodex App**. For a manual update, quit Dodex and click
-**检查并同步**, or run:
+For a manual App-only update, quit Dodex and run:
 
 ```sh
 agent-companion dodex-app --sync
 ```
 
 `agent-companion dodex-app` only checks the current App and reports whether its
-source matches the locally installed official version. Neither public command
-launches an App. Existing mirrors need one manual sync after installing this
+source matches the locally installed official version. Neither the setup nor App-only maintenance commands
+launch an App or sign in. Existing mirrors need one manual sync after installing this
 Companion update to receive the startup check.
 
 The startup check leaves signatures untouched when versions and launcher revisions match. An actual
@@ -98,29 +110,35 @@ The App mirror has its own record inside
 A fresh App uses separate directories under
 `~/Library/Application Support/AgentCompanion/DodexApp`; it does not copy the
 primary instance's credentials, history or personal configuration and requires
-its own login. If that official release does not include a compatible CLI,
-the App can still be synchronized, but Companion cannot enable its task/usage
-monitoring until a compatible CLI is available.
+its own login. When that official App release has no compatible bundled CLI,
+monitoring can use the complete managed TUI package installed by setup, after
+validating its binding to the same App and secondary profile. App-only sync can
+still succeed without either CLI, but monitoring remains unavailable until a
+compatible runtime is ready.
 
-The support switch controls Companion monitoring. Disabling it does not quit
-Dodex or remove files. Updating an existing App preserves this preference.
+Setup enables Companion monitoring after the App, TUI and command are ready.
+The switch under **高级设置** can subsequently disable monitoring without quitting
+Dodex or removing files. App-only updates preserve that preference.
 
 ## Explicit version maintenance
 
-Right-click the menu-bar readout, or use **版本管理** in Settings → **Codex 双开**:
+Use **对齐版本** in Settings → **Codex 双开**; online updates are under **高级设置**.
+The menu-bar context menu also provides direct maintenance actions:
 
-- **对齐 Codex/Dodex 版本** compares installed versions, entry revisions, public App bindings and maintenance routes without contacting a server. Matching versions can still require an audited entry migration. Codex is the reference for its TUI and App separately. A newer Dodex is retained with a suggestion to check official updates; alignment never downgrades it.
+- **对齐版本** (the context menu calls it **对齐 Codex/Dodex 版本**) compares installed versions, entry revisions, public App bindings and maintenance routes without contacting a server. Matching versions can still require an audited entry migration. Codex is the reference for its TUI and App separately. A newer Dodex is retained with a suggestion to check official updates; alignment never downgrades it.
 - **全部更新到最新** fetches official stable CLI release metadata and the official App feed. It updates the primary standalone CLI with its own updater, verifies the downloaded App's OpenAI signature and exact version/build, and then aligns Dodex. App and CLI version numbers remain independent.
 
 Opening Settings reads local version metadata only. Four rows show current and
 target versions; failures and partial updates remain visible and never imply
-that both instances are current. Existing Apps and TUI processes must be closed
-by the user before replacement. Maintenance does not quit or restart them.
+that both instances are current. Close the Dodex Apps and TUI processes being
+replaced; offline alignment does not require stopping the source Codex. Online
+updates also require the affected primary processes to stop. Maintenance does
+not quit or restart them.
 Concurrent settings windows and App synchronization share filesystem locks.
 
 TUI alignment supports the complete official standalone package with
 `codex-package.json`, official entry symlinks, the known generated primary wrapper,
-and audited legacy Dodex adapter/managed-entry templates. Other
+and either a fresh managed Dodex entry or audited legacy adapter/managed-entry templates. Other
 package managers and unknown adapters are rejected before updates; they are not
 silently converted. The entire versioned package is copied, including
 `codex-code-mode-host`, `codex-path` and `codex-resources`. The original adapter is
@@ -262,3 +280,30 @@ runs the generated Dodex wrapper with a synthetic older session. It verifies
 native app-server list, read and resume against the original rollout and shared
 secondary paths. The fixture denies network access and real account directories;
 it neither starts a model turn nor modifies the installed runtime.
+
+### v0.3.28 validation record
+
+The macOS implementation passed 184 backend tests and the 44-phase isolated
+Slint settings-window integration check. Coverage includes fresh setup,
+partial-failure recovery, shared App/TUI profile bindings, command readiness,
+maintenance locking, version alignment and the simplified settings callbacks.
+These automated fixtures do not sign in to a real account.
+
+An installed local build also completed the following checks on Apple Silicon:
+
+- Fresh installation through `dodex-app --install` created the public Dodex App,
+  complete managed TUI package and shell command, then enabled Companion
+  monitoring. No existing Dodex installation was required.
+- Repeating installation and offline alignment succeeded while the source Codex
+  remained running. Dodex App matched the source App version **26.930.61225**
+  (build **13520**), and Dodex TUI matched the source TUI **0.160.1**. The App's
+  bundled CLI remained **0.155.0**; App and TUI alignment use separate sources.
+- The user signed in to Dodex with a second account. App and TUI shared that
+  secondary profile, distinct from the primary Codex account. Secondary quota
+  and usage-history queries succeeded, and Companion monitoring referenced the
+  same secondary profile. No model turn was created for these checks.
+
+The Companion Usage screen was not visually rechecked after the second-account
+login because desktop automation was unavailable. Windows GUI behavior has not
+been tested on a physical Windows desktop; Windows CI compilation and automated
+checks are reported separately in the release workflow.

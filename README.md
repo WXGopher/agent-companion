@@ -84,7 +84,7 @@ macOS 双实例额度读取、Dodex 手动刷新和 App/TUI 启动已观察通�
 
 随后在 Codex 中用 `/hooks` 审阅并信任配置，再开启新会话。如需提问卡片及精确终端跳转，使用同目录的 `agent-companion-codex.exe` 启动 Codex。
 
-**Windows 双开**：右键任务栏读数或托盘图标 → **Settings… → Codex 双开 → 启用 Dodex 支持**，也可点击 **部署双开环境 / 检查并接入**。需要本机已安装且签名有效的官方 Microsoft Store Codex / ChatGPT 应用。启用时先检查已有环境，缺少时自动部署，并配置 shell 的 `dodex` 命令；重复操作会校验环境、补齐命令，不覆盖已有账号和个人配置。在 PowerShell、cmd 或 Git Bash 中运行 `dodex`，会在当前终端和工作目录打开使用第二份配置的 Codex CLI；首次使用时自行登录第二个账号：
+**Windows 双开**：右键任务栏读数或托盘图标 → **Settings… → Codex 双开 → 安装并配置 Dodex**。一次完成独立环境、`dodex` 命令和 Companion 接入；监控开关与手动配置同步收在“高级设置”。需要本机已安装且签名有效的官方 Microsoft Store Codex / ChatGPT 应用。启用时先检查已有环境，缺少时自动部署，并配置 shell 的 `dodex` 命令；重复操作会校验环境、补齐命令，不覆盖已有账号和个人配置。在 PowerShell、cmd 或 Git Bash 中运行 `dodex`，会在当前终端和工作目录打开使用第二份配置的 Codex CLI；首次使用时自行登录第二个账号：
 
 ```powershell
 dodex
@@ -107,9 +107,9 @@ dodex -C C:\projects\demo
 
 应用尚未经过 Apple 公证；首次打开若被拦截，可按 [Apple 官方说明](https://support.apple.com/102445)在“系统设置 → 隐私与安全性”中选择“仍要打开”。
 
-**macOS 双开**：设置 → Codex 双开 → 安装 Dodex App。从本机签名有效的官方 `Codex.app` 或保留 Codex 身份的 `ChatGPT.app` 创建独立名称、图标和本地签名的公开 App，不修改官方 App。已有账号目录与 TUI 保持不变；新环境首次使用需登录。官方 App 更新后，下次启动 Dodex 会自动检查并同步；版本、构建号和启动器修订一致且隔离校验通过时直接启动；同步或校验失败时停止启动并显示原因，保留已有文件供恢复。也可退出 Dodex 后点击“检查并同步”，或运行 `agent-companion dodex-app --sync`。已有镜像需先手动同步一次以启用启动检查；实际升级可能再次触发 macOS 钥匙串授权。详见 [Dodex App 说明](docs/macos-dual-instance.md)。
+**macOS 双开**：设置 → Codex 双开 → **安装并配置 Dodex**，一次完成 Dodex App、完整 TUI 安装包、`dodex` 命令与 Companion 接入。App 和 TUI 共用独立副账号目录；不会自动复制主账号登录、个人配置或 AGENTS 指令。安装完成后点击“打开 Dodex”，自行登录第二个账号，也可在终端运行 `dodex`。页面显示各步骤进度；部分失败时保留已完成内容，修正原因后点击“继续安装并配置”。相同流程也可运行 `agent-companion dodex-app --install`。App 来源须为本机签名有效的官方 `Codex.app` 或保留 Codex 身份的 `ChatGPT.app`；TUI 来源须为受支持的官方完整 standalone 安装。[双开说明](docs/macos-dual-instance.md)
 
-**macOS 版本管理**：右键菜单栏读数，或设置 → Codex 双开，选择 **对齐 Codex/Dodex 版本**（以本机 Codex 为准，不联网）或 **全部更新到最新**（检查官方稳定版，更新 Codex 后分别对齐双方 App、TUI）。较新的 Dodex 不会被降级。打开设置只读取本机版本；操作中显示四项当前/目标版本及进度、错误。替换前须自行退出相关 App 和 TUI，不会自动结束会话或重启。TUI 对齐目前要求官方完整 standalone 安装和已有的兼容 Dodex 入口：先备份入口，再复制包括附属程序与资源的完整包，沿用副账号登录、会话、SQLite 和日志目录；不会迁移 npm/Homebrew 安装。右键菜单也提供 **Exit**。[版本管理细节](docs/macos-dual-instance.md#explicit-version-maintenance)
+**macOS 版本对齐**：同页点击 **对齐版本**，Dodex App 对齐本机 Codex App，Dodex TUI 对齐本机 Codex TUI；两者版本可以不同，不联网、不自动降级较新的 Dodex。只需退出待替换的 Dodex App / TUI，读取来源的 Codex 可以继续运行。四项当前／目标版本、进度和部分失败结果会分别显示。“高级设置”保留监控开关、手动 config/AGENTS 同步和 **全部更新到最新**；后者会联网检查官方稳定版并更新主程序。安装、对齐均保留副账号登录与会话，不自动结束或重启进程。[维护细节](docs/macos-dual-instance.md#explicit-version-maintenance)
 
 macOS 重新打开 Agent Companion 会显示弹窗的 Tasks 页。刘海、悬停展开、显示器选择与独立 Dock 入口已移除；旧版入口偏好不会隐藏菜单栏，已保存的菜单栏位置继续保留。设置从弹窗底部打开。详见[菜单栏说明](docs/MACOS_MENU_BAR.md)。
 
@@ -203,7 +203,7 @@ Opening the full panel checks for a newer stable GitHub release in the backgroun
 
 Use `/hooks` in Codex to review and trust the configuration, then start a new session. For question cards and precise terminal navigation, launch Codex through `agent-companion-codex.exe` in the same folder.
 
-**Windows second instance**: right-click the taskbar readout or tray icon → **Settings… → Codex 双开 → 启用 Dodex 支持**, or click **部署双开环境 / 检查并接入**. Requires the locally installed, validly signed official Microsoft Store Codex / ChatGPT app. Enabling checks an existing environment, deploys one if missing, and registers the `dodex` shell command. Repeating this validates the deployment and repairs shell support without overwriting existing account data or personal settings. In PowerShell, cmd or Git Bash, `dodex` opens Codex CLI in the current terminal and working directory using the second profile. Sign in with a second account on first use:
+**Windows second instance**: right-click the taskbar readout or tray icon → **Settings… → Codex 双开 → 安装并配置 Dodex**. One action prepares the independent environment, `dodex` command and Companion monitoring. The monitoring switch and manual file synchronization are under advanced settings. Requires the locally installed, validly signed official Microsoft Store Codex / ChatGPT app. Enabling checks an existing environment, deploys one if missing, and registers the `dodex` shell command. Repeating this validates the deployment and repairs shell support without overwriting existing account data or personal settings. In PowerShell, cmd or Git Bash, `dodex` opens Codex CLI in the current terminal and working directory using the second profile. Sign in with a second account on first use:
 
 ```powershell
 dodex
@@ -226,9 +226,9 @@ The command is installed in a supported user command directory already on the cu
 
 The app is not Apple-notarized. If the first launch is blocked, follow [Apple's instructions](https://support.apple.com/102445) to choose **Open Anyway** in System Settings → Privacy & Security.
 
-**macOS second instance**: Settings → Codex 双开 → 安装 Dodex App. Creates a public App with its own name, icon and local signature from the validly signed official `Codex.app` or Codex-identified `ChatGPT.app` installed on this Mac, leaving the official App untouched. Existing profile directories and TUI stay unchanged; fresh environments require login. After the official App updates, the next Dodex startup checks and syncs it automatically. Matching versions, builds and launcher revisions launch directly after isolation checks. Failed synchronization or validation stops launch with a reason and preserves the existing files for recovery. Manual sync remains available after quitting Dodex through “检查并同步” or `agent-companion dodex-app --sync`. Existing mirrors need one manual sync to enable startup checks; actual upgrades may prompt for macOS Keychain access again. See the [Dodex App guide](docs/macos-dual-instance.md).
+**macOS second instance**: Settings → Codex 双开 → **安装并配置 Dodex** installs the App and complete TUI package, configures `dodex`, and enables Companion monitoring in one action. App and TUI share an independent secondary profile; primary credentials, personal settings and AGENTS instructions are not copied. After setup, click **打开 Dodex** and sign in with the second account yourself, or run `dodex` in a terminal. Progress and partial failures remain visible; completed steps are preserved when retrying. `agent-companion dodex-app --install` runs the same workflow. Sources must be a locally installed, validly signed official Codex App and a supported complete standalone Codex TUI package. [Dual-instance guide](docs/macos-dual-instance.md)
 
-**macOS version maintenance**: right-click the menu-bar readout or open Settings → Codex 双开. **对齐 Codex/Dodex 版本** aligns against local Codex without a network request; **全部更新到最新** checks official stable releases, updates Codex, then aligns each App and TUI pair. Newer Dodex versions are retained. Opening Settings only reads local versions. Close affected Apps and terminals before replacement; existing sessions are never terminated or restarted automatically. TUI alignment currently requires the full official standalone package and a compatible existing Dodex adapter. It backs up the adapter and preserves the complete package, auxiliary programs, resources and existing secondary account/session/SQLite/log paths; npm and Homebrew installations are not migrated. The context menu also includes **Exit**. See [maintenance details](docs/macos-dual-instance.md#explicit-version-maintenance).
+**macOS version maintenance**: click **对齐版本** on the same page. Each Dodex App/TUI follows its corresponding local Codex App/TUI; their version numbers can differ. Alignment is offline and preserves a newer Dodex. Close the Dodex processes being replaced; the source Codex can keep running. Four rows report current/target versions, progress and partial results. Advanced settings retain monitoring, manual config/AGENTS synchronization and **全部更新到最新**, which contacts official stable-release services and updates the primary installation. Account data and sessions are preserved; processes are never terminated or restarted automatically. [Maintenance details](docs/macos-dual-instance.md#explicit-version-maintenance)
 
 On macOS, reopening Agent Companion shows the popup's Tasks page. The notch, hover expansion, display selection and separate Dock entry have been removed. Legacy entry preferences cannot hide the menu bar, and its saved position is retained. Open Settings from the popup footer. See the [menu-bar guide](docs/MACOS_MENU_BAR.md).
 

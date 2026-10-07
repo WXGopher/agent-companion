@@ -143,16 +143,14 @@ fn app_sync_preserves_the_existing_monitor_record_and_rejects_a_changed_profile(
     let mirrored =
         desktop_navigation_instance(original.clone(), Some(original.launcher_app.clone()), None);
     let saved = existing_monitor_record(&fixture.layout).unwrap();
-    let record = monitor_after_app_sync(&fixture.layout, saved, &mirrored).unwrap();
-    assert!(!record.enabled);
-    assert_eq!(record.instance, original);
+    validate_monitor_after_app_sync(&fixture.layout, saved.as_ref(), &mirrored).unwrap();
     assert_eq!(fs::read(fixture.layout.settings()).unwrap(), before);
     let mut different = mirrored;
     different.codex_home = fixture.layout.user_home.join("different-profile");
     assert!(
-        monitor_after_app_sync(
+        validate_monitor_after_app_sync(
             &fixture.layout,
-            existing_monitor_record(&fixture.layout).unwrap(),
+            existing_monitor_record(&fixture.layout).unwrap().as_ref(),
             &different
         )
         .is_err()
@@ -1217,19 +1215,64 @@ fn sync_revalidates_saved_deployment_before_writing() {
 }
 
 #[test]
-fn app_without_bundled_cli_is_saved_without_enabling_cli_monitoring() {
+fn app_only_sync_without_bundled_cli_does_not_create_monitoring_preferences() {
     let fixture = Fixture::new();
     let mut mirrored = fixture.layout.instance();
     mirrored.runtime_app = fixture.layout.applications.join("Dodex.app");
     mirrored.launcher_app = mirrored.runtime_app.clone();
     mirrored.cli_path = mirrored.runtime_app.join("Contents/Resources/codex");
     private_directory(&fixture.layout.support).unwrap();
-    let record = monitor_after_app_sync(&fixture.layout, None, &mirrored).unwrap();
-    assert!(!record.enabled);
-    assert_eq!(record.instance, mirrored);
-    let saved = existing_monitor_record(&fixture.layout).unwrap().unwrap();
-    assert!(!saved.enabled);
-    assert_eq!(saved.instance.cli_path, mirrored.cli_path);
+    validate_monitor_after_app_sync(&fixture.layout, None, &mirrored).unwrap();
+    assert!(existing_monitor_record(&fixture.layout).unwrap().is_none());
     assert!(!mirrored.cli_path.exists());
     assert!(!fixture.layout.user_home.join(".local/bin/dodex").exists());
+}
+
+#[test]
+fn app_without_bundled_cli_can_monitor_only_its_bound_complete_tui() {
+    let fixture = Fixture::new();
+    fixture.source();
+    let instance = deploy_fixture(&fixture, &FakeOps::default());
+    fs::remove_file(&instance.cli_path).unwrap();
+    assert!(monitor_runtime_instance(&fixture.layout, &instance, &instance).is_err());
+    let package = fixture.layout.support.join("Tui/packages/fixture/package");
+    for directory in ["bin", "codex-resources", "codex-path"] {
+        private_directory(&package.join(directory)).unwrap();
+    }
+    for file in ["bin/codex", "bin/codex-code-mode-host", "codex-path/rg"] {
+        write_new(&package.join(file), b"fixture", 0o755).unwrap();
+    }
+    write_new(&package.join("codex-package.json"), br#"{"layoutVersion":1,"version":"0.160.1","entrypoint":"bin/codex","resourcesDir":"codex-resources","pathDir":"codex-path"}"#, 0o600).unwrap();
+    let entry = fixture.layout.user_home.join(".local/bin/dodex");
+    private_directory(entry.parent().unwrap()).unwrap();
+    let mut binding = crate::managed_tui::Binding {
+        package,
+        entry: entry.clone(),
+        app: instance.launcher_app.clone(),
+        profile_home: instance.codex_home.clone(),
+        sqlite_home: instance.database_dir.clone(),
+        desktop_data: instance.desktop_user_data.clone(),
+        log_dir: instance.desktop_user_data.join("logs"),
+        original: fixture.layout.support.join("Tui/original-dodex"),
+        companion: PathBuf::from("/usr/bin/true"),
+        version: "0.160.1".into(),
+    };
+    write_new(
+        &entry,
+        &crate::managed_tui::render_wrapper(&binding).unwrap(),
+        0o755,
+    )
+    .unwrap();
+    let runtime = monitor_runtime_instance(&fixture.layout, &instance, &instance).unwrap();
+    validate_instance_paths(&fixture.layout, &runtime).unwrap();
+    assert_eq!(runtime.codex_home, instance.codex_home);
+    assert_eq!(runtime.cli_path, binding.package.join("bin/codex"));
+    assert!(!instance.cli_path.exists());
+    binding.profile_home = fixture.layout.user_home.join(".codex");
+    fs::write(
+        &entry,
+        crate::managed_tui::render_wrapper(&binding).unwrap(),
+    )
+    .unwrap();
+    assert!(monitor_runtime_instance(&fixture.layout, &instance, &instance).is_err());
 }

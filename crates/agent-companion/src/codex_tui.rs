@@ -526,6 +526,12 @@ impl Editor {
                 }
             });
             let weak = Rc::downgrade(&editor);
+            editor.window.on_open_dual(move || {
+                if let Some(editor) = weak.upgrade() {
+                    editor.start_open_dual();
+                }
+            });
+            let weak = Rc::downgrade(&editor);
             editor.window.on_toggle_dual(move |enabled| {
                 if let Some(editor) = weak.upgrade() {
                     editor.start_deployment(Some(enabled));
@@ -574,19 +580,7 @@ impl Editor {
             let weak = Rc::downgrade(&editor);
             editor.window.on_open_dual(move || {
                 if let Some(editor) = weak.upgrade() {
-                    if editor.deployment_operation.borrow().is_some()
-                        || editor.sync_operation.borrow().is_some()
-                        || editor.window.get_software_busy()
-                    {
-                        return;
-                    }
-                    let (sender, receiver) = std::sync::mpsc::channel();
-                    *editor.deployment_operation.borrow_mut() = Some(receiver);
-                    std::thread::spawn(move || {
-                        let result = deployment::launch(None).map(|_| deployment::status());
-                        let _ = sender.send(result);
-                    });
-                    editor.refresh_deployment();
+                    editor.start_open_dual();
                 }
             });
             let weak = Rc::downgrade(&editor);
@@ -812,9 +806,13 @@ impl Editor {
         let busy = self.sync_operation.borrow().is_some();
         let deployment_busy = self.deployment_operation.borrow().is_some()
             || (self.live_deployment && deployment_status().busy);
+        let software_busy = self
+            .software
+            .as_ref()
+            .is_some_and(|service| service.snapshot().busy);
         // Validation shares the deployment lock. Keep the last validated paths
         // visible while an operation holds it, then rediscover on completion.
-        if self.live_deployment && !busy && !deployment_busy {
+        if self.live_deployment && !busy && !deployment_busy && !software_busy {
             match deployment::profile_sync_paths() {
                 Ok(pair) => {
                     *self.sync_paths.borrow_mut() = Some(pair);
@@ -895,8 +893,11 @@ impl Editor {
                 note.push_str("源文件不存在时对应方向不可用；目标文件不存在时可创建。");
             }
             let feedback = self.sync_feedback.borrow()[index].clone();
-            let available =
-                !(pair.is_none() || busy || deployment_busy || kind == FileKind::Config && dirty);
+            let available = !(pair.is_none()
+                || busy
+                || deployment_busy
+                || software_busy
+                || kind == FileKind::Config && dirty);
             let row = ui::ProfileSyncFile {
                 key: if kind == FileKind::Config {
                     "config"
@@ -990,6 +991,9 @@ impl Editor {
             .spawn(move || {
                 let result = match enabled {
                     Some(enabled) => deployment::set_enabled(enabled),
+                    #[cfg(target_os = "macos")]
+                    None => deployment::install_and_configure(),
+                    #[cfg(windows)]
                     None => deployment::deploy(),
                 };
                 let _ = sender.send(result);
@@ -997,6 +1001,51 @@ impl Editor {
         if worker.is_err() {
             self.deployment_operation.borrow_mut().take();
             *self.deployment_error.borrow_mut() = Some("无法开始部署操作，请重试。".into());
+        }
+        self.refresh_deployment();
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
+    fn start_open_dual(&self) {
+        if !self.live_deployment
+            || self.deployment_operation.borrow().is_some()
+            || self.sync_operation.borrow().is_some()
+            || self.window.get_software_busy()
+            || deployment_status().busy
+        {
+            return;
+        }
+        *self.deployment_error.borrow_mut() = None;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        *self.deployment_operation.borrow_mut() = Some(receiver);
+        let worker = std::thread::Builder::new()
+            .name("open-dodex".into())
+            .spawn(move || {
+                #[cfg(target_os = "macos")]
+                let result = (|| {
+                    deployment::desktop_entry(false)?;
+                    let app = deployment::settings_presentation()
+                        .app_path
+                        .ok_or("Dodex App 尚未安装，请先完成安装与配置。")?;
+                    let mut command = std::process::Command::new("/usr/bin/open");
+                    agent_companion_core::process_environment::isolate_command(&mut command);
+                    let status = command
+                        .arg("-a")
+                        .arg(app)
+                        .status()
+                        .map_err(|_| "无法打开 Dodex，请从应用程序中重试。")?;
+                    if !status.success() {
+                        return Err("无法打开 Dodex，请从应用程序中重试。".into());
+                    }
+                    Ok(deployment_status())
+                })();
+                #[cfg(windows)]
+                let result = deployment::launch(None).map(|_| deployment_status());
+                let _ = sender.send(result);
+            });
+        if worker.is_err() {
+            self.deployment_operation.borrow_mut().take();
+            *self.deployment_error.borrow_mut() = Some("无法开始打开 Dodex，请重试。".into());
         }
         self.refresh_deployment();
     }
@@ -1062,6 +1111,9 @@ impl Editor {
         if let Some(result) = completed {
             self.deployment_operation.borrow_mut().take();
             *self.deployment_error.borrow_mut() = result.err();
+            if let Some(service) = &self.software {
+                service.refresh();
+            }
         }
         let status = deployment_status();
         let busy = status.busy
@@ -1079,7 +1131,7 @@ impl Editor {
         let (available, selection_changed) = {
             let mut drafts = self.drafts.borrow_mut();
             let previous_path = drafts.active().path.clone();
-            drafts.set_secondary(config_path.filter(|_| status.enabled));
+            drafts.set_secondary(config_path.clone().filter(|_| status.enabled));
             (
                 drafts.secondary_available,
                 previous_path != drafts.active().path,
@@ -1124,6 +1176,8 @@ impl Editor {
             );
             self.window
                 .set_dual_tui_available(presentation.tui_available);
+            self.window
+                .set_dual_tui_configured(presentation.tui_configured);
             self.window.set_dual_phase(
                 if self.sync_operation.borrow().is_some() {
                     "正在同步所选配置文件…"
@@ -1136,17 +1190,30 @@ impl Editor {
             );
         }
         #[cfg(windows)]
-        self.window.set_dual_phase(
-            match status.phase.as_str() {
-                "copying" => "正在复制官方运行程序…",
-                "configuring" => "正在创建独立环境…",
-                "verifying" => "正在验证隔离与签名…",
-                "shell" => "正在设置 dodex 命令…",
-                "finishing" => "正在完成部署…",
-                _ => "正在检查双开环境…",
-            }
-            .into(),
-        );
+        {
+            self.window.set_dual_app_installed(status.deployed);
+            self.window.set_dual_tui_available(status.deployed);
+            self.window.set_dual_tui_configured(status.deployed);
+            self.window.set_dual_profile_home(
+                config_path
+                    .as_deref()
+                    .and_then(std::path::Path::parent)
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+                    .into(),
+            );
+            self.window.set_dual_phase(
+                match status.phase.as_str() {
+                    "copying" => "正在复制官方运行程序…",
+                    "configuring" => "正在创建独立环境…",
+                    "verifying" => "正在验证隔离与签名…",
+                    "shell" => "正在设置 dodex 命令…",
+                    "finishing" => "正在完成部署…",
+                    _ => "正在检查双开环境…",
+                }
+                .into(),
+            );
+        }
         let error = self.deployment_error.borrow();
         self.window
             .set_dual_error(error.is_some() || status.phase == "failed");
@@ -1427,13 +1494,19 @@ pub fn run() -> std::io::Result<()> {
     let editor = Editor::new(path).map_err(std::io::Error::other)?;
     let weak = Rc::downgrade(&editor);
     editor.window.window().on_close_requested(move || {
-        if let Some(editor) = weak.upgrade()
-            && editor.window.get_software_busy()
-        {
-            editor
-                .window
-                .set_software_notice("正在处理版本操作，请等待结果后再关闭设置。".into());
-            return slint::CloseRequestResponse::KeepWindowShown;
+        if let Some(editor) = weak.upgrade() {
+            if editor.window.get_software_busy() {
+                editor
+                    .window
+                    .set_software_notice("正在处理版本操作，请等待结果后再关闭设置。".into());
+                return slint::CloseRequestResponse::KeepWindowShown;
+            }
+            if editor.window.get_dual_busy() {
+                editor
+                    .window
+                    .set_dual_phase("正在处理 Dodex，请等待完成后再关闭设置。".into());
+                return slint::CloseRequestResponse::KeepWindowShown;
+            }
         }
         let _ = slint::quit_event_loop();
         slint::CloseRequestResponse::HideWindow

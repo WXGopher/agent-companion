@@ -2,6 +2,20 @@ use super::*;
 use std::os::unix::fs::symlink;
 
 #[test]
+fn fresh_terminal_entry_does_not_require_a_legacy_adapter() {
+    let temporary = tempfile::tempdir().unwrap();
+    let home = temporary.path().canonicalize().unwrap();
+    let entry = home.join(".local/bin/dodex");
+    assert!(!legacy_entry(&home, &entry).unwrap());
+    fs::create_dir_all(entry.parent().unwrap()).unwrap();
+    fs::write(&entry, b"unrelated command").unwrap();
+    assert!(legacy_entry(&home, &entry).is_err());
+    fs::remove_file(&entry).unwrap();
+    symlink(home.join("missing"), &entry).unwrap();
+    assert!(legacy_entry(&home, &entry).is_err());
+}
+
+#[test]
 fn release_parsing_rejects_prerelease_and_filters_delta_wrong_arch_and_os() {
     assert_eq!(
         parse_cli_release(br#"{"tag_name":"rust-v0.160.0","draft":false,"prerelease":false}"#)
@@ -59,6 +73,45 @@ fn pathless_cli_and_every_bundle_child_block_replacement() {
         b"/Applications/Other.app/Contents/MacOS/Other\n",
         &paths
     ));
+}
+
+#[test]
+fn secondary_replacement_does_not_block_the_primary_or_an_unaffected_app() {
+    let app = PathBuf::from("/user/Applications/Dodex.app");
+    let package =
+        PathBuf::from("/user/Library/Application Support/AgentCompanion/Tui/packages/current");
+    let source = b"/Applications/ChatGPT.app/Contents/MacOS/ChatGPT\n/opt/homebrew/Caskroom/codex/0.160.1/bin/codex\ncodex\n";
+    assert!(!secondary_process_matches(
+        source,
+        &[app.clone(), package.clone()]
+    ));
+    let running_app = b"/user/Applications/Dodex.app/Contents/Frameworks/Helper\n";
+    assert!(!secondary_process_matches(
+        running_app,
+        std::slice::from_ref(&package)
+    ));
+    assert!(secondary_process_matches(running_app, &[app]));
+    assert!(secondary_process_matches(
+        format!("{}/bin/codex-code-mode-host\n", package.display()).as_bytes(),
+        &[package]
+    ));
+}
+
+#[test]
+fn complete_package_metadata_rejects_resources_linked_to_another_installation() {
+    let temp = tempfile::tempdir().unwrap();
+    let package = temp.path().canonicalize().unwrap();
+    for directory in ["bin", "codex-path", "codex-resources"] {
+        fs::create_dir(package.join(directory)).unwrap();
+    }
+    for file in ["bin/codex", "bin/codex-code-mode-host", "codex-path/rg"] {
+        fs::write(package.join(file), b"fixture").unwrap();
+    }
+    fs::write(package.join("codex-package.json"), br#"{"layoutVersion":1,"version":"0.160.1","entrypoint":"bin/codex","resourcesDir":"codex-resources","pathDir":"codex-path"}"#).unwrap();
+    assert_eq!(managed_tui::package_version(&package).unwrap(), "0.160.1");
+    fs::rename(package.join("codex-resources"), package.join("elsewhere")).unwrap();
+    symlink(package.join("elsewhere"), package.join("codex-resources")).unwrap();
+    assert!(managed_tui::package_version(&package).is_err());
 }
 
 #[test]

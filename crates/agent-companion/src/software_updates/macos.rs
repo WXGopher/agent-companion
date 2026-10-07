@@ -14,6 +14,8 @@ use std::{
 
 #[path = "entries.rs"]
 pub(crate) mod entries;
+#[path = "shell.rs"]
+mod shell;
 
 const CLI_RELEASE: &str = "https://api.github.com/repos/openai/codex/releases/latest";
 const APP_FEED: &str = "https://persistent.oaistatic.com/codex-app-prod/appcast.xml";
@@ -74,6 +76,21 @@ impl System {
         };
         binding.executable().map(Some)
     }
+    pub fn cli_is_configured(&self, app: &Path) -> bool {
+        let Ok(Some(binding)) = self.managed_binding() else {
+            return false;
+        };
+        let Ok(companion) = std::env::current_exe() else {
+            return false;
+        };
+        binding.executable().is_ok()
+            && managed_tui::package_version(&binding.package)
+                .is_ok_and(|version| version == binding.version)
+            && !entries::needs_migration(&binding, app, &companion)
+    }
+    pub fn configure_shell(&self) -> Result<(), String> {
+        shell::configure(&self.home, &self.dodex_entry())
+    }
 
     fn primary_app(&self) -> Result<PathBuf, String> {
         crate::macos_primary_app::discover(
@@ -131,8 +148,14 @@ impl System {
         Ok(native)
     }
     fn dodex_entry(&self) -> PathBuf {
-        self.command("dodex")
-            .unwrap_or_else(|| self.home.join(".local/bin/dodex"))
+        let local = self.home.join(".local/bin/dodex");
+        // An unrelated or broken local entry must not be silently shadowed by
+        // publishing another command later in PATH.
+        if fs::symlink_metadata(&local).is_ok() {
+            local
+        } else {
+            self.command("dodex").unwrap_or(local)
+        }
     }
     fn managed_binding(&self) -> Result<Option<Binding>, String> {
         let Some(binding) = managed_tui::read_binding(&self.home, &self.dodex_entry())? else {
@@ -169,12 +192,7 @@ impl System {
         let original = match &old_binding {
             Some(binding) => binding.original.clone(),
             None => {
-                let bytes = read_limited(&entry, 128 * 1024).map_err(
-                    |_| "未找到可保留原生 App 行为的 Dodex 启动入口；请先接入现有 Dodex。",
-                )?;
-                // Only the audited adapter has a fixed manager path and can be
-                // relocated without changing its app / workspace semantics.
-                entries::legacy_adapter(&self.home, &bytes)?;
+                legacy_entry(&self.home, &entry)?;
                 self.support.join("Tui/original-dodex")
             }
         };
@@ -196,8 +214,8 @@ impl System {
         }
         // Keep the complete versioned package, including code-mode-host and all
         // adjacent resources. No account data is copied into this directory.
-        self.require_stopped()?;
-        if old_binding.is_none() {
+        self.require_secondary_stopped(true, false)?;
+        if old_binding.is_none() && legacy_entry(&self.home, &entry)? {
             preserve_original(&entry, &original)?;
         }
         let binding = Binding {
@@ -214,8 +232,13 @@ impl System {
             companion: std::env::current_exe().map_err(|_| "无法定位 Companion 程序。")?,
             version: expected.version.clone(),
         };
-        self.require_stopped()?;
+        self.require_secondary_stopped(true, false)?;
         let wrapper = render_wrapper(&binding)?;
+        // Fresh installs use the user-level command directory. Existing command
+        // directories retain their permissions and are never chmod'ed private.
+        let entry_parent = entry.parent().ok_or("Dodex 命令目录无效。")?;
+        no_redirects(entry_parent)?;
+        fs::create_dir_all(entry_parent).map_err(|_| "无法创建 dodex 命令目录。")?;
         // Make the package durable before the entry can reference it. A crash
         // may leave an unused immutable package, never a dangling live entry.
         let _ = staged.keep();
@@ -442,6 +465,16 @@ impl Operations for System {
         self.recover_app()?;
         self.recover_primary_entry()
     }
+    fn recover_secondary(&self) -> Result<(), String> {
+        // Alignment must not complete an interrupted primary update as a side
+        // effect. Preserve its journal and require an explicit UpdateAll retry.
+        for name in [APP_PENDING, CLI_PENDING] {
+            if fs::symlink_metadata(self.support.join(name)).is_ok() {
+                return Err("主 Codex 有未完成的更新记录；本次安装/对齐未修改主程序，请先完成「全部更新」恢复。".into());
+            }
+        }
+        Ok(())
+    }
     fn cli_needs_sync(&self) -> bool {
         let Ok(Some(binding)) = self.managed_binding() else {
             return true;
@@ -524,7 +557,9 @@ impl Operations for System {
         }
     }
     fn preflight(&self, cli: bool, app: bool) -> Result<(), String> {
-        self.secondary()?;
+        if !app {
+            self.secondary()?;
+        }
         if cli {
             let native = self.primary_native()?;
             let package = package_root(&native)?;
@@ -532,8 +567,7 @@ impl Operations for System {
             validate_package(&package, &current)?;
             if self.managed_binding()?.is_none() {
                 let entry = self.dodex_entry();
-                let bytes = read_limited(&entry, 128 * 1024)?;
-                entries::legacy_adapter(&self.home, &bytes)?;
+                legacy_entry(&self.home, &entry)?;
             }
         }
         if app {
@@ -577,6 +611,32 @@ impl Operations for System {
         }
         Ok(())
     }
+    fn require_secondary_stopped(&self, cli: bool, app: bool) -> Result<(), String> {
+        let mut paths = Vec::new();
+        let binding = if cli { self.managed_binding()? } else { None };
+        if let Some(instance) = crate::macos_deployment::maintenance_instance() {
+            if app {
+                paths.extend([instance.runtime_app, instance.launcher_app]);
+            }
+            if cli && binding.is_none() {
+                paths.push(instance.cli_path);
+            }
+        }
+        if app && let Some(path) = crate::macos_deployment::settings_presentation().app_path {
+            paths.push(path);
+        }
+        if let Some(binding) = binding {
+            paths.extend([binding.package, binding.entry]);
+        }
+        let output = run(
+            Command::new("/bin/ps").args(["-axww", "-o", "comm="]),
+            Duration::from_secs(10),
+        )?;
+        if secondary_process_matches(&output, &paths) {
+            return Err("待替换的 Dodex App 或 TUI 仍在运行。请自行退出对应 Dodex 后重试；主 Codex 可以继续运行。".into());
+        }
+        Ok(())
+    }
     fn update_primary(&self, app: bool, release: &Release) -> Result<(), String> {
         if app {
             self.update_app(release)
@@ -609,6 +669,20 @@ fn acquire_lock(path: &Path) -> Result<Lock, String> {
     }
     Ok(Lock(file))
 }
+/// Only the audited legacy adapter may be relocated. A fresh installation has
+/// no original entry and the current wrapper launches its bound package itself.
+fn legacy_entry(home: &Path, entry: &Path) -> Result<bool, String> {
+    no_redirects(entry)?;
+    match fs::symlink_metadata(entry) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Ok(metadata) if metadata.is_file() => {}
+        _ => return Err("Dodex 命令不是可验证的普通文件；未覆盖。".into()),
+    }
+    let bytes = read_limited(entry, 128 * 1024)?;
+    entries::legacy_adapter(home, &bytes)?;
+    Ok(true)
+}
+
 fn process_matches(output: &[u8], paths: &[PathBuf]) -> bool {
     String::from_utf8_lossy(output)
         .lines()
@@ -619,6 +693,17 @@ fn process_matches(output: &[u8], paths: &[PathBuf]) -> bool {
                 || paths
                     .iter()
                     .any(|path| executable == path || executable.starts_with(path))
+        })
+}
+fn secondary_process_matches(output: &[u8], paths: &[PathBuf]) -> bool {
+    String::from_utf8_lossy(output)
+        .lines()
+        .map(str::trim)
+        .any(|value| {
+            let executable = Path::new(value);
+            paths
+                .iter()
+                .any(|path| executable == path || executable.starts_with(path))
         })
 }
 fn preserve_original(entry: &Path, backup: &Path) -> Result<(), String> {

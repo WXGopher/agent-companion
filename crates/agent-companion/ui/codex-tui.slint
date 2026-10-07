@@ -1,11 +1,12 @@
-import { CheckBox, ComboBox, ScrollView } from "std-widgets.slint";
+import { ComboBox } from "std-widgets.slint";
 import { MacSettings } from "macos-settings.slint";
 import { AppSettings } from "settings.slint";
 import { SettingsButton, SettingsColors } from "settings-common.slint";
 import { StatusBarSettings } from "statusbar-settings.slint";
 import { StatusComponent } from "status-component.slint";
-import { ProfileSyncFile, ProfileSyncSettings } from "profile-sync.slint";
-import { SoftwareVersion, SoftwareUpdates } from "software-updates.slint";
+import { ProfileSyncFile } from "profile-sync.slint";
+import { SoftwareVersion } from "software-updates.slint";
+import { DualSettings } from "dual-settings.slint";
 export { SoftwareVersion }
 export { StatusComponent }
 export { ProfileSyncFile }
@@ -98,6 +99,7 @@ export component CodexTuiWindow inherits Window {
     in property <string> dual-app-version;
     in property <string> dual-profile-home;
     in property <bool> dual-tui-available;
+    in property <bool> dual-tui-configured;
     in property <bool> dual-busy;
     in property <bool> dual-error;
     in property <string> dual-phase;
@@ -107,6 +109,7 @@ export component CodexTuiWindow inherits Window {
     in property <string> sync-status;
     in property <bool> sync-error;
     in-out property <length> dual-scroll-y;
+    in-out property <bool> dual-advanced-open;
     in property <[string]> instance-options: ["Codex"];
     in-out property <int> selected-instance;
     callback deploy-dual();
@@ -157,6 +160,7 @@ export component CodexTuiWindow inherits Window {
         dual-app-version: root.dual-app-version;
         dual-profile-home: root.dual-profile-home;
         dual-tui-available: root.dual-tui-available;
+        dual-tui-configured: root.dual-tui-configured;
         dual-busy: root.dual-busy;
         dual-error: root.dual-error;
         dual-phase: root.dual-phase;
@@ -166,9 +170,11 @@ export component CodexTuiWindow inherits Window {
         sync-status: root.sync-status;
         sync-error: root.sync-error;
         dual-scroll-y <=> root.dual-scroll-y;
+        dual-advanced-open <=> root.dual-advanced-open;
         instance-options: root.instance-options;
         selected-instance <=> root.selected-instance;
         deploy-dual => { root.deploy-dual(); }
+        open-dual => { root.open-dual(); }
         toggle-dual(enabled) => { root.toggle-dual(enabled); }
         select-instance(label) => { root.select-instance(label); }
         sync-profile(file, to-secondary) => { root.sync-profile(file, to-secondary); }
@@ -260,53 +266,36 @@ export component CodexTuiWindow inherits Window {
                     set-agent-shown(agent, shown) => { root.set-agent-shown(agent, shown); }
                     set-thresholds(good, warn) => { root.set-thresholds(good, warn); }
                 }
-                if root.windows-preferences && root.settings-page == 3: ScrollView {
-                    viewport-width: self.visible-width;
-                    viewport-y <=> root.dual-scroll-y;
-                    horizontal-scrollbar-policy: always-off;
-                    changed viewport-y => {
-                        self.viewport-y = max(min(self.viewport-y, 0px), min(0px, self.visible-height - self.viewport-height));
-                    }
-                    changed viewport-height => {
-                        self.viewport-y = max(min(self.viewport-y, 0px), min(0px, self.visible-height - self.viewport-height));
-                    }
-                    VerticalLayout {
-                    alignment: start;
-                    spacing: 20px;
-                    SoftwareUpdates {
-                        versions: root.software-versions;
-                        busy: root.software-busy || root.dual-busy || root.sync-busy;
-                        error: root.software-error;
-                        message: root.software-message;
-                        notice: root.software-notice;
-                        maintain(action) => { root.maintain-software(action); }
-                    }
-                    Text { text: "独立的第二个 Codex"; color: SettingsColors.text; font-size: 22px; font-weight: 600; }
-                    Text { text: "启用时自动检查或创建独立环境，并设置 shell 的 dodex 命令。首次打开后登录第二个账号。"; color: SettingsColors.secondary; wrap: word-wrap; }
-                    CheckBox {
-                        text: "启用 Dodex 支持";
-                        checked: root.dual-enabled;
-                        enabled: !root.dual-busy && !root.software-busy;
-                        toggled => { root.toggle-dual(self.checked); }
-                    }
-                    HorizontalLayout {
-                        spacing: 8px;
-                        SettingsButton { text: root.dual-deployed ? "检查并接入" : "部署双开环境"; enabled: !root.dual-busy && !root.software-busy; clicked => { root.deploy-dual(); } }
-                        SettingsButton { text: "打开 Dodex"; enabled: root.dual-deployed && !root.dual-busy && !root.software-busy; clicked => { root.open-dual(); } }
-                        Rectangle { horizontal-stretch: 1; }
-                    }
-                    Text { text: root.dual-busy ? root.dual-phase : root.dual-message; color: root.dual-error ? #d9534f : SettingsColors.secondary; wrap: word-wrap; }
-                    Text { text: "关闭监控后保留登录与历史；上方版本管理用于成对更新 App 和 TUI。"; color: SettingsColors.secondary; wrap: word-wrap; }
-                    ProfileSyncSettings {
-                        files: root.sync-files;
-                        busy: root.dual-busy || root.sync-busy || root.software-busy;
-                        status: root.sync-status;
-                        error: root.sync-error;
-                        sync(file, to-secondary) => { root.sync-profile(file, to-secondary); }
-                        open-file(file, secondary, edit) => { root.open-sync-file(file, secondary, edit); }
-                        refresh => { root.refresh-sync(); }
-                    }
-                    }
+                if root.windows-preferences && root.settings-page == 3: DualSettings {
+                    app-installed: root.dual-app-installed;
+                    app-path: root.dual-app-path;
+                    app-version: root.dual-app-version;
+                    profile-home: root.dual-profile-home;
+                    tui-available: root.dual-tui-available;
+                    tui-configured: root.dual-tui-configured;
+                    monitored: root.dual-enabled;
+                    busy: root.dual-busy;
+                    error: root.dual-error;
+                    phase: root.dual-phase;
+                    message: root.dual-message;
+                    versions: root.software-versions;
+                    software-busy: root.software-busy;
+                    software-error: root.software-error;
+                    software-message: root.software-message;
+                    software-notice: root.software-notice;
+                    sync-files: root.sync-files;
+                    sync-busy: root.sync-busy;
+                    sync-status: root.sync-status;
+                    sync-error: root.sync-error;
+                    scroll-y <=> root.dual-scroll-y;
+                    advanced-open <=> root.dual-advanced-open;
+                    setup => { root.deploy-dual(); }
+                    open => { root.open-dual(); }
+                    monitor(enabled) => { root.toggle-dual(enabled); }
+                    maintain(action) => { root.maintain-software(action); }
+                    sync-profile(file, to-secondary) => { root.sync-profile(file, to-secondary); }
+                    open-sync-file(file, secondary, edit) => { root.open-sync-file(file, secondary, edit); }
+                    refresh-sync => { root.refresh-sync(); }
                 }
             }
         }
