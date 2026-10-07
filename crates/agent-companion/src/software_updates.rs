@@ -389,9 +389,7 @@ fn execute(
         }));
     }
     let Some(action) = action else {
-        report(Box::new(|state| {
-            state.message = "已读取本机版本；点击「对齐」或「全部更新」继续。".into()
-        }));
+        report(Box::new(|state| describe_local_versions(&installed, state)));
         return Ok(());
     };
     if let Some(error) = inspection_error {
@@ -613,6 +611,85 @@ fn execute(
     }));
     Ok(())
 }
+
+/// Initial inspection and refresh compare only the versions already observed.
+/// They never enter maintenance preflight, recovery, synchronization or lookup
+/// of upstream releases. Inspection errors remain distinct from missing apps.
+fn describe_local_versions(installed: &[Option<Version>; 4], state: &mut Snapshot) {
+    let pairs = [
+        (Target::CodexTui, Target::DodexTui),
+        (Target::CodexApp, Target::DodexApp),
+    ];
+    let mut missing_secondary = Vec::new();
+    let mut missing_reference = false;
+    for (primary, secondary) in pairs {
+        let reference = installed[primary.index()].as_ref();
+        let current = installed[secondary.index()].as_ref();
+        let reference_error = state.rows[primary.index()].error;
+        let target = reference.map(Version::display).unwrap_or_else(|| {
+            if reference_error {
+                "参考读取失败"
+            } else {
+                "缺少本机参考"
+            }
+            .into()
+        });
+        let primary_row = &mut state.rows[primary.index()];
+        primary_row.target.clone_from(&target);
+        if !primary_row.error {
+            primary_row.message = if reference.is_some() {
+                format!("本机对齐参考；用于 {}。", secondary.name())
+            } else {
+                missing_reference = true;
+                format!("未找到本机 {}；请先安装官方程序。", primary.name())
+            };
+        }
+
+        let secondary_row = &mut state.rows[secondary.index()];
+        secondary_row.target = target;
+        if secondary_row.error {
+            continue;
+        }
+        secondary_row.message = match (reference, current) {
+            (_, None) => {
+                missing_secondary.push(secondary.name());
+                format!("未找到 {}；请点击「安装并配置 Dodex」。", secondary.name())
+            }
+            (None, Some(_)) => format!(
+                "无法比较：{}{}。",
+                primary.name(),
+                if reference_error {
+                    " 版本读取失败"
+                } else {
+                    " 未安装"
+                },
+            ),
+            (Some(reference), Some(current)) => match current.compare(reference) {
+                Ok(Ordering::Equal) => format!("与本机 {} 版本一致。", primary.name()),
+                Ok(Ordering::Less) => format!("低于本机 {}，可对齐。", primary.name()),
+                Ok(Ordering::Greater) => "较新，保留，不降级。".into(),
+                Err(error) => {
+                    secondary_row.error = true;
+                    error
+                }
+            },
+        };
+    }
+    state.error = state.rows.iter().any(|row| row.error);
+    state.message = if state.error {
+        "本机版本检查未完成；请查看各项提示。".into()
+    } else if !missing_secondary.is_empty() {
+        format!(
+            "未找到 {}；请点击「安装并配置 Dodex」。",
+            missing_secondary.join("、")
+        )
+    } else if missing_reference {
+        "缺少本机 Codex 参考，无法完成对应版本比较。".into()
+    } else {
+        "已自动比较本机 App 与 TUI 版本。".into()
+    };
+}
+
 fn verify_result(ops: &dyn Operations, target: Target, desired: &Version) -> Result<(), String> {
     if ops.installed(target)?.as_ref() != Some(desired) {
         return Err(format!(

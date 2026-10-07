@@ -4,6 +4,7 @@ use std::cell::{Cell, RefCell};
 struct Fake {
     versions: RefCell<[Option<Version>; 4]>,
     calls: RefCell<Vec<String>>,
+    unreadable: Option<Target>,
     offline: bool,
     running: bool,
     primary_running: bool,
@@ -39,6 +40,7 @@ impl Default for Fake {
                 Some(app("90")),
             ]),
             calls: RefCell::new(Vec::new()),
+            unreadable: None,
             offline: false,
             running: false,
             primary_running: false,
@@ -66,6 +68,9 @@ impl Operations for Fake {
         self.cli_needs_sync && !self.calls.borrow().iter().any(|call| call == "align-false")
     }
     fn installed(&self, target: Target) -> Result<Option<Version>, String> {
+        if self.unreadable == Some(target) {
+            return Err("无法读取版本元数据".into());
+        }
         Ok(self.versions.borrow()[target.index()].clone())
     }
     fn latest(&self, app: bool) -> Result<Release, String> {
@@ -169,6 +174,101 @@ fn observing_and_alignment_do_not_contact_upstream_and_preserve_primary() {
     assert_eq!(fake.versions.borrow()[0], original);
     assert_eq!(snapshot.rows[0].current, snapshot.rows[1].current);
     assert_eq!(snapshot.rows[2].current, snapshot.rows[3].current);
+}
+
+#[test]
+fn opening_settings_automatically_compares_each_local_pair_without_maintenance() {
+    let fake = Fake {
+        offline: true,
+        running: true,
+        unsupported: true,
+        ..Fake::default()
+    };
+    let original = fake.versions.borrow().clone();
+    let (snapshot, result) = run(&fake, None);
+    result.unwrap();
+    assert_eq!(snapshot.rows[0].target, "0.159.3");
+    assert_eq!(snapshot.rows[1].target, "0.159.3");
+    assert_eq!(snapshot.rows[2].target, "26.9.100 (100)");
+    assert_eq!(snapshot.rows[3].target, "26.9.100 (100)");
+    for index in [0, 2] {
+        assert!(snapshot.rows[index].message.contains("本机对齐参考"));
+    }
+    for index in [1, 3] {
+        assert!(snapshot.rows[index].message.contains("可对齐"));
+    }
+    assert!(fake.calls.borrow().is_empty());
+    assert_eq!(*fake.versions.borrow(), original);
+}
+
+#[test]
+fn local_comparison_reports_matching_and_newer_secondary_versions_without_downgrading() {
+    for (tui, desktop, expected) in [
+        ("0.159.3", "100", "版本一致"),
+        ("0.160.1", "101", "较新，保留，不降级"),
+    ] {
+        let fake = Fake::default();
+        fake.versions.borrow_mut()[1] = Some(cli(tui));
+        fake.versions.borrow_mut()[3] = Some(app(desktop));
+        let original = fake.versions.borrow().clone();
+        let (snapshot, result) = run(&fake, None);
+        result.unwrap();
+        for index in [1, 3] {
+            assert!(
+                snapshot.rows[index].message.contains(expected),
+                "{:?}",
+                snapshot.rows[index]
+            );
+            assert!(!snapshot.rows[index].error);
+        }
+        assert!(fake.calls.borrow().is_empty());
+        assert_eq!(*fake.versions.borrow(), original);
+    }
+}
+
+#[test]
+fn local_comparison_explicitly_reports_missing_secondary_and_missing_reference() {
+    let fake = Fake::default();
+    fake.versions.borrow_mut()[1] = None;
+    fake.versions.borrow_mut()[3] = None;
+    let (snapshot, result) = run(&fake, None);
+    result.unwrap();
+    for index in [1, 3] {
+        assert!(snapshot.rows[index].message.contains("未找到 Dodex"));
+        assert!(snapshot.rows[index].message.contains("安装并配置 Dodex"));
+        assert_ne!(snapshot.rows[index].target, "尚未检查");
+    }
+    assert!(snapshot.message.contains("安装并配置 Dodex"));
+
+    let fake = Fake::default();
+    fake.versions.borrow_mut()[0] = None;
+    fake.versions.borrow_mut()[2] = None;
+    let (snapshot, result) = run(&fake, None);
+    result.unwrap();
+    for index in [0, 2] {
+        assert!(snapshot.rows[index].message.contains("未找到本机 Codex"));
+    }
+    for index in [1, 3] {
+        assert!(snapshot.rows[index].message.contains("无法比较"));
+        assert_eq!(snapshot.rows[index].target, "缺少本机参考");
+    }
+    assert!(fake.calls.borrow().is_empty());
+}
+
+#[test]
+fn local_comparison_preserves_read_errors_and_does_not_call_them_missing_installations() {
+    let fake = Fake {
+        unreadable: Some(Target::DodexTui),
+        ..Fake::default()
+    };
+    let (snapshot, result) = run(&fake, None);
+    result.unwrap();
+    assert!(snapshot.error && snapshot.rows[1].error);
+    assert_eq!(snapshot.rows[1].target, "0.159.3");
+    assert_eq!(snapshot.rows[1].message, "无法读取版本元数据");
+    assert!(!snapshot.rows[1].message.contains("未找到"));
+    assert!(snapshot.rows[3].message.contains("可对齐"));
+    assert!(fake.calls.borrow().is_empty());
 }
 
 #[cfg(target_os = "macos")]
