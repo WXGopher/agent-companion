@@ -350,51 +350,11 @@ fn resolve_source(mut source: Source) -> Source {
     source
 }
 
-#[cfg(not(windows))]
-fn user_home() -> Option<PathBuf> {
-    let value = std::env::var_os("HOME");
-    value.filter(|value| !value.is_empty()).map(PathBuf::from)
-}
-
 fn primary_executable() -> Option<PathBuf> {
-    if let Some(instance) = crate::tui_deployment::primary_instance() {
-        return instance.runtime().ok();
-    }
-    #[cfg(windows)]
-    {
-        crate::codex::executable(None).ok()
-    }
-    #[cfg(not(windows))]
-    {
-        let mut candidates: Vec<_> = std::env::var_os("PATH")
-            .into_iter()
-            .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
-            .filter(|path| path.is_absolute())
-            .map(|path| path.join("codex"))
-            .collect();
-        if let Some(home) = user_home() {
-            candidates.push(home.join(".local/bin/codex"));
-        }
-        candidates.extend([
-            PathBuf::from("/opt/homebrew/bin/codex"),
-            PathBuf::from("/usr/local/bin/codex"),
-        ]);
-        #[cfg(target_os = "macos")]
-        {
-            let home = user_home()?;
-            primary_macos_executable(
-                &home,
-                candidates,
-                Path::new("/Applications"),
-                &home.join("Applications"),
-            )
-        }
-        #[cfg(not(target_os = "macos"))]
-        candidates.into_iter().find(|path| is_executable(path))
-    }
+    crate::tui_deployment::primary_instance()?.runtime().ok()
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 fn primary_macos_executable(
     home: &Path,
     candidates: impl IntoIterator<Item = PathBuf>,
@@ -422,7 +382,7 @@ fn primary_macos_executable(
     None
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 fn primary_runtime_location(home: &Path, path: &Path) -> bool {
     !path.components().any(|component| {
         let name = component.as_os_str().to_string_lossy();
@@ -440,7 +400,7 @@ fn primary_runtime_location(home: &Path, path: &Path) -> bool {
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 fn npm_native(entry: &Path) -> Option<PathBuf> {
     let package = entry.parent()?.parent()?;
     if entry != package.join("bin/codex.js") {
@@ -501,7 +461,7 @@ fn npm_native(entry: &Path) -> Option<PathBuf> {
     None
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 fn is_macos_native(path: &Path) -> bool {
     use std::io::Read;
     let mut magic = [0; 4];
@@ -521,6 +481,7 @@ fn is_macos_native(path: &Path) -> bool {
         )
 }
 
+#[cfg(all(target_os = "macos", test))]
 fn is_executable(path: &Path) -> bool {
     #[cfg(unix)]
     {
