@@ -112,8 +112,21 @@ fn select(package: &Path, current: &Path) {
     #[cfg(unix)]
     std::os::unix::fs::symlink(package, current).unwrap();
     #[cfg(windows)]
-    assert!(Command::new("powershell.exe").args(["-NoProfile", "-Command", "New-Item -ItemType Junction -Path $env:TEST_CURRENT -Target $env:TEST_RELEASE | Out-Null"])
-        .env("TEST_CURRENT", current).env("TEST_RELEASE", package).status().unwrap().success());
+    {
+        // PowerShell's filesystem provider expects drive paths rather than
+        // Rust's verbatim spelling. The native registry retains its paths.
+        let provider_path = |path: &Path| {
+            path.to_string_lossy()
+                .trim_start_matches(r"\\?\")
+                .to_owned()
+        };
+        assert!(Command::new("powershell.exe").args(["-NoProfile", "-Command", "New-Item -ItemType Junction -Path $env:TEST_CURRENT -Target $env:TEST_RELEASE | Out-Null"])
+            .env("TEST_CURRENT", provider_path(current)).env("TEST_RELEASE", provider_path(package)).status().unwrap().success());
+        assert_eq!(
+            current.canonicalize().unwrap(),
+            package.canonicalize().unwrap()
+        );
+    }
 }
 fn launch(layout: &Layout, entry: &Path) -> Command {
     let mut command = Command::new(entry);
@@ -305,7 +318,12 @@ fn windows_console_ctrl_c_and_full_native_exit_code_are_preserved() {
         .arg("--exit-32")
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(0x1234));
+    assert_eq!(
+        output.status.code(),
+        Some(0x1234),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let mut child = launch(&layout, &registry.dodex.command_path)
         .arg("--signal-wait")
         .creation_flags(0x00000010)

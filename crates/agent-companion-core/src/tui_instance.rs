@@ -227,7 +227,15 @@ pub fn no_redirects(path: &Path) -> io::Result<()> {
             Ok(metadata) if redirected(&metadata) => {
                 return Err(io::Error::other("Instance storage contains a redirect"));
             }
-            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+            Err(error) if error.kind() != io::ErrorKind::NotFound => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!(
+                        "Cannot inspect instance path {}: {error}",
+                        current.display()
+                    ),
+                ));
+            }
             _ => {}
         }
     }
