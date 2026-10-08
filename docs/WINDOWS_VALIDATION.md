@@ -1,5 +1,64 @@
 # Windows validation
 
+## v0.3.31 independent TUI verification (2026-10-09)
+
+This revision removes the Dodex desktop mirror. Codex and Dodex have separate
+native console entries, complete packages, accounts, histories, databases, logs,
+daemon state and update prefixes. Existing secondary profiles stay in place;
+the primary retains its installation channel. The earlier records below describe
+historical desktop implementations and are not current installation guidance.
+
+Native Windows MSVC tests cover command/environment isolation, dynamically
+selected versions, stdin and working directories, child exit codes, Ctrl+C and
+Ctrl+Break, concurrent maintenance, interrupted publication, repeated repair,
+legacy desktop retirement and preservation of unrelated commands and shortcuts.
+The workspace suite passes 555 test executions with 10 explicitly ignored;
+the separate `server` core run passes 245 with 2 ignored. These groups overlap.
+The [native Release build](https://github.com/WXGopher/agent-companion/actions/runs/37838141464)
+at `88cb306` passes formatting, build, Clippy, these test suites and optimized
+packaging. Publishing was skipped. The downloaded x64 archive's checksum and
+GitHub provenance were verified; it contains five executables and the migration
+guide, with no Dodex desktop launcher.
+
+Test-owned native Windows settings and task windows receive pointer events at
+1×, 1.5× and 2× scale. The checks exercise TUI installation, opening a terminal,
+both independent update actions, busy-state guards and terminal task navigation.
+CI preserves the resulting render artifacts; `windows-dual.png` is a native
+Windows render with synthetic values.
+
+The real-package fixture installs different official releases, compares native
+command help and login status, installs Companion's terminal entries, repairs
+again without copying authentication, updates only Dodex and verifies the
+primary package tree is unchanged. A failed native update leaves the previous
+version runnable. Two synthetic loopback accounts exercise separate daemons,
+multiple clients, resuming an active turn, queue, restart and recovery.
+The [candidate acceptance run](https://github.com/WXGopher/agent-companion/actions/runs/37842931266)
+at `d39f71c` passes on both Windows and macOS using the optimized Release
+artifacts above. It verifies provenance and unchanged product source before
+running the fixture. One Windows attempt returned `Access is denied` during
+the native 0.159.3 daemon's first installation; the same source and artifact
+passed in a fresh environment on rerun. No automatic product retry or
+daemon-disable fallback was added to conceal that result.
+
+On a developer's Windows computer, run `scripts/test-tui-instances.py` from a
+non-elevated terminal. The GitHub-hosted runner instead creates a disposable
+standard account on its disposable VM. A temporary test service loads that account's
+profile and launches the fixture with its standard-user token, outside runner
+and credential-launcher process jobs. An early preflight verifies the ordinary
+account can create detached children before Rust builds or package downloads.
+The service, account, profile and owned processes are removed afterward.
+The installed product's console entry uses the vendor's ordinary launch behavior.
+The fixture captures command output in files and waits for the command process
+itself, so a native daemon retaining an output handle does not keep an anonymous
+pipe open indefinitely. Native daemon sockets are reached through Winsock when
+Windows CPython does not expose AF_UNIX. These changes apply to the acceptance
+harness, not the installed console launch path.
+
+These automated native checks do not claim manual acceptance on a user's
+physical Windows desktop. Real account billing, existing terminal focus,
+notifications, Explorer restart and multiple-monitor placement remain separate
+manual scenarios. Ignored machine-dependent cases are not counted as passed.
+
 ## Local v100.0 verification (2026-10-08)
 
 Windows now uses the taskbar readout without a separate notification-area icon. Its status animation runs independently; the existing panel, quota tooltip and context-menu actions remain available. Local builds default to `100.0`, including optimized builds, and skip automatic/manual Companion release checks and cached update notices. Explicit release builds retain the workspace version and release checks.

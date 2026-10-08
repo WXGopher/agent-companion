@@ -52,6 +52,8 @@ The complete secondary package lives at
 `current`, update locks and daemon-owned packages. `$CODEX_HOME/native-bin` is
 its private installer prefix. Public console entries resolve the selected
 package on every launch, so separate versions can update independently.
+The public Dodex entry is a regular native console binary. `install-cli` keeps
+it independent of the Companion bundle and compatible with later TUI repair.
 
 Native arguments, working directory and terminal streams are forwarded. Unix
 exec preserves the process ID and signal exit. Windows uses a console entry
@@ -145,3 +147,15 @@ accounts, and checks independent daemons, multiple clients, resume and queue.
 No real account is read and no fixture credential is sent to a public model
 service. Additional console tests cover environment isolation, native version
 selection, stdin/cwd, exit codes and Unix signals / Windows Ctrl+C.
+
+To validate already built candidate archives on both native CI platforms, use
+a successful Release workflow run whose product source matches the candidate:
+
+```sh
+gh workflow run ci.yml --ref <candidate-ref> -f release_run=<release-run-id> -f platform=both
+```
+
+The workflow verifies archive checksums, GitHub provenance and unchanged product
+source before acceptance. Passing native fixtures and manual desktop acceptance
+are recorded separately in [VALIDATION.md](VALIDATION.md) and
+[WINDOWS_VALIDATION.md](WINDOWS_VALIDATION.md).
