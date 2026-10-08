@@ -134,9 +134,10 @@ def start(root):
         environment.update(Path=launch["path"], TEMP=str(temp), TMP=str(temp),
                            PYTHONIOENCODING="utf-8", GITHUB_ACTIONS="true")
         block = ctypes.create_unicode_buffer("\0".join(f"{key}={value}" for key, value in sorted(environment.items(), key=lambda pair: pair[0].upper())) + "\0\0")
-        command = ctypes.create_unicode_buffer(subprocess.list2cmdline([
+        command_text = subprocess.list2cmdline([
             launch["python"], launch["script"], "--companion", launch["companion"],
-            "--work-dir", launch["fixture"]]))
+            "--work-dir", launch["fixture"]] + (["--preflight-only"] if launch.get("preflight_only") else []))
+        command = ctypes.create_unicode_buffer(command_text)
         with open(os.devnull, "rb") as stdin, (root / "stdout.log").open("wb") as stdout, (root / "stderr.log").open("wb") as stderr:
             handles = [msvcrt.get_osfhandle(file.fileno()) for file in (stdin, stdout, stderr)]
             for handle in handles:
@@ -154,9 +155,13 @@ def start(root):
                 # right. The profile is already loaded; do not request the
                 # Secondary Logon profile-lifetime job here.
                 print("Using CreateProcessWithTokenW with the already-loaded profile", flush=True)
-                command = ctypes.create_unicode_buffer(command.value)
+                # This API creates a new console by default. DETACHED_PROCESS
+                # cannot be combined with that flag. The caller is outside a
+                # job already; use the documented ordinary console creation.
+                assert not in_job.value, "Native token host must be outside a process job"
+                command = ctypes.create_unicode_buffer(command_text)
                 created = security.CreateProcessWithTokenW(token, 0, launch["python"], command,
-                                                          flags, block, str(root),
+                                                          0x400 | subprocess.CREATE_NEW_CONSOLE, block, str(root),
                                                           ctypes.byref(startup), ctypes.byref(child))
             checked(created, "Create standard-user process")
             checked(kernel.IsProcessInJob(child.process, None, ctypes.byref(in_job)), "IsProcessInJob(standard user)")

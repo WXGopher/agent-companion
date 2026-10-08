@@ -48,6 +48,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Native Windows acceptance host preflight
+        if: runner.os == 'Windows'
+        run: ./scripts/test-tui-instances-windows.ps1 -Companion (Get-Command python3).Source -PreflightOnly
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt

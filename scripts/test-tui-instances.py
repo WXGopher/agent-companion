@@ -365,9 +365,12 @@ def main():
     parser.add_argument("--companion", type=Path, required=True)
     parser.add_argument("--primary-release", default="0.159.3")
     parser.add_argument("--work-dir", type=Path, help="Keep the disposable synthetic fixture for diagnostics")
+    parser.add_argument("--preflight-only", action="store_true", help="Check the native Windows host without downloads")
     args = parser.parse_args()
     saved_path = None
     if os.name == "nt":
+        import ctypes
+        assert not ctypes.windll.shell32.IsUserAnAdmin(), "Native Windows acceptance requires a standard user"
         # Native daemon lifecycle needs a host that permits detached children.
         # Check the disposable host before spending time downloading packages.
         probe = subprocess.run([sys.executable, "-c", "pass"],
@@ -375,8 +378,13 @@ def main():
                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                timeout=15)
         assert probe.returncode == 0, "The Windows native acceptance host cannot launch detached children"
+        print("PASS: standard-user native host permits detached children", flush=True)
+        if args.preflight_only:
+            return
         saved_path = subprocess.check_output(["powershell.exe", "-NoProfile", "-Command",
             "[Environment]::GetEnvironmentVariable('Path','User')"], text=True).rstrip("\r\n")
+    elif args.preflight_only:
+        parser.error("The host preflight is Windows-only")
     try:
         if args.work_dir:
             args.work_dir.mkdir(parents=True, exist_ok=True)

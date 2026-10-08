@@ -1,4 +1,4 @@
-param([Parameter(Mandatory)][string]$Companion)
+param([Parameter(Mandatory)][string]$Companion, [switch]$PreflightOnly)
 
 # GitHub's Windows runner is elevated. Native Codex correctly refuses to start
 # a shared daemon with that token, so use a disposable standard account on the
@@ -10,7 +10,9 @@ if ($env:GITHUB_ACTIONS -ne 'true') {
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    & python3 (Join-Path $PSScriptRoot 'test-tui-instances.py') --companion $Companion
+    $arguments = @((Join-Path $PSScriptRoot 'test-tui-instances.py'), '--companion', $Companion)
+    if ($PreflightOnly) { $arguments += '--preflight-only' }
+    & python3 @arguments
     exit $LASTEXITCODE
 }
 
@@ -30,7 +32,9 @@ try {
     if ($LASTEXITCODE) { throw 'Cannot prepare the disposable fixture directory.' }
     $companionPath = (Resolve-Path $Companion).Path
     # Only grant read/execute access to the test code and compiled test entries.
-    foreach ($directory in @($PSScriptRoot, (Split-Path $companionPath))) {
+    $directories = @($PSScriptRoot)
+    if (-not $PreflightOnly) { $directories += (Split-Path $companionPath) }
+    foreach ($directory in $directories) {
         & icacls.exe $directory /grant "${sid}:(OI)(CI)RX" /T /Q | Out-Null
         if ($LASTEXITCODE) { throw 'Cannot grant fixture access to test binaries.' }
     }
@@ -40,6 +44,7 @@ try {
         companion = $companionPath
         fixture = Join-Path $root 'f'
         github_actions = $env:GITHUB_ACTIONS
+        preflight_only = [bool]$PreflightOnly
         path = $env:Path
     }
     [IO.File]::WriteAllText((Join-Path $root 'launch.json'), ($launch | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
