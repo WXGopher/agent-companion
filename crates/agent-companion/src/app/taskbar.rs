@@ -51,7 +51,7 @@
 //! The arithmetic is in free functions with no window in sight, so the
 //! interesting half is testable without a shell.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use agent_companion_core::protocol::HookSource;
@@ -97,6 +97,33 @@ const MARGIN: i32 = 6;
 /// How often the pointer is sampled over the readout. Fast enough that a click
 /// is never missed between a press and its release, slow enough to be free.
 pub const POINTER_POLL: std::time::Duration = std::time::Duration::from_millis(30);
+
+/// The task preview gets the first chance to open after its shorter dwell.
+const TOOLTIP_DELAY_MS: u64 = 700;
+
+#[derive(Default)]
+struct TooltipHover {
+    entered: Option<u64>,
+    suppressed: bool,
+}
+
+impl TooltipHover {
+    fn ready(&mut self, now: u64, over: bool, enabled: bool) -> bool {
+        if !over {
+            *self = Self::default();
+        } else if !enabled {
+            self.suppress_until_exit();
+        } else if !self.suppressed {
+            return now.saturating_sub(*self.entered.get_or_insert(now)) >= TOOLTIP_DELAY_MS;
+        }
+        false
+    }
+
+    fn suppress_until_exit(&mut self) {
+        self.entered = None;
+        self.suppressed = true;
+    }
+}
 
 /// What a click on the readout asks for: the panel, or the context menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -366,6 +393,9 @@ pub struct TaskbarView {
     /// showing nothing but finished sessions sits perfectly still.
     breathing: Cell<bool>,
     shown: Cell<bool>,
+    tooltip_text: RefCell<String>,
+    tooltip: RefCell<Option<win::UsageTooltip>>,
+    tooltip_hover: RefCell<TooltipHover>,
 }
 
 impl TaskbarView {
@@ -380,6 +410,9 @@ impl TaskbarView {
             size: Cell::new(bar_size(&[AgentTasks::default(); 2], Along::Vertical)),
             breathing: Cell::new(false),
             shown: Cell::new(false),
+            tooltip_text: RefCell::new(String::new()),
+            tooltip: RefCell::new(None),
+            tooltip_hover: RefCell::new(TooltipHover::default()),
         })
     }
 
@@ -467,12 +500,15 @@ impl TaskbarView {
                 self.handle.set(None);
                 self.host.set(None);
                 self.embedded.set(false);
+                self.tooltip.borrow_mut().take();
             }
             self.request_redraw();
         }
     }
 
     pub fn hide(&self) {
+        self.dismiss_tooltip();
+        self.tooltip.borrow_mut().take();
         if !self.shown.get() {
             return;
         }
@@ -483,7 +519,52 @@ impl TaskbarView {
     }
 
     pub fn set_usage_tooltip(&self, text: &str) {
-        self.ui.set_usage_tooltip(text.into());
+        if *self.tooltip_text.borrow() == text {
+            return;
+        }
+        *self.tooltip_text.borrow_mut() = text.into();
+        if let Some(tooltip) = self.tooltip.borrow_mut().as_mut() {
+            tooltip.set_text(text);
+        }
+    }
+
+    pub fn dismiss_tooltip(&self) {
+        self.tooltip_hover.borrow_mut().suppress_until_exit();
+        if let Some(tooltip) = self.tooltip.borrow_mut().as_mut() {
+            tooltip.hide();
+        }
+    }
+
+    /// Native pointer sampling also works after a Slint card has taken focus.
+    /// A separate Win32 popup is free to extend beyond the embedded readout.
+    pub fn poll_tooltip(&self, now: u64, enabled: bool) {
+        let ready = self.tooltip_hover.borrow_mut().ready(
+            now,
+            self.shown.get() && self.under_pointer(),
+            enabled && win::mouse_buttons_down() == 0,
+        );
+        let mut tooltip = self.tooltip.borrow_mut();
+        if !ready || self.tooltip_text.borrow().is_empty() {
+            if let Some(tooltip) = tooltip.as_mut() {
+                tooltip.hide();
+            }
+            return;
+        }
+        let Some(handle) = self.handle.get() else {
+            return;
+        };
+        if tooltip
+            .as_ref()
+            .is_some_and(|tip| !tip.is_valid_for(handle))
+        {
+            tooltip.take();
+        }
+        if tooltip.is_none() {
+            *tooltip = win::UsageTooltip::new(handle, &self.tooltip_text.borrow());
+        }
+        if let Some(tooltip) = tooltip.as_mut() {
+            tooltip.show(self.scale());
+        }
     }
 
     /// Put `chips` in the window and resize it to fit them.
@@ -586,6 +667,7 @@ impl TaskbarView {
         let host_changed = self.host.get() != Some(taskbar.handle);
         let orphaned = self.embedded.get() && win::parent_of(handle) != Some(taskbar.handle);
         if host_changed || orphaned {
+            self.dismiss_tooltip();
             self.embedded.set(win::embed_in(handle, taskbar.handle));
             self.host.set(Some(taskbar.handle));
             self.request_redraw();
@@ -717,23 +799,41 @@ mod tests {
     use super::*;
     use agent_companion_core::usage::{ClaudeLimits, CodexUsage, UsageLimit, WindowUsage};
 
-    /// The user's own bar: docked left, 131 physical pixels wide, with the
-    /// notification area in the bottom fifth. Measured, not invented.
+    /// Synthetic vertical taskbar; no dimensions are taken from a local shell.
     const VERTICAL: Taskbar = Taskbar {
         handle: 1,
         rect: Rect {
             left: 0,
             top: 0,
-            right: 131,
-            bottom: 2160,
+            right: 144,
+            bottom: 1200,
         },
         notify: Rect {
             left: 0,
-            top: 1753,
-            right: 131,
-            bottom: 2160,
+            top: 1000,
+            right: 144,
+            bottom: 1200,
         },
     };
+
+    #[test]
+    fn tooltip_dwell_resets_on_exit_and_suppresses_clicks_or_open_panels() {
+        let mut hover = TooltipHover::default();
+        assert!(!hover.ready(0, true, true));
+        assert!(!hover.ready(TOOLTIP_DELAY_MS - 1, true, true));
+        assert!(hover.ready(TOOLTIP_DELAY_MS, true, true));
+        // Disabled while a mouse button is held or a preview/panel is open.
+        assert!(!hover.ready(800, true, false));
+        assert!(!hover.ready(2_000, true, true));
+        assert!(!hover.ready(2_001, false, true));
+        assert!(!hover.ready(3_000, true, true));
+        assert!(hover.ready(3_000 + TOOLTIP_DELAY_MS, true, true));
+        hover.suppress_until_exit();
+        assert!(!hover.ready(5_000, true, true));
+        assert!(!hover.ready(5_001, false, true));
+        assert!(!hover.ready(6_000, true, true));
+        assert!(hover.ready(6_000 + TOOLTIP_DELAY_MS, true, true));
+    }
 
     const HORIZONTAL: Taskbar = Taskbar {
         handle: 2,
@@ -939,7 +1039,7 @@ mod tests {
         assert_eq!(tall_h - one_h, CHIP_HEIGHT + BLOCK_GAP);
         assert_eq!(bar_size(&[], Along::Vertical), (one_w, one_h));
 
-        // And it fits in the user's own 131-pixel bar at 150 % scaling.
+        // And it fits in the synthetic vertical bar at 150 % scaling.
         assert!(tall_w * 1.5 < (VERTICAL.rect.right - VERTICAL.rect.left) as f32);
     }
 
@@ -997,7 +1097,7 @@ mod tests {
             TASK_DIGIT
         );
 
-        // And even the full line fits the user's own 131-pixel bar at 150 %.
+        // And even the full line fits the synthetic vertical bar at 150 %.
         assert!(wide_w * 1.5 < (VERTICAL.rect.right - VERTICAL.rect.left) as f32);
     }
 
@@ -1006,7 +1106,7 @@ mod tests {
         let size = (70, 50);
         let (x, y) = default_offset(VERTICAL, size, Along::Vertical);
         assert_eq!(y + size.1 + MARGIN, VERTICAL.notify.top);
-        assert_eq!(x, (131 - 70) / 2, "centred across the bar");
+        assert_eq!(x, (144 - 70) / 2, "centred across the bar");
 
         let (x, y) = default_offset(HORIZONTAL, (90, 30), Along::Horizontal);
         assert_eq!(x + 90 + MARGIN, HORIZONTAL.notify.left);
@@ -1022,8 +1122,8 @@ mod tests {
             notify: Rect {
                 left: 0,
                 top: 0,
-                right: 131,
-                bottom: 2160,
+                right: 144,
+                bottom: 1200,
             },
             ..VERTICAL
         };
@@ -1040,7 +1140,7 @@ mod tests {
         );
         assert_eq!(
             clamp_to_taskbar((9_000, 9_000), size, VERTICAL.rect),
-            (131 - 70 - MARGIN, 2160 - 50 - MARGIN)
+            (144 - 70 - MARGIN, 1200 - 50 - MARGIN)
         );
         // A position that already fits is left exactly where it was put.
         assert_eq!(clamp_to_taskbar((30, 900), size, VERTICAL.rect), (30, 900));
@@ -1048,6 +1148,6 @@ mod tests {
         // A readout wider than its bar is centred rather than clamped to a
         // negative span.
         let (x, _) = clamp_to_taskbar((0, 900), (400, 50), VERTICAL.rect);
-        assert_eq!(x, (131 - 400) / 2);
+        assert_eq!(x, (144 - 400) / 2);
     }
 }

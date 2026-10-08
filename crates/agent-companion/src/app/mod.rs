@@ -536,6 +536,10 @@ impl App {
                     Some(taskbar::Click::Menu) => app.readout_menu(),
                     None => app.poll_peek(),
                 }
+                app.bar.poll_tooltip(
+                    app.started.elapsed().as_millis() as u64,
+                    !app.flyout_open.get(),
+                );
             },
         );
     }
@@ -544,6 +548,7 @@ impl App {
     /// in the same words. A native menu, so it dismisses like every other
     /// taskbar menu and never fights the panel for space.
     fn readout_menu(self: &Rc<Self>) {
+        self.bar.dismiss_tooltip();
         self.close_flyout();
         let Some(handle) = self.bar.window_handle() else {
             return;
@@ -1525,6 +1530,7 @@ impl App {
     }
 
     fn show_flyout(self: &Rc<Self>, anchor: Rect, from: Anchor, peek: bool) {
+        self.bar.dismiss_tooltip();
         let opened =
             subscription::opens_full_panel(self.flyout_open.get(), self.flyout_peek.get(), peek);
         self.flyout_peek.set(peek);
