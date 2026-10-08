@@ -14,6 +14,7 @@ import os
 import base64
 import socket
 import struct
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -142,18 +143,18 @@ class Acceptance:
     def __init__(self, companion, root, primary_release):
         self.companion = companion
         self.root = root
-        self.home = root / "user"
+        self.home = root / ("u" if os.name == "nt" else "user")
         self.project = root / "project"
         self.home.mkdir()
         self.project.mkdir()
         self.support = (self.home / "Library/Application Support/AgentCompanion"
-                        if sys.platform == "darwin" else self.home / "local/AgentCompanion")
+                        if sys.platform == "darwin" else self.home / "l/AgentCompanion")
         self.environment = {name: os.environ[name] for name in (
             "PATH", "SystemRoot", "WINDIR", "OS", "PATHEXT", "ComSpec", "SystemDrive",
             "ProgramData", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432",
             "TEMP", "TMP", "LANG") if name in os.environ}
         self.environment.update(HOME=str(self.home), USERPROFILE=str(self.home),
-                                LOCALAPPDATA=str(self.home / "local"),
+                                LOCALAPPDATA=str(self.home / ("l" if os.name == "nt" else "local")),
                                 APPDATA=str(self.home / "roaming"),
                                 XDG_CONFIG_HOME=str(self.home / "xdg"),
                                 CODEX_NON_INTERACTIVE="1", TERM="xterm-256color",
@@ -165,7 +166,7 @@ class Acceptance:
         self.server = self.contracts.LoopbackServer()
         self.clients = []
         self.sockets = {}
-        self.stderr = tempfile.TemporaryFile(mode="w+")
+        self.stderr = tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace")
         print("Installing the native primary TUI " + primary_release, flush=True)
         self.install(self.primary, primary_release)
         self.environment["PATH"] = str(self.primary / "native-bin") + os.pathsep + self.environment["PATH"]
@@ -252,6 +253,7 @@ class Acceptance:
         before_packages = tree_hash(self.primary / "packages/standalone/releases")
         print("Updating only Dodex through its private native installer", flush=True)
         self.execute(self.dodex, ["update"], timeout=900)
+        latest_package = Path(record["dodex"]["cli_path"]).resolve().parent.parent
         assert self.execute(self.codex, ["--version"]).stdout.strip() == primary_version
         assert tree_hash(self.primary / "packages/standalone/releases") == before_packages
         assert not (self.secondary / "auth.json").exists()
@@ -267,6 +269,11 @@ class Acceptance:
             # variables. Exercise a real bootstrap failure without modifying
             # the user's proxy or firewall: native update cannot find its shell.
             failed_environment["PATH"] = str(self.root / "missing-updater-tools")
+            # A cached package can be selected without invoking extraction.
+            # Remove only the unselected latest package in this disposable home.
+            assert latest_package.is_relative_to(self.secondary / "packages/standalone/releases")
+            assert latest_package != Path(record["dodex"]["cli_path"]).resolve().parent.parent
+            shutil.rmtree(latest_package)
         failed = run([self.dodex, "update"], failed_environment, self.project, timeout=90, check=False)
         # Some vendor releases report the curl failure but return 0 from their
         # curl|sh bootstrap. The public entry must preserve that native status.
