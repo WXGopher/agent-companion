@@ -23,7 +23,7 @@ struct Cli {
 enum Command {
     /// Continue an original session, preserving its history and local settings.
     Resume(resume_cli::Args),
-    /// Install user-level acomp and agent-companion terminal commands.
+    /// Install user-level acomp, agent-companion, and dodex terminal commands.
     InstallCli,
     /// Install or repair the independent Dodex TUI.
     DodexTui {

@@ -71,7 +71,7 @@ jobs:
 
       - name: Test
         env:
-          AGENT_COMPANION_RENDER_DIR: target/tui-ui-renders
+          AGENT_COMPANION_RENDER_DIR: ${{ github.workspace }}/target/tui-ui-renders
         run: cargo test ${{ matrix.packages }} --target ${{ matrix.target }} --locked
 
       - name: Preserve native TUI settings and navigation renders

@@ -78,7 +78,7 @@ enum Command {
     },
     /// Continue an original Codex or Dodex session using a chosen quota account.
     Resume(resume_cli::Args),
-    /// Install user-level acomp and agent-companion terminal commands.
+    /// Install user-level acomp, agent-companion, and dodex terminal commands.
     InstallCli,
     /// Install, repair, or inspect the independent Dodex TUI.
     #[cfg(any(target_os = "macos", windows))]

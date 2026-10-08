@@ -109,7 +109,7 @@ pub fn run() -> io::Result<()> {
     #[cfg(windows)]
     writeln!(
         io::stdout(),
-        "Open a new terminal to use the commands. Installed console entries provide resume, install-cli, help, and version; the full application keeps its existing commands."
+        "Open a new terminal to use the commands. Installed Companion console entries provide resume, install-cli, dodex-tui, help, and version; the full application keeps its existing commands."
     )?;
     Ok(())
 }
