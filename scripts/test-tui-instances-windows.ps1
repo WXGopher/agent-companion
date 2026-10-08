@@ -59,7 +59,7 @@ try {
     if ($spawn.ReturnValue -ne 0) { throw "Cannot start native acceptance host: $($spawn.ReturnValue)" }
     $brokerPid = $spawn.ProcessId
     $started = [DateTime]::UtcNow
-    $deadline = $started.AddMinutes(25)
+    $deadline = if ($PreflightOnly) { $started.AddMinutes(1) } else { $started.AddMinutes(25) }
     $nextProgress = $started.AddSeconds(15)
     $resultPath = Join-Path $root 'result'
     while (-not (Test-Path $resultPath)) {

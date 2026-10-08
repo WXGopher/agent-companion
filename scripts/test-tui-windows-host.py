@@ -18,8 +18,6 @@ import traceback
 def start(root):
     if os.name != "nt":
         raise RuntimeError("This host is only for disposable GitHub Windows runners")
-    import msvcrt
-
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     security = ctypes.WinDLL("advapi32", use_last_error=True)
     profiles = ctypes.WinDLL("userenv", use_last_error=True)
@@ -136,41 +134,40 @@ def start(root):
         block = ctypes.create_unicode_buffer("\0".join(f"{key}={value}" for key, value in sorted(environment.items(), key=lambda pair: pair[0].upper())) + "\0\0")
         command_text = subprocess.list2cmdline([
             launch["python"], launch["script"], "--companion", launch["companion"],
-            "--work-dir", launch["fixture"]] + (["--preflight-only"] if launch.get("preflight_only") else []))
+            "--work-dir", launch["fixture"], "--ci-log-dir", str(root)]
+            + (["--preflight-only"] if launch.get("preflight_only") else []))
         command = ctypes.create_unicode_buffer(command_text)
-        with open(os.devnull, "rb") as stdin, (root / "stdout.log").open("wb") as stdout, (root / "stderr.log").open("wb") as stderr:
-            handles = [msvcrt.get_osfhandle(file.fileno()) for file in (stdin, stdout, stderr)]
-            for handle in handles:
-                os.set_handle_inheritable(handle, True)
-            startup = Startup(size=ctypes.sizeof(Startup), flags=0x100,
-                              stdin=handles[0], stdout=handles[1], stderr=handles[2])
-            # The caller owns no restrictive job. Explicit breakaway also makes
-            # any unexpected CI host containment fail before package downloads.
-            flags = subprocess.CREATE_BREAKAWAY_FROM_JOB | subprocess.DETACHED_PROCESS | 0x400
-            created = security.CreateProcessAsUserW(token, launch["python"], command,
-                                                     None, None, True, flags, block, str(root),
-                                                     ctypes.byref(startup), ctypes.byref(child))
-            if not created and ctypes.get_last_error() == 1314:
-                # Admin tokens may have impersonation but no assign-primary
-                # right. The profile is already loaded; do not request the
-                # Secondary Logon profile-lifetime job here.
-                print("Using CreateProcessWithTokenW with the already-loaded profile", flush=True)
-                # This API creates a new console by default. DETACHED_PROCESS
-                # cannot be combined with that flag. The caller is outside a
-                # job already; use the documented ordinary console creation.
-                assert not in_job.value, "Native token host must be outside a process job"
-                command = ctypes.create_unicode_buffer(command_text)
-                created = security.CreateProcessWithTokenW(token, 0, launch["python"], command,
-                                                          0x400 | subprocess.CREATE_NEW_CONSOLE, block, str(root),
-                                                          ctypes.byref(startup), ctypes.byref(child))
-            checked(created, "Create standard-user process")
-            checked(kernel.IsProcessInJob(child.process, None, ctypes.byref(in_job)), "IsProcessInJob(standard user)")
-            print(f"Native standard-user process in job: {bool(in_job.value)}", flush=True)
-            if kernel.WaitForSingleObject(child.process, 24 * 60 * 1000) != 0:
-                raise TimeoutError("Native standard-user acceptance did not finish")
-            result = w.DWORD()
-            checked(kernel.GetExitCodeProcess(child.process, ctypes.byref(result)), "GetExitCodeProcess")
-            return result.value
+        # Token-based creation does not inherit the caller's file handles.
+        # Give the test an ordinary console and let it open its own logs.
+        startup = Startup(size=ctypes.sizeof(Startup))
+        # The caller owns no restrictive job. Explicit breakaway also makes
+        # any unexpected CI host containment fail before package downloads.
+        flags = subprocess.CREATE_BREAKAWAY_FROM_JOB | subprocess.CREATE_NEW_CONSOLE | 0x400
+        created = security.CreateProcessAsUserW(token, launch["python"], command,
+                                                 None, None, False, flags, block, str(root),
+                                                 ctypes.byref(startup), ctypes.byref(child))
+        if not created and ctypes.get_last_error() == 1314:
+            # Admin tokens may have impersonation but no assign-primary
+            # right. The profile is already loaded; do not request the
+            # Secondary Logon profile-lifetime job here.
+            print("Using CreateProcessWithTokenW with the already-loaded profile", flush=True)
+            # This API creates a new console by default. DETACHED_PROCESS
+            # cannot be combined with that flag. The caller is outside a
+            # job already; use the documented ordinary console creation.
+            assert not in_job.value, "Native token host must be outside a process job"
+            command = ctypes.create_unicode_buffer(command_text)
+            created = security.CreateProcessWithTokenW(token, 0, launch["python"], command,
+                                                      0x400 | subprocess.CREATE_NEW_CONSOLE, block, str(root),
+                                                      ctypes.byref(startup), ctypes.byref(child))
+        checked(created, "Create standard-user process")
+        checked(kernel.IsProcessInJob(child.process, None, ctypes.byref(in_job)), "IsProcessInJob(standard user)")
+        print(f"Native standard-user process in job: {bool(in_job.value)}", flush=True)
+        timeout = 30_000 if launch.get("preflight_only") else 24 * 60 * 1000
+        if kernel.WaitForSingleObject(child.process, timeout) != 0:
+            raise TimeoutError("Native standard-user acceptance did not finish")
+        result = w.DWORD()
+        checked(kernel.GetExitCodeProcess(child.process, ctypes.byref(result)), "GetExitCodeProcess")
+        return result.value
     finally:
         for handle in (child.thread, child.process):
             if handle:

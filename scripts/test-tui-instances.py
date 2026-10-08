@@ -7,7 +7,7 @@ Runs on native macOS and Windows, including Windows console-entry packaging.
 """
 import argparse
 import hashlib
-from contextlib import nullcontext
+from contextlib import nullcontext, redirect_stdout, redirect_stderr
 import importlib.util
 import json
 import os
@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 import urllib.request
 
 
@@ -366,6 +367,7 @@ def main():
     parser.add_argument("--primary-release", default="0.159.3")
     parser.add_argument("--work-dir", type=Path, help="Keep the disposable synthetic fixture for diagnostics")
     parser.add_argument("--preflight-only", action="store_true", help="Check the native Windows host without downloads")
+    parser.add_argument("--ci-log-dir", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     saved_path = None
     if os.name == "nt":
@@ -407,4 +409,19 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if "--ci-log-dir" in sys.argv:
+        index = sys.argv.index("--ci-log-dir")
+        directory = Path(sys.argv[index + 1]).resolve(strict=True)
+        if os.name != "nt" or os.environ.get("GITHUB_ACTIONS") != "true":
+            raise RuntimeError("File logging is only for the disposable Windows CI host")
+        result = 0
+        with (directory / "stdout.log").open("w", encoding="utf-8") as stdout, (directory / "stderr.log").open("w", encoding="utf-8") as stderr:
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                try:
+                    main()
+                except Exception:
+                    traceback.print_exc()
+                    result = 1
+        sys.exit(result)
+    else:
+        main()
