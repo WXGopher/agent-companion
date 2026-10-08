@@ -86,7 +86,15 @@ try {
 } finally {
     foreach ($name in @('stdout.log', 'stderr.log', 'acceptance.log')) {
         $log = Join-Path $root $name
-        if (Test-Path $log) { Write-Output ([IO.File]::ReadAllText($log)) }
+        if (Test-Path $log) {
+            # A failed/timed-out fixture can still have its log open. Reading
+            # must permit its writer, and must never prevent owned cleanup.
+            try {
+                $stream = [IO.File]::Open($log, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+                $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8)
+                try { Write-Output ($reader.ReadToEnd()) } finally { $reader.Dispose() }
+            } catch { Write-Warning "Cannot read native fixture diagnostic $name" }
+        }
     }
     if ($brokerPid) {
         $process = Get-CimInstance Win32_Process -Filter "ProcessId=$brokerPid"

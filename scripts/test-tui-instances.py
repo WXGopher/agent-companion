@@ -33,8 +33,21 @@ def load_contracts():
 
 
 def run(command, environment, cwd, timeout=180, check=True):
-    result = subprocess.run([str(arg) for arg in command], env=environment, cwd=cwd,
-                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+    arguments = [str(arg) for arg in command]
+    if os.name == "nt":
+        # A native background process may retain inherited output handles.
+        # Wait for the command itself, as a shell does, instead of waiting for
+        # EOF from every daemon/conhost descendant of an anonymous pipe.
+        with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+            completed = subprocess.run(arguments, env=environment, cwd=cwd,
+                                       stdout=stdout, stderr=stderr, timeout=timeout)
+            stdout.seek(0)
+            stderr.seek(0)
+            result = subprocess.CompletedProcess(arguments, completed.returncode,
+                stdout.read().decode("utf-8", errors="replace"), stderr.read().decode("utf-8", errors="replace"))
+    else:
+        result = subprocess.run(arguments, env=environment, cwd=cwd,
+                                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     if check and result.returncode:
         raise AssertionError(f"{Path(command[0]).name} {command[1:]} failed: "
                              + result.stderr[-5000:] + result.stdout[-2000:])
@@ -302,9 +315,11 @@ class Acceptance:
             primary_config.write_text('cli_auth_credentials_store="file"\n' + primary_config.read_text())
         for entry in [self.codex, self.dodex]:
             self.execute(entry, ["login", "status"])
+            print("Starting the native daemon through " + entry.name, flush=True)
             result = self.execute(entry, ["app-server", "daemon", "start"], timeout=900)
             home = self.primary if entry == self.codex else self.secondary
             self.sockets[home] = json.loads(result.stdout)["socketPath"]
+            print("Native daemon is ready for " + entry.name, flush=True)
         primary = self.client(self.primary)
         secondary = self.client(self.secondary)
         other_terminal = self.client(self.secondary)
