@@ -68,12 +68,28 @@ def tree_hash(root):
 class SocketClient:
     """The native control socket speaks WebSocket, not direct-server JSONL."""
     def __init__(self, path):
-        self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.socket.settimeout(25)
         if os.name == "nt":
-            # Windows already validates its short canonical native address.
-            self.socket.connect(str(path))
+            # Windows supports AF_UNIX (1), but CPython's Windows build does
+            # not expose its address parser. Use Winsock connect with the
+            # native sockaddr_un; ordinary Python stream I/O works afterward.
+            import ctypes
+
+            class Address(ctypes.Structure):
+                _fields_ = [("family", ctypes.c_ushort), ("path", ctypes.c_char * 108)]
+
+            encoded = os.fsencode(path)
+            assert len(encoded) < 108, "The native Windows socket address is too long"
+            self.socket = socket.socket(1, socket.SOCK_STREAM)
+            winsock = ctypes.WinDLL("ws2_32", use_last_error=True)
+            winsock.connect.argtypes = [ctypes.c_size_t, ctypes.POINTER(Address), ctypes.c_int]
+            winsock.connect.restype = ctypes.c_int
+            address = Address(family=1, path=encoded)
+            if winsock.connect(self.socket.fileno(), ctypes.byref(address), ctypes.sizeof(address)):
+                error = winsock.WSAGetLastError()
+                self.socket.close()
+                raise OSError(error, "Cannot attach to the native Windows daemon")
         else:
+            self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             # Native macOS supports deep homes. Python's sockaddr construction
             # has a shorter absolute-string limit; use the existing endpoint
             # relative to its directory without changing any Codex routing.
@@ -83,6 +99,7 @@ class SocketClient:
                 self.socket.connect(Path(path).name)
             finally:
                 os.chdir(current)
+        self.socket.settimeout(25)
         nonce = base64.b64encode(os.urandom(16))
         self.socket.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: " + nonce + b"\r\n\r\n")
         header = bytearray()
