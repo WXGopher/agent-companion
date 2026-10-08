@@ -1,1 +1,0 @@
-        executable = str(self.paths.runtime / "Contents/MacOS/ChatGPT")

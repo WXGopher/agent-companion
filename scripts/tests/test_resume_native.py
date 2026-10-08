@@ -36,7 +36,7 @@ import zlib
 NATIVE = os.environ.get("ACOMP_TEST_CODEX_BINARY")
 LEGACY_NATIVE = os.environ.get("ACOMP_TEST_LEGACY_CODEX_BINARY")
 ACOMP = os.environ.get("ACOMP_TEST_ACOMP_BINARY")
-VERSION = "codex-cli 0.159.3"
+VERSION = "codex-cli " + os.environ.get("ACOMP_TEST_CODEX_VERSION", "0.159.3")
 
 
 def verify_native_executable(value, variable):

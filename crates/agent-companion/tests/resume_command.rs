@@ -24,7 +24,7 @@ impl Fixture {
         let root = temporary.path().canonicalize().unwrap();
         let home = root.join("user");
         let project = root.join("project");
-        let local = root.join("local");
+        let local = home.join("local");
         for path in [&home, &project, &local, &project.join("child")] {
             fs::create_dir_all(path).unwrap();
         }
@@ -54,14 +54,14 @@ impl Fixture {
         let support = home.join(".local/share/agent-companion");
         let dodex_home = support.join("Dodex/codex-home");
         rollout(&dodex_home, &project, DODEX_SESSION, "second environment");
-        #[cfg(target_os = "macos")]
-        let record = support.join("dual-instance.json");
-        #[cfg(not(target_os = "macos"))]
-        let record = support.join("Dodex/companion-deployment.json");
+        let record = support.join("tui-instances.json");
         fs::create_dir_all(record.parent().unwrap()).unwrap();
-        fs::write(&record, serde_json::to_vec(&json!({"schema":1, "enabled":false, "instance": {
-            "codex_home": dodex_home, "database_dir": support.join("Dodex/sqlite"), "cli_path": support.join("Dodex/missing-codex")
-        }})).unwrap()).unwrap();
+        let layout = agent_companion_core::tui_instance::Layout { user_home: home.clone(), support: support.clone() };
+        fs::write(&record, serde_json::to_vec(&agent_companion_core::tui_instance::Registry {
+            schema: agent_companion_core::tui_instance::SCHEMA, primary: None,
+            dodex: layout.secondary(dodex_home.clone(), support.join("Dodex/sqlite"), dodex_home.join("log")),
+            dodex_enabled: false,
+        }).unwrap()).unwrap();
         Self {
             _temporary: temporary,
             home,

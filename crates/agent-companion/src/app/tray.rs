@@ -21,7 +21,7 @@ use super::win::Rect;
 const ID_SETUP: &str = "agent-companion.setup";
 const ID_DODEX: &str = "agent-companion.dodex";
 const ID_QUIT: &str = "agent-companion.quit";
-pub const DODEX_LABEL: &str = "打开 Dodex";
+pub const DODEX_LABEL: &str = "打开 Dodex TUI 终端";
 
 /// What the user asked the tray for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

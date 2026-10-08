@@ -40,10 +40,12 @@ export component MacSettings inherits Rectangle {
     in property <string> catalog-version;
     in property <bool> dual-enabled;
     in property <bool> dual-deployed;
-    in property <bool> dual-app-installed;
-    in property <string> dual-app-path;
-    in property <string> dual-app-version;
+    in property <bool> dual-tui-installed;
+    in property <string> dual-command-path;
+    in property <string> dual-package-path;
     in property <string> dual-profile-home;
+    in property <string> dual-database-dir;
+    in property <string> dual-log-dir;
     in property <bool> dual-tui-available;
     in property <bool> dual-tui-configured;
     in property <bool> dual-busy;
@@ -111,7 +113,7 @@ export component MacSettings inherits Rectangle {
             spacing: 8px;
             SettingsButton { text: "通用"; width: 100px; primary: root.current-page == 2; clicked => { root.current-page = 2; } }
             SettingsButton { text: "Codex CLI"; width: 132px; primary: root.current-page == 0; clicked => { root.current-page = 0; } }
-            SettingsButton { text: "Codex 双开"; width: 132px; primary: root.current-page == 1; clicked => { root.current-page = 1; } }
+            SettingsButton { text: "TUI 双开"; width: 132px; primary: root.current-page == 1; clicked => { root.current-page = 1; } }
             Rectangle { horizontal-stretch: 1; }
         }
         Rectangle {
@@ -221,10 +223,12 @@ export component MacSettings inherits Rectangle {
                     }
             }
             if root.current-page == 1: DualSettings {
-                app-installed: root.dual-app-installed;
-                app-path: root.dual-app-path;
-                app-version: root.dual-app-version;
+                tui-installed: root.dual-tui-installed;
+                command-path: root.dual-command-path;
+                package-path: root.dual-package-path;
                 profile-home: root.dual-profile-home;
+                database-dir: root.dual-database-dir;
+                log-dir: root.dual-log-dir;
                 tui-available: root.dual-tui-available;
                 tui-configured: root.dual-tui-configured;
                 monitored: root.dual-enabled;

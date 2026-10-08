@@ -15,9 +15,8 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-      - name: Check Dodex repair helpers
+      - name: Check native resume contracts
         run: |
-          python3 -m unittest discover -s scripts -p 'test_prepare_dodex_manager.py'
           python3 -m unittest discover -s scripts/tests -p 'test_*.py'
       - name: Check menu-bar status and quota behavior
         run: sh scripts/test-macos-ui.sh --menu-bar
@@ -39,9 +38,11 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             packages: --workspace
+            console: acomp.exe
           - os: macos-14
             target: aarch64-apple-darwin
             packages: -p agent-companion -p agent-companion-core
+            console: acomp
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -50,6 +51,8 @@ jobs:
         with:
           components: clippy, rustfmt
           targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
 
       - name: Format
         run: cargo fmt --all --check
@@ -68,6 +71,9 @@ jobs:
 
       - name: Common backend and migration tests
         run: cargo test -p agent-companion-core --features server --target ${{ matrix.target }} --locked
+
+      - name: Native TUI installation, update and daemon isolation
+        run: python3 scripts/test-tui-instances.py --companion target/${{ matrix.target }}/debug/${{ matrix.console }}
 
       - name: Preserve failed macOS UI renders
         if: failure() && runner.os == 'macOS'

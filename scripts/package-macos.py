@@ -17,7 +17,8 @@ args = parser.parse_args()
 root = Path(__file__).resolve().parent.parent
 version = tomllib.loads((root / "Cargo.toml").read_text())["workspace"]["package"]["version"]
 cli_binary = args.cli_binary or args.binary.with_name("acomp")
-for binary in (args.binary, cli_binary):
+tui_binary = args.binary.with_name("dodex")
+for binary in (args.binary, cli_binary, tui_binary):
     arches = subprocess.check_output(["lipo", "-archs", str(binary)], text=True).strip()
     if arches != "arm64":
         parser.error(f"expected Apple Silicon arm64 binary, found: {arches}")
@@ -36,6 +37,8 @@ shutil.copy2(args.binary, contents / "MacOS" / "agent-companion")
 (contents / "MacOS" / "agent-companion").chmod(0o755)
 shutil.copy2(cli_binary, contents / "MacOS" / "acomp")
 (contents / "MacOS" / "acomp").chmod(0o755)
+shutil.copy2(tui_binary, contents / "MacOS" / "dodex")
+(contents / "MacOS" / "dodex").chmod(0o755)
 with (contents / "Info.plist").open("wb") as stream:
     plistlib.dump({
         "CFBundleExecutable": "agent-companion",

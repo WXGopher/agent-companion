@@ -1,7 +1,7 @@
 //! Instance-scoped Windows monitoring and presentation. Secondary account state
 //! is dropped immediately on disable, including pending reads and task caches.
 use super::*;
-use crate::windows_deployment::{self, InstanceConfig};
+use crate::tui_deployment::{self, InstanceConfig};
 
 pub struct Secondary {
     pub instance: InstanceConfig,
@@ -43,7 +43,7 @@ impl App {
             .map(|s| s.table.tasks(HookSource::Codex, now_unix_secs()))
     }
     pub(super) fn poll_secondary(&self) {
-        let active = windows_deployment::active_instance();
+        let active = tui_deployment::active_instance();
         let mut secondary = self.secondary.borrow_mut();
         if secondary.as_ref().map(|s| &s.instance) != active.as_ref() {
             *secondary = active.map(Secondary::new);
@@ -217,14 +217,9 @@ impl App {
         self.jump_request.set(request);
         std::thread::spawn(move || {
             let plan = navigation::Plan::resolve(&state);
-            // Launching the explicit runtime with its data directory delivers the
-            // deep link to that instance's own single-instance handler.
-            let opened = if plan.is_desktop() {
-                windows_deployment::active_instance().as_ref() == Some(&instance)
-                    && windows_deployment::launch(Some(&state.session_id)).is_ok()
-            } else {
-                false
-            };
+            let opened = tui_deployment::active_instance().as_ref() == Some(&instance)
+                && ((!plan.is_desktop() && plan.activate(&state.session_id, None))
+                    || tui_deployment::open_terminal(Some(&state.session_id)).is_ok());
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(app) = APP.with(|slot| slot.borrow().clone())
                     && app.jump_request.get() == request
@@ -233,7 +228,7 @@ impl App {
                         .borrow()
                         .as_ref()
                         .is_some_and(|s| s.instance == instance)
-                    && (opened || (!plan.is_desktop() && plan.activate(&state.session_id, None)))
+                    && opened
                 {
                     app.close_flyout();
                 }

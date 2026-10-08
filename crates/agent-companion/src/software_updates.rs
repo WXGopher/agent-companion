@@ -1,181 +1,31 @@
-//! Explicit, user initiated Codex/Dodex maintenance. Observing local versions
-//! never contacts a server. App versions and terminal versions are independent.
+//! Explicit, independent TUI updates. Opening settings only observes versions.
+use crate::tui_deployment;
+use agent_companion_core::tui_instance::{Channel, InstanceConfig, InstanceLock, Layout};
 use std::{
-    cmp::Ordering,
+    process::Command,
     sync::{Arc, Mutex, OnceLock},
+    time::Duration,
 };
-
-#[cfg(target_os = "macos")]
-#[path = "software_updates/macos.rs"]
-mod platform;
-#[cfg(target_os = "macos")]
-pub(crate) use platform::entries::primary_native;
-#[cfg(windows)]
-#[path = "software_updates/windows.rs"]
-mod platform;
-#[cfg(test)]
-#[path = "software_updates/tests.rs"]
-mod tests;
-
-/// Validated read-only runtime metadata for navigation and quota. Saved legacy
-/// deployment manifests still describe their original signed runtime.
-#[cfg(target_os = "macos")]
-pub(crate) fn managed_cli() -> Option<std::path::PathBuf> {
-    platform::System::new().ok()?.managed_cli().ok().flatten()
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) fn cli_is_configured(app: &std::path::Path) -> bool {
-    platform::System::new().is_ok_and(|system| system.cli_is_configured(app))
-}
-
-/// One maintenance transaction shared by the settings worker and --install.
-/// Alignment completes the App before publishing its terminal entry. Monitoring
-/// is enabled only after both components and their common profile are verified.
-#[cfg(target_os = "macos")]
-pub(crate) fn install_and_configure(
-    mut report: impl FnMut(&str),
-) -> Result<crate::macos_deployment::CompletedDeployment, String> {
-    let ops = platform::System::new()?;
-    let _lock = ops.lock()?;
-    install_local(&ops, &mut report, || {
-        ops.configure_shell()?;
-        crate::macos_deployment::complete_install_under_maintenance_lock()
-    })
-}
-
-#[cfg(target_os = "macos")]
-fn install_local<T>(
-    ops: &dyn Operations,
-    mut report: impl FnMut(&str),
-    complete: impl FnOnce() -> Result<T, String>,
-) -> Result<T, String> {
-    let mut snapshot = Snapshot::default();
-    execute(ops, Some(Action::Align), |change| {
-        change(&mut snapshot);
-        report(&snapshot.message);
-    })?;
-    report("正在注册 dodex 命令并启用 Companion 监控…");
-    complete()
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Action {
-    Align,
-    UpdateAll,
+    UpdateCodex,
+    UpdateDodex,
 }
-
 impl Action {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
-            "align" => Some(Self::Align),
-            "update-all" => Some(Self::UpdateAll),
+            "update-codex" => Some(Self::UpdateCodex),
+            "update-dodex" => Some(Self::UpdateDodex),
             _ => None,
         }
     }
-}
-
-#[derive(Default)]
-struct Requests {
-    pending: Option<Action>,
-    repeated: bool,
-}
-static REQUEST: OnceLock<Mutex<Requests>> = OnceLock::new();
-pub fn request(action: Action) {
-    let mut requests = REQUEST
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    if requests.pending.is_some() {
-        requests.repeated = true;
-    } else {
-        requests.pending = Some(action);
-    }
-}
-
-/// Synchronous maintenance for explicit installers and console commands. It
-/// shares the same process lock, recovery and verification as the settings UI.
-pub(crate) fn run_action(action: Action) -> Result<Snapshot, String> {
-    let ops = platform::System::new()?;
-    let _lock = ops.lock()?;
-    let mut snapshot = Snapshot::default();
-    execute(&ops, Some(action), |change| change(&mut snapshot))?;
-    Ok(snapshot)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Target {
-    CodexTui,
-    DodexTui,
-    CodexApp,
-    DodexApp,
-}
-impl Target {
-    const ALL: [Self; 4] = [
-        Self::CodexTui,
-        Self::DodexTui,
-        Self::CodexApp,
-        Self::DodexApp,
-    ];
-    fn index(self) -> usize {
-        Self::ALL.iter().position(|target| *target == self).unwrap()
-    }
-    fn name(self) -> &'static str {
+    fn id(self) -> &'static str {
         match self {
-            Self::CodexTui => "Codex TUI",
-            Self::DodexTui => "Dodex TUI",
-            Self::CodexApp => "Codex App",
-            Self::DodexApp => "Dodex App",
+            Self::UpdateCodex => "codex",
+            Self::UpdateDodex => "dodex",
         }
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-struct Version {
-    version: String,
-    build: Option<String>,
-}
-impl Version {
-    fn display(&self) -> String {
-        match &self.build {
-            Some(build) => format!("{} ({build})", self.version),
-            None => self.version.clone(),
-        }
-    }
-    fn compare(&self, other: &Self) -> Result<Ordering, String> {
-        match (&self.build, &other.build) {
-            (Some(left), Some(right)) => compare_app_builds(left, right),
-            (None, None) => {
-                let parse = |value: &str| {
-                    semver::Version::parse(value)
-                        .map_err(|_| "无法比较 TUI 版本；未替换程序。".to_owned())
-                };
-                Ok(parse(&self.version)?.cmp(&parse(&other.version)?))
-            }
-            _ => Err("版本类型不匹配；未替换程序。".into()),
-        }
-    }
-}
-pub(crate) fn compare_app_builds(left: &str, right: &str) -> Result<Ordering, String> {
-    Ok(numeric_version(left)?.cmp(&numeric_version(right)?))
-}
-fn numeric_version(value: &str) -> Result<Vec<u64>, String> {
-    let mut result = value
-        .split('.')
-        .map(str::parse)
-        .collect::<Result<Vec<u64>, _>>()
-        .map_err(|_| "无法比较 App 构建版本；未替换程序。".to_owned())?;
-    while result.last() == Some(&0) {
-        result.pop();
-    }
-    Ok(result)
-}
-
-#[derive(Clone, Debug)]
-struct Release {
-    version: Version,
-    url: String,
-    length: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -198,18 +48,18 @@ pub struct Snapshot {
 impl Default for Snapshot {
     fn default() -> Self {
         Self {
-            rows: Target::ALL
+            rows: ["Codex TUI", "Dodex TUI"]
                 .into_iter()
-                .map(|target| Row {
-                    name: target.name().into(),
+                .map(|name| Row {
+                    name: name.into(),
                     current: "尚未读取".into(),
-                    target: "尚未检查".into(),
+                    target: "各自安装渠道".into(),
                     message: String::new(),
                     error: false,
                 })
                 .collect(),
             busy: false,
-            message: "对齐使用本机 Codex；全部更新会检查官方稳定版。仅点击操作时联网。".into(),
+            message: "两套 TUI 独立更新，允许版本不同。".into(),
             error: false,
             initializing: false,
             notice: String::new(),
@@ -217,42 +67,122 @@ impl Default for Snapshot {
     }
 }
 
-trait Operations {
-    /// Called only by explicit maintenance, with the process lock held.
-    fn recover(&self) -> Result<(), String> {
-        Ok(())
+#[derive(Default)]
+struct Requests {
+    pending: Option<Action>,
+    repeated: bool,
+}
+static REQUEST: OnceLock<Mutex<Requests>> = OnceLock::new();
+pub fn request(action: Action) {
+    let mut requests = REQUEST
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if requests.pending.is_some() {
+        requests.repeated = true;
+    } else {
+        requests.pending = Some(action);
     }
-    fn recover_secondary(&self) -> Result<(), String> {
-        Ok(())
+}
+
+pub(crate) fn run_action(action: Action) -> Result<Snapshot, String> {
+    let layout = Layout::current().map_err(|e| e.to_string())?;
+    let _lock = InstanceLock::acquire(&layout, action.id()).map_err(|e| e.to_string())?;
+    let instance = selected(action).ok_or("所选 TUI 未安装，请先安装或修复。")?;
+    update_instance(&instance)?;
+    let mut snapshot = Snapshot::default();
+    observe(&mut snapshot);
+    snapshot.message = format!("{} TUI 更新完成；另一实例保持原版本。", instance.label);
+    Ok(snapshot)
+}
+fn selected(action: Action) -> Option<InstanceConfig> {
+    match action {
+        Action::UpdateCodex => tui_deployment::primary_instance(),
+        Action::UpdateDodex => tui_deployment::saved_instance(),
     }
-    fn always_update_primary(&self, _app: bool) -> bool {
-        false
+}
+
+fn update_instance(instance: &InstanceConfig) -> Result<(), String> {
+    let mut command = if instance.channel == Channel::Homebrew {
+        let mut command = Command::new(
+            instance
+                .updater
+                .as_ref()
+                .ok_or("Homebrew 更新程序不可用。")?,
+        );
+        instance.environment(&mut command);
+        command.args(["upgrade", "--cask", "codex"]);
+        command
+    } else if instance.channel == Channel::Npm {
+        let mut command = Command::new(instance.updater.as_ref().ok_or("npm 更新程序不可用。")?);
+        instance.environment(&mut command);
+        command.args(["install", "--global", "@openai/codex@latest"]);
+        command
+    } else if instance.channel == Channel::Standalone {
+        instance
+            .command(&["update".into()])
+            .map_err(|e| e.to_string())?
+    } else {
+        return Err("请通过 Codex 原安装渠道更新；Companion 不会自动迁移安装方式。".into());
+    };
+    command.env("CODEX_NON_INTERACTIVE", "1");
+    tui_deployment::run_bounded(&mut command, Duration::from_secs(900))
+        .map_err(|e| e.to_string())?;
+    if instance.id == "dodex" {
+        tui_deployment::verify_package(instance).map_err(|e| e.to_string())?;
     }
-    fn confirm_updated_version(&self, app: bool, observed: &Version) -> Result<(), String> {
-        if self.latest(app)?.version == *observed {
-            Ok(())
-        } else {
-            Err("更新后的版本无法确认为新的官方稳定版。".into())
+    version(instance)?;
+    Ok(())
+}
+
+fn version(instance: &InstanceConfig) -> Result<String, String> {
+    let mut command = instance
+        .command(&["--version".into()])
+        .map_err(|e| e.to_string())?;
+    let bytes = tui_deployment::run_bounded(&mut command, Duration::from_secs(20))
+        .map_err(|e| e.to_string())?;
+    let text = String::from_utf8_lossy(&bytes);
+    let version = text
+        .trim()
+        .strip_prefix("codex-cli ")
+        .ok_or("TUI 版本输出无效。")?;
+    semver::Version::parse(version).map_err(|_| "TUI 版本无效。")?;
+    Ok(version.into())
+}
+fn observe(snapshot: &mut Snapshot) {
+    for (index, action) in [Action::UpdateCodex, Action::UpdateDodex]
+        .into_iter()
+        .enumerate()
+    {
+        let row = &mut snapshot.rows[index];
+        row.error = false;
+        match selected(action) {
+            Some(instance) => {
+                row.target = match instance.channel {
+                    Channel::Homebrew => "Homebrew",
+                    Channel::Npm => "npm",
+                    Channel::Standalone => "官方 standalone",
+                    Channel::Native => "原安装渠道",
+                }
+                .into();
+                match version(&instance) {
+                    Ok(value) => {
+                        row.current = value;
+                        row.message.clear();
+                    }
+                    Err(error) => {
+                        row.current = "不可用".into();
+                        row.error = true;
+                        row.message = error;
+                    }
+                }
+            }
+            None => {
+                row.current = "未安装".into();
+                row.message.clear();
+            }
         }
     }
-    fn installed(&self, target: Target) -> Result<Option<Version>, String>;
-    fn latest(&self, app: bool) -> Result<Release, String>;
-    fn preflight(&self, cli: bool, app: bool) -> Result<(), String>;
-    fn cli_needs_sync(&self) -> bool {
-        false
-    }
-    fn app_needs_sync(&self) -> bool {
-        false
-    }
-    /// Checks all affected desktop and terminal processes before any changes.
-    fn require_stopped(&self) -> Result<(), String>;
-    /// Alignment reads the primary installation without changing it. Only the
-    /// secondary components actually being replaced need to be stopped.
-    fn require_secondary_stopped(&self, _cli: bool, _app: bool) -> Result<(), String> {
-        self.require_stopped()
-    }
-    fn update_primary(&self, app: bool, release: &Release) -> Result<(), String>;
-    fn align_secondary(&self, app: bool, expected: &Version) -> Result<(), String>;
 }
 
 #[derive(Clone)]
@@ -264,7 +194,7 @@ impl Service {
         let service = Self {
             state: Arc::new(Mutex::new(Snapshot::default())),
         };
-        service.start_job(None);
+        service.refresh();
         service
     }
     pub fn snapshot(&self) -> Snapshot {
@@ -276,8 +206,6 @@ impl Service {
     pub fn refresh(&self) {
         self.start_job(None);
     }
-    /// Keep the initial menu request until local inspection has completed;
-    /// requests during an actual update are rejected, never silently replayed.
     pub fn poll_requests(&self) -> bool {
         let action = {
             let mut requests = REQUEST
@@ -285,13 +213,22 @@ impl Service {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            queued_action(&mut requests, &mut state)
+            if state.initializing {
+                return false;
+            }
+            let pending = requests.pending.take();
+            if requests.repeated || (state.busy && pending.is_some()) {
+                state.notice = "已有更新操作正在进行；重复请求已忽略。".into();
+                requests.repeated = false;
+            }
+            if state.busy { None } else { pending }
         };
         if let Some(action) = action {
             self.start(action);
-            return true;
+            true
+        } else {
+            false
         }
-        false
     }
     fn start_job(&self, action: Option<Action>) {
         {
@@ -302,408 +239,42 @@ impl Service {
             state.busy = true;
             state.initializing = action.is_none();
             state.error = false;
-            state.message = if action.is_some() {
-                "正在检查版本与运行中的 App / TUI…"
-            } else {
-                "正在读取本机版本（不联网）…"
-            }
-            .into();
+            state.message = action.map_or(
+                "正在读取本机 TUI 版本（不联网）…".into(),
+                |action| format!("正在更新 {} TUI…", action.id()),
+            );
         }
         let service = self.clone();
         let result = std::thread::Builder::new()
-            .name("codex-software-maintenance".into())
+            .name("tui-update".into())
             .spawn(move || {
-                let result = (|| {
-                    let ops = platform::System::new()?;
-                    // One editor must not replace software while another one is
-                    // updating. The lock is process scoped and released on a crash.
-                    let _lock = action.map(|_| ops.lock()).transpose()?;
-                    execute(&ops, action, |change| {
-                        let mut state = service.state.lock().unwrap_or_else(|e| e.into_inner());
-                        change(&mut state);
-                    })
-                })();
+                // Native version probes can take seconds. Keep them outside
+                // the UI mutex so rendering and duplicate requests stay live.
+                let mut snapshot = match action.map(run_action).transpose() {
+                    Ok(Some(snapshot)) => snapshot,
+                    Ok(None) => {
+                        let mut snapshot = Snapshot::default();
+                        observe(&mut snapshot);
+                        snapshot
+                    }
+                    Err(error) => {
+                        let mut snapshot = Snapshot::default();
+                        observe(&mut snapshot);
+                        snapshot.error = true;
+                        snapshot.message = error;
+                        snapshot
+                    }
+                };
                 let mut state = service.state.lock().unwrap_or_else(|e| e.into_inner());
-                state.busy = false;
-                state.initializing = false;
-                if let Err(error) = result {
-                    state.error = true;
-                    state.message = error;
-                }
+                snapshot.notice = state.notice.clone();
+                *state = snapshot;
             });
         if result.is_err() {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             state.busy = false;
             state.initializing = false;
             state.error = true;
-            state.message = "无法开始更新任务，请重试。".into();
+            state.message = "无法开始 TUI 更新，请重试。".into();
         }
     }
-}
-
-fn queued_action(requests: &mut Requests, state: &mut Snapshot) -> Option<Action> {
-    if state.initializing {
-        return None;
-    }
-    if !state.busy && requests.pending.is_some() && !requests.repeated {
-        state.notice.clear();
-    }
-    let action = requests.pending.take();
-    if requests.repeated || (state.busy && action.is_some()) {
-        state.notice = "已有操作正在等待或进行中；重复请求已忽略。请等待结果后再操作。".into();
-        requests.repeated = false;
-    }
-    if state.busy { None } else { action }
-}
-
-type Change<'a> = Box<dyn FnOnce(&mut Snapshot) + 'a>;
-fn execute(
-    ops: &dyn Operations,
-    action: Option<Action>,
-    mut report: impl FnMut(Change<'_>),
-) -> Result<(), String> {
-    match action {
-        Some(Action::UpdateAll) => ops.recover()?,
-        Some(Action::Align) => ops.recover_secondary()?,
-        None => {}
-    }
-    let mut installed: [Option<Version>; 4] = Default::default();
-    let mut inspection_error = None;
-    for target in Target::ALL {
-        let observed = ops.installed(target);
-        let (current, error) = match &observed {
-            Ok(Some(version)) => (version.display(), None),
-            Ok(None) => ("未安装 / 未接入".into(), None),
-            Err(error) => {
-                inspection_error = Some(error.clone());
-                ("无法读取".into(), Some(error.clone()))
-            }
-        };
-        installed[target.index()] = observed.ok().flatten();
-        report(Box::new(move |state| {
-            let row = &mut state.rows[target.index()];
-            row.current = current;
-            row.target = "尚未检查".into();
-            row.error = error.is_some();
-            row.message = error.unwrap_or_default();
-        }));
-    }
-    let Some(action) = action else {
-        report(Box::new(|state| describe_local_versions(&installed, state)));
-        return Ok(());
-    };
-    if let Some(error) = inspection_error {
-        return Err(format!("无法确认现有安装：{error}"));
-    }
-    let mut releases: [Option<Release>; 2] = [None, None];
-    if action == Action::UpdateAll {
-        report(Box::new(|state| {
-            state.message = "正在检查官方 TUI 与 App 稳定版…".into()
-        }));
-        // Fetch both successfully before making either local installation change.
-        releases[0] = Some(ops.latest(false)?);
-        releases[1] = Some(ops.latest(true)?);
-    }
-    // Plan the complete operation first. A secondary instance newer than its
-    // proposed source must never be silently downgraded.
-    let mut plan = Vec::new();
-    let mut skipped = Vec::new();
-    for app in [false, true] {
-        let (primary, secondary) = if app {
-            (Target::CodexApp, Target::DodexApp)
-        } else {
-            (Target::CodexTui, Target::DodexTui)
-        };
-        let current = installed[primary.index()]
-            .as_ref()
-            .ok_or_else(|| format!("未找到 {}；请先安装官方程序，再重试。", primary.name()))?;
-        let desired = match &releases[usize::from(app)] {
-            Some(release) if current.compare(&release.version)? == Ordering::Greater => {
-                skipped.push(format!("{} 高于官方稳定版，已保留", primary.name()));
-                current.clone()
-            }
-            Some(release) => release.version.clone(),
-            None => current.clone(),
-        };
-        for target in [primary, secondary] {
-            let displayed = desired.display();
-            let label = if action == Action::Align {
-                "目标：本机 Codex"
-            } else {
-                "目标：官方稳定版（保留更高版本）"
-            };
-            report(Box::new(move |state| {
-                state.rows[target.index()].target = displayed;
-                state.rows[target.index()].message = label.into();
-            }));
-        }
-        // Store metadata is a floor until the exact-product updater completes.
-        // Defer "newer secondary" decisions until its actual version is known.
-        let dynamic_target = action == Action::UpdateAll && ops.always_update_primary(app);
-        let newer_secondary = !dynamic_target
-            && installed[secondary.index()]
-                .as_ref()
-                .map(|value| value.compare(&desired))
-                .transpose()?
-                == Some(Ordering::Greater);
-        if newer_secondary {
-            report(Box::new(move |state| {
-                state.rows[secondary.index()].message =
-                    "Dodex 比目标更新，已保留；可尝试全部更新。".into();
-            }));
-        }
-        let update_primary = current.compare(&desired)? == Ordering::Less
-            || (action == Action::UpdateAll && ops.always_update_primary(app));
-        let update_secondary = !newer_secondary
-            && (installed[secondary.index()].as_ref() != Some(&desired)
-                || if app {
-                    ops.app_needs_sync()
-                } else {
-                    ops.cli_needs_sync()
-                });
-        plan.push((app, desired, update_primary, update_secondary));
-    }
-    if plan
-        .iter()
-        .any(|(_, _, primary, secondary)| *primary || *secondary)
-    {
-        // The new terminal adapter sends workspaces through the public App.
-        // A newer Dodex App is retained, so its old bootstrap cannot be upgraded
-        // by copying the older primary. Fail before changing either component.
-        if plan.iter().any(|(app, _, _, secondary)| !app && *secondary)
-            && ops.app_needs_sync()
-            && !plan.iter().any(|(app, _, _, secondary)| *app && *secondary)
-        {
-            return Err("Dodex App 较新，但启动器需要更新；为保留工作区打开行为，未修改任何程序。请使用「全部更新到最新」后重试。".into());
-        }
-        ops.preflight(
-            plan.iter()
-                .any(|(app, _, primary, secondary)| !*app && (*primary || *secondary)),
-            plan.iter()
-                .any(|(app, _, primary, secondary)| *app && (*primary || *secondary)),
-        )?;
-        if action == Action::Align {
-            ops.require_secondary_stopped(
-                plan.iter().any(|(app, _, _, secondary)| !app && *secondary),
-                plan.iter().any(|(app, _, _, secondary)| *app && *secondary),
-            )?;
-        } else {
-            ops.require_stopped()?;
-        }
-    }
-    let result = (|| {
-        // Publish the App bootstrap before migrating the terminal entry so its
-        // `dodex app <project>` route is available even after a later failure.
-        for (app, desired, update_primary, update_secondary) in plan.iter().rev() {
-            let (primary, secondary) = if *app {
-                (Target::CodexApp, Target::DodexApp)
-            } else {
-                (Target::CodexTui, Target::DodexTui)
-            };
-            let mut desired = desired.clone();
-            if *update_primary {
-                report(Box::new(move |state| {
-                    state.message =
-                        format!("正在更新 {}；请保持相关 App / TUI 关闭…", primary.name())
-                }));
-                ops.require_stopped()?;
-                ops.update_primary(*app, releases[usize::from(*app)].as_ref().unwrap())?;
-                let observed = ops.installed(primary)?.ok_or("官方更新后无法定位程序。")?;
-                if observed != desired {
-                    // An official self-updater may install B after we checked A.
-                    // Only a fresh stable-channel response can authorize B as
-                    // this run's new target; never blindly mirror a prerelease.
-                    if observed.compare(&desired)? != Ordering::Greater {
-                        return Err(format!(
-                            "{} 更新后的版本无法确认为新的官方稳定版；已保留实际安装和恢复资料，未同步副实例。",
-                            primary.name()
-                        ));
-                    }
-                    ops.confirm_updated_version(*app, &observed)?;
-                    desired = observed;
-                    for target in [primary, secondary] {
-                        let displayed = desired.display();
-                        report(Box::new(move |state| {
-                            state.rows[target.index()].target = displayed
-                        }));
-                    }
-                }
-            }
-            let actual_secondary = ops.installed(secondary)?;
-            let newer_secondary = actual_secondary
-                .as_ref()
-                .map(|value| value.compare(&desired))
-                .transpose()?
-                == Some(Ordering::Greater);
-            if newer_secondary {
-                skipped.push(format!("{} 较新，未降级；未宣称两者对齐", secondary.name()));
-                report(Box::new(move |state| {
-                    state.rows[secondary.index()].message =
-                        "Dodex 高于更新后的官方版本，未降级。".into()
-                }));
-            }
-            if !newer_secondary
-                && (*update_secondary || actual_secondary.as_ref() != Some(&desired))
-            {
-                if !app && ops.app_needs_sync() {
-                    return Err(
-                        "Dodex App 入口尚未对齐；TUI 入口未发布，请先处理 App 同步结果。".into(),
-                    );
-                }
-                report(Box::new(move |state| {
-                    state.message = format!(
-                        "正在对齐 {}；账号、会话与配置目录保持原样…",
-                        secondary.name()
-                    )
-                }));
-                ops.require_secondary_stopped(!app, *app)?;
-                ops.align_secondary(*app, &desired)?;
-                verify_result(ops, secondary, &desired)?;
-            }
-        }
-        Ok::<(), String>(())
-    })();
-    // Always re-observe after a partial failure; never claim both sides match
-    // from the original plan or a package manager's exit code alone.
-    for target in Target::ALL {
-        let observed = ops.installed(target);
-        let verified = result.is_ok()
-            && match target {
-                Target::DodexTui => !ops.cli_needs_sync(),
-                Target::DodexApp => !ops.app_needs_sync(),
-                _ => true,
-            };
-        report(Box::new(move |state| {
-            let row = &mut state.rows[target.index()];
-            match observed {
-                Ok(Some(value)) => {
-                    row.current = value.display();
-                    if row.current == row.target && verified {
-                        row.message = "版本与入口已验证".into();
-                    } else if row.current == row.target {
-                        row.message = "版本已存在；入口和更新路由尚未完成验证".into();
-                        row.error = true;
-                    }
-                }
-                Ok(None) => row.current = "未安装 / 未接入".into(),
-                Err(error) => {
-                    row.current = "无法读取".into();
-                    row.message = error;
-                    row.error = true;
-                }
-            }
-        }));
-    }
-    result.map_err(|error| {
-        format!("操作未全部完成：{error} 已完成的更新会保留；关闭相关程序后可重试。")
-    })?;
-    report(Box::new(move |state| {
-        state.message = if skipped.is_empty() {
-            if action == Action::Align {
-                "Codex / Dodex 的 TUI 与 App 已分别对齐。"
-            } else {
-                "已检查官方稳定版，并分别对齐 Codex / Dodex 的 TUI 与 App。"
-            }
-            .into()
-        } else {
-            skipped.join("；")
-        };
-    }));
-    Ok(())
-}
-
-/// Initial inspection and refresh compare only the versions already observed.
-/// They never enter maintenance preflight, recovery, synchronization or lookup
-/// of upstream releases. Inspection errors remain distinct from missing apps.
-fn describe_local_versions(installed: &[Option<Version>; 4], state: &mut Snapshot) {
-    let pairs = [
-        (Target::CodexTui, Target::DodexTui),
-        (Target::CodexApp, Target::DodexApp),
-    ];
-    let mut missing_secondary = Vec::new();
-    let mut missing_reference = false;
-    for (primary, secondary) in pairs {
-        let reference = installed[primary.index()].as_ref();
-        let current = installed[secondary.index()].as_ref();
-        let reference_error = state.rows[primary.index()].error;
-        let target = reference.map(Version::display).unwrap_or_else(|| {
-            if reference_error {
-                "参考读取失败"
-            } else {
-                "缺少本机参考"
-            }
-            .into()
-        });
-        let primary_row = &mut state.rows[primary.index()];
-        primary_row.target.clone_from(&target);
-        if !primary_row.error {
-            primary_row.message = if reference.is_some() {
-                format!("本机对齐参考；用于 {}。", secondary.name())
-            } else {
-                missing_reference = true;
-                format!("未找到本机 {}；请先安装官方程序。", primary.name())
-            };
-        }
-
-        let secondary_row = &mut state.rows[secondary.index()];
-        secondary_row.target = target;
-        if secondary_row.error {
-            continue;
-        }
-        secondary_row.message = match (reference, current) {
-            (_, None) => {
-                missing_secondary.push(secondary.name());
-                format!("未找到 {}；请点击「安装并配置 Dodex」。", secondary.name())
-            }
-            (None, Some(_)) => format!(
-                "无法比较：{}{}。",
-                primary.name(),
-                if reference_error {
-                    " 版本读取失败"
-                } else {
-                    " 未安装"
-                },
-            ),
-            (Some(reference), Some(current)) => match current.compare(reference) {
-                Ok(Ordering::Equal) => format!("与本机 {} 版本一致。", primary.name()),
-                Ok(Ordering::Less) => format!("低于本机 {}，可对齐。", primary.name()),
-                Ok(Ordering::Greater) => "较新，保留，不降级。".into(),
-                Err(error) => {
-                    secondary_row.error = true;
-                    error
-                }
-            },
-        };
-    }
-    state.error = state.rows.iter().any(|row| row.error);
-    state.message = if state.error {
-        "本机版本检查未完成；请查看各项提示。".into()
-    } else if !missing_secondary.is_empty() {
-        format!(
-            "未找到 {}；请点击「安装并配置 Dodex」。",
-            missing_secondary.join("、")
-        )
-    } else if missing_reference {
-        "缺少本机 Codex 参考，无法完成对应版本比较。".into()
-    } else {
-        "已自动比较本机 App 与 TUI 版本。".into()
-    };
-}
-
-fn verify_result(ops: &dyn Operations, target: Target, desired: &Version) -> Result<(), String> {
-    if ops.installed(target)?.as_ref() != Some(desired) {
-        return Err(format!(
-            "{} 安装后的版本与目标不符，未标记为完成。",
-            target.name()
-        ));
-    }
-    if (target == Target::DodexTui && ops.cli_needs_sync())
-        || (target == Target::DodexApp && ops.app_needs_sync())
-    {
-        return Err(format!(
-            "{} 的入口、App 绑定或统一更新路由尚未对齐。",
-            target.name()
-        ));
-    }
-    Ok(())
 }

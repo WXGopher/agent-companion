@@ -1,18 +1,6 @@
 //! Option-aware dispatch for isolated native Codex command entries. Prompts and
 //! option values are never inspected as management commands or config options.
-use std::{
-    ffi::OsString,
-    path::{Path, PathBuf},
-};
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum Action {
-    Native,
-    App(Option<PathBuf>),
-    Update,
-    AppHelp,
-    UpdateHelp,
-}
+use std::ffi::OsString;
 
 fn value_option(name: &str) -> bool {
     matches!(
@@ -44,6 +32,7 @@ fn value_option(name: &str) -> bool {
             | "--title"
             | "--base"
             | "--commit"
+            | "--permission-profile"
     )
 }
 fn short_value(name: char) -> Option<&'static str> {
@@ -56,6 +45,7 @@ fn short_value(name: char) -> Option<&'static str> {
         'C' => "--cd",
         'a' => "--ask-for-approval",
         'o' => "--output-last-message",
+        'P' => "--permission-profile",
         _ => return None,
     })
 }
@@ -74,6 +64,9 @@ fn bool_option(name: &str) -> bool {
             | "--search"
             | "--no-alt-screen"
             | "--full-auto"
+            | "--no-daemon"
+            | "--ignore-user-config"
+            | "--ignore-rules"
     )
 }
 
@@ -169,90 +162,40 @@ pub fn config_overrides(args: &[OsString]) -> Vec<String> {
     result
 }
 
-pub fn route(args: &[OsString], cwd: &Path) -> Result<Action, String> {
-    let (mut index, mut prefix) = (0, Vec::new());
+/// Inspect only the root command. Unknown option arity and option values stay
+/// with the native parser; prompts containing "app"/"update" are never routed.
+fn root_command(args: &[OsString]) -> Option<&str> {
+    let mut index = 0;
     while index < args.len() {
-        let Some(token) = args[index].to_str() else {
-            return Ok(Action::Native);
-        };
+        let token = args[index].to_str()?;
         if token == "--" {
-            return Ok(Action::Native);
+            return None;
         }
         if token.starts_with('-') && token != "-" {
-            let Some((end, options)) = option(args, index) else {
-                return Ok(Action::Native);
-            };
-            prefix.extend(options);
-            index = end;
-            continue;
-        }
-        if prefix
-            .iter()
-            .any(|(name, _)| name == "--help" || name == "--version")
-        {
-            return Ok(Action::Native);
-        }
-        return match token {
-            "app" => app_request(&args[index + 1..], prefix, cwd),
-            "update" if index == 0 && args.len() == 1 => Ok(Action::Update),
-            "update"
-                if index == 0 && args.len() == 2 && (args[1] == "--help" || args[1] == "-h") =>
+            let (end, options) = option(args, index)?;
+            if options
+                .iter()
+                .any(|(key, _)| key == "--help" || key == "--version")
             {
-                Ok(Action::UpdateHelp)
+                return None;
             }
-            "update" => {
-                Err("Use dodex update without options to open Companion's update controls.".into())
-            }
-            _ => Ok(Action::Native),
-        };
-    }
-    Ok(Action::Native)
-}
-
-fn app_request(args: &[OsString], mut options: Options, cwd: &Path) -> Result<Action, String> {
-    let (mut index, mut separated, mut values) = (0, false, Vec::new());
-    while index < args.len() {
-        if !separated && args[index] == "--" {
-            separated = true;
-            index += 1;
-            continue;
-        }
-        if !separated
-            && args[index]
-                .to_str()
-                .is_some_and(|value| value.starts_with('-') && value != "-")
-        {
-            let (end, consumed) =
-                option(args, index).ok_or("dodex app supports [PATH] and -C/--cd only.")?;
-            options.extend(consumed);
             index = end;
         } else {
-            values.push(&args[index]);
-            index += 1;
+            return if token == "help" {
+                args.get(index + 1)?.to_str()
+            } else {
+                Some(token)
+            };
         }
     }
-    if options.iter().any(|(name, _)| name == "--help") {
-        return Ok(Action::AppHelp);
-    }
-    if options.iter().any(|(name, _)| name != "--cd") || options.len() > 1 || values.len() > 1 {
-        return Err("dodex app supports one [PATH] and at most one -C/--cd directory.".into());
-    }
-    if values.is_empty() && options.is_empty() {
-        return Ok(Action::App(None));
-    }
-    let mut workspace = cwd.to_path_buf();
-    if let Some((_, Some(directory))) = options.first() {
-        workspace = workspace.join(directory);
-    }
-    if let Some(path) = values.first() {
-        workspace = workspace.join(path);
-    }
-    if !workspace.is_dir() {
-        return Err("The workspace must be an existing directory.".into());
-    }
-    Ok(Action::App(Some(std::path::absolute(workspace).map_err(
-        |_| "Could not resolve the workspace directory.",
-    )?)))
+    None
+}
+
+pub fn is_app_command(args: &[OsString]) -> bool {
+    root_command(args) == Some("app")
+}
+pub fn is_update_command(args: &[OsString]) -> bool {
+    root_command(args) == Some("update") && !args.iter().any(|arg| arg == "--help" || arg == "-h")
 }
 
 #[cfg(test)]
@@ -262,28 +205,29 @@ mod tests {
         values.iter().map(OsString::from).collect()
     }
     #[test]
-    fn prompts_option_values_and_subcommands_preserve_native_ownership() {
+    fn only_the_real_desktop_subcommand_is_rejected_and_updates_stay_native() {
         for values in [
             &["--", "app"][..],
             &["resume", "id", "app"],
             &["--image", "picture", "app"],
-            &["--future", "value", "update"],
+            &["--future", "value", "app"],
             &["--model", "app"],
             &["--help", "app"],
         ] {
-            assert_eq!(
-                route(&args(values), Path::new(".")).unwrap(),
-                Action::Native
-            );
+            assert!(!is_app_command(&args(values)), "{values:?}");
         }
-        assert_eq!(
-            route(&args(&["update"]), Path::new(".")).unwrap(),
-            Action::Update
-        );
-        assert_eq!(
-            route(&args(&["app"]), Path::new(".")).unwrap(),
-            Action::App(None)
-        );
+        for values in [
+            &["app"][..],
+            &["help", "app"],
+            &["--no-daemon", "app"],
+            &["-C", "/somewhere", "app", "--help"],
+        ] {
+            assert!(is_app_command(&args(values)), "{values:?}");
+        }
+        assert!(is_update_command(&args(&["update"])));
+        assert!(is_update_command(&args(&["-C", "/work", "update"])));
+        assert!(!is_update_command(&args(&["update", "--help"])));
+        assert!(!is_update_command(&args(&["exec", "update"])));
     }
     #[test]
     fn config_scanner_stops_at_separator_and_consumes_attached_or_separate_values() {
@@ -309,15 +253,5 @@ mod tests {
             ])),
             ["sqlite_home='/bad'", "profiles.work.log_dir='/bad'"]
         );
-    }
-    #[test]
-    fn project_paths_and_cd_reach_one_public_app_route() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::create_dir(temp.path().join("project with spaces")).unwrap();
-        assert_eq!(
-            route(&args(&["-C", "project with spaces", "app"]), temp.path()).unwrap(),
-            Action::App(Some(temp.path().join("project with spaces")))
-        );
-        assert!(route(&args(&["app", "--config", "model=o3"]), temp.path()).is_err());
     }
 }

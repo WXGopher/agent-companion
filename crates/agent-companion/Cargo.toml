@@ -18,6 +18,10 @@ path = "src/codex_main.rs"
 name = "acomp"
 path = "src/acomp_main.rs"
 
+[[bin]]
+name = "dodex"
+path = "src/dodex_main.rs"
+
 [[test]]
 name = "macos_editor"
 harness = false

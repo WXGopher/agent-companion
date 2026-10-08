@@ -1,5 +1,7 @@
 # Codex / Dodex 修复与验收记录
 
+> Historical validation of the removed App duplication model. Current TUI-only behavior and acceptance are documented in [TUI instances](macos-dual-instance.md).
+
 本轮验收日期：2026-10-02 至 2026-10-03。验收分为 `Codex App = Dodex App` 与
 `Codex TUI = Dodex TUI` 两组；不要求 App 与 TUI 使用同一版本号。
 

@@ -5,7 +5,7 @@ use std::io;
 use std::sync::{Mutex, OnceLock, mpsc};
 use std::time::Duration;
 
-use crate::macos_deployment::InstanceConfig;
+use crate::tui_deployment::InstanceConfig;
 use agent_companion_core::dashboard::{Dashboard, Instance, Snapshot};
 
 static USAGE: OnceLock<Mutex<crate::usage_service::UsageService>> = OnceLock::new();
@@ -261,10 +261,10 @@ pub fn run_menu_bar() -> io::Result<()> {
             // Publish routing before scanning session history so account queries
             // can start independently, including on a large first task scan.
             *state.lock().unwrap_or_else(|error| error.into_inner()) =
-                dashboard.routing_snapshot(crate::macos_deployment::monitor_instance().as_ref());
+                dashboard.routing_snapshot(crate::tui_deployment::monitor_instance().as_ref());
             loop {
                 let snapshot = dashboard.poll(
-                    crate::macos_deployment::monitor_instance(),
+                    crate::tui_deployment::monitor_instance(),
                     agent_companion_core::now_unix_secs(),
                 );
                 *state.lock().unwrap_or_else(|error| error.into_inner()) = snapshot;
@@ -376,9 +376,10 @@ impl InstanceDashboards {
     ) -> (Instance, std::path::PathBuf) {
         let database = agent_companion_core::dashboard::database_home(home);
         let found = crate::macos_primary_app::discover(system_applications, user_applications);
-        let (app, executable) = found
-            .map(|found| (Some(found.app), found.executable))
-            .unwrap_or_default();
+        let app = found.map(|found| found.app);
+        let executable = crate::tui_deployment::primary_instance()
+            .filter(|instance| instance.codex_home == home)
+            .and_then(|instance| instance.runtime().ok());
         (
             Instance {
                 instance_id: "codex".into(),
@@ -416,7 +417,7 @@ impl InstanceDashboards {
             instance_id: config.id.clone(),
             label: config.label.clone(),
             codex_home: config.codex_home.to_string_lossy().into_owned(),
-            app_path: Some(config.runtime_app.to_string_lossy().into_owned()),
+            app_path: None,
             executable_path: Some(config.cli_path.to_string_lossy().into_owned()),
             database_path: Some(config.database_dir.to_string_lossy().into_owned()),
         }
@@ -548,9 +549,9 @@ mod tests {
         assert_eq!(instance.instance_id, "codex");
         assert_eq!(instance.codex_home, home.to_string_lossy());
         assert_eq!(instance.app_path.as_deref(), app.to_str());
-        assert_eq!(
-            instance.executable_path.as_deref(),
-            app.join("Contents/Resources/codex").to_str()
+        assert!(
+            instance.executable_path.is_none(),
+            "A desktop bundle must not be used as the TUI runtime"
         );
         assert_eq!(instance.database_path.as_deref(), database.to_str());
     }
@@ -586,10 +587,12 @@ mod tests {
             id: "dodex".into(),
             label: "Dodex".into(),
             codex_home: second.clone(),
-            desktop_user_data: second.join("desktop"),
+            log_dir: second.join("log"),
+            install_dir: second.join("native-bin"),
+            command_path: second.join("dodex"),
+            channel: agent_companion_core::tui_instance::Channel::Standalone,
+            updater: None,
             database_dir: second.join("sqlite"),
-            runtime_app: second.join("Runtime.app"),
-            launcher_app: second.join("Dodex.app"),
             cli_path: second.join("Runtime.app/Contents/Resources/codex"),
         };
         let mut monitor = InstanceDashboards::new(home);
@@ -692,10 +695,12 @@ mod tests {
             id: "dodex".into(),
             label: "Dodex".into(),
             codex_home: second.clone(),
-            desktop_user_data: second.join("desktop"),
+            log_dir: second.join("log"),
+            install_dir: second.join("native-bin"),
+            command_path: second.join("dodex"),
+            channel: agent_companion_core::tui_instance::Channel::Standalone,
+            updater: None,
             database_dir: second.join("sqlite"),
-            runtime_app: second.join("Runtime.app"),
-            launcher_app: second.join("Dodex.app"),
             cli_path: second.join("Runtime.app/Contents/Resources/codex"),
         }
     }

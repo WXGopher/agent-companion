@@ -1,1 +1,0 @@
-        return {"environment": {key: value for key, value in env.items() if key.startswith("CODEX_")},

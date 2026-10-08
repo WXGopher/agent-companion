@@ -44,23 +44,6 @@ fn native_macos() {
     } else {
         "x86_64"
     };
-    let launcher = Command::new(xcrun(&["--find", "clang"]))
-        .args([
-            "-fobjc-arc",
-            "-Os",
-            "-Wall",
-            "-Wextra",
-            "-Werror",
-            "-target",
-        ])
-        .arg(format!("{arch}-apple-macosx14.0"))
-        .args(["-isysroot", &sdk, "-framework", "Foundation"])
-        .arg("macos/DodexLauncher.m")
-        .arg("-o")
-        .arg(output.join("DodexLauncher"))
-        .status()
-        .expect("could not run the Dodex launcher compiler");
-    assert!(launcher.success(), "the Dodex launcher failed to compile");
     let mut sources: Vec<_> = std::fs::read_dir("macos")
         .unwrap()
         .map(|entry| entry.unwrap().path())

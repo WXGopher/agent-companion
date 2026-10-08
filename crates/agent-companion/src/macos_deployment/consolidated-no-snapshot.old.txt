@@ -1,1 +1,0 @@
-                    raise ManagerError("No complete B snapshot is available.")

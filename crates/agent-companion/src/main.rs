@@ -26,22 +26,17 @@ mod headless;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
-mod macos_deployment;
-#[cfg(target_os = "macos")]
 mod macos_primary_app;
-#[cfg(target_os = "macos")]
-mod managed_tui;
 mod out;
-mod profile_validation;
 mod resume_cli;
 #[cfg(any(target_os = "macos", windows))]
 mod software_updates;
 #[cfg(any(target_os = "macos", windows))]
+mod tui_deployment;
+#[cfg(any(target_os = "macos", windows))]
 mod update_service;
 #[cfg(any(target_os = "macos", windows))]
 mod usage_service;
-#[cfg(windows)]
-mod windows_deployment;
 
 pub mod ui {
     slint::include_modules!();
@@ -73,9 +68,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    #[command(hide = true)]
-    DodexValidateProfile(profile_validation::Args),
-    /// Run paired Codex/Dodex maintenance and report the verified result.
+    /// Update one TUI through its own installation channel.
     #[cfg(any(target_os = "macos", windows))]
     SoftwareMaintenance {
         #[arg(value_enum)]
@@ -85,25 +78,17 @@ enum Command {
     Resume(resume_cli::Args),
     /// Install user-level acomp and agent-companion terminal commands.
     InstallCli,
-    /// Check Dodex App; --sync copies the locally installed official Codex App.
-    #[cfg(target_os = "macos")]
-    DodexApp {
-        /// Install and configure both Dodex App and TUI without opening or signing in.
-        #[arg(long, conflicts_with_all = ["repair", "sync", "sync_on_launch"])]
-        install: bool,
-        #[arg(long, conflicts_with = "sync")]
-        repair: bool,
+    /// Install, repair, or inspect the independent Dodex TUI.
+    #[cfg(any(target_os = "macos", windows))]
+    DodexTui {
         #[arg(long, conflicts_with = "repair")]
-        sync: bool,
-        #[arg(long, hide = true, conflicts_with_all = ["repair", "sync"])]
-        sync_on_launch: Option<std::path::PathBuf>,
+        install: bool,
+        #[arg(long)]
+        repair: bool,
     },
-    /// Open the explicitly deployed, isolated Dodex desktop instance.
-    #[cfg(windows)]
-    Dodex(DodexArgs),
     /// Open the standalone Codex CLI status bar editor. Apply, close, then restart Codex.
     CodexTui {
-        /// Open Codex dual-instance settings and align or update Codex/Dodex.
+        /// Open TUI dual-instance settings and update the selected TUI.
         #[cfg(any(target_os = "macos", windows))]
         #[arg(long, value_enum)]
         software_action: Option<software_updates::Action>,
@@ -128,45 +113,6 @@ enum Command {
     Codex(codex::Args),
 }
 
-#[cfg(windows)]
-#[derive(Debug, clap::Args)]
-struct DodexArgs {
-    /// Create or validate the isolated runtime and repair shell support, without opening it.
-    #[arg(long, conflicts_with = "check")]
-    deploy: bool,
-    /// Check the locally installed official runtime without deploying it.
-    #[arg(long)]
-    check: bool,
-}
-
-/// Only leading deployment flags belong to the wrapper. Help, version, prompts,
-/// subcommands and all other arguments belong to the official Codex CLI.
-#[cfg(windows)]
-#[derive(Debug, Parser)]
-#[command(
-    name = "dodex",
-    disable_version_flag = true,
-    about = "Manage the isolated second Codex environment. Run dodex to open its CLI."
-)]
-struct DodexManagementCli {
-    #[command(flatten)]
-    options: DodexArgs,
-}
-
-#[cfg(windows)]
-fn is_dodex_management(arguments: &[std::ffi::OsString]) -> bool {
-    arguments
-        .first()
-        .is_some_and(|argument| argument == "--deploy" || argument == "--check")
-}
-
-#[cfg(windows)]
-fn is_dodex_executable(executable: &std::path::Path) -> bool {
-    executable
-        .file_name()
-        .is_some_and(|name| name.eq_ignore_ascii_case("dodex.exe"))
-}
-
 /// A GUI-subsystem process launched from a shell starts with no console and no
 /// standard handles, which would make every subcommand silent. Attaching to the
 /// parent's console gives them back — but only when the handles are actually
@@ -188,84 +134,16 @@ fn attach_parent_console() {
 }
 
 fn main() -> ExitCode {
-    #[cfg(windows)]
-    let standalone_dodex =
-        std::env::current_exe().is_ok_and(|executable| is_dodex_executable(&executable));
     // Only the subcommands belong on a terminal. The bare app must never
     // attach: launched from a shell-adjacent parent (a scripted start, a
     // hotkey runner), attaching would spill its startup banner into whatever
     // TUI happens to own that console.
     #[cfg(windows)]
-    if standalone_dodex || std::env::args_os().nth(1).is_some() {
+    if std::env::args_os().nth(1).is_some() {
         attach_parent_console();
     }
-    #[cfg(windows)]
-    let cli = if standalone_dodex {
-        let arguments: Vec<_> = std::env::args_os().skip(1).collect();
-        if !is_dodex_management(&arguments) {
-            use agent_companion_core::codex_args::{self, Action};
-            let action = std::env::current_dir()
-                .map_err(|error| error.to_string())
-                .and_then(|cwd| codex_args::route(&arguments, &cwd));
-            match action {
-                Ok(Action::App(workspace)) => {
-                    return match windows_deployment::launch_project(workspace.as_deref()) {
-                        Ok(_) => ExitCode::SUCCESS,
-                        Err(error) => {
-                            errln!("dodex: {error}");
-                            ExitCode::FAILURE
-                        }
-                    };
-                }
-                Ok(Action::Update) => {
-                    software_updates::request(software_updates::Action::UpdateAll);
-                    return match codex_tui::run() {
-                        Ok(()) => ExitCode::SUCCESS,
-                        Err(error) => {
-                            errln!("dodex: {error}");
-                            ExitCode::FAILURE
-                        }
-                    };
-                }
-                Ok(Action::AppHelp) => {
-                    out::outln!(
-                        "Usage: dodex app [PATH] [-C DIRECTORY]\nOpen the isolated public Dodex App."
-                    );
-                    return ExitCode::SUCCESS;
-                }
-                Ok(Action::UpdateHelp) => {
-                    out::outln!(
-                        "Usage: dodex update\nOpen Companion's paired App and TUI maintenance controls."
-                    );
-                    return ExitCode::SUCCESS;
-                }
-                Err(error) => {
-                    errln!("dodex: {error}");
-                    return ExitCode::FAILURE;
-                }
-                Ok(Action::Native) => {}
-            }
-            match windows_deployment::launch_cli(&arguments) {
-                // ExitCode only accepts u8; Windows child exit codes use all
-                // 32 bits, including Ctrl+C and application-specific errors.
-                Ok(status) => std::process::exit(status.code().unwrap_or(1)),
-                Err(error) => {
-                    errln!("dodex: {error}");
-                    return ExitCode::FAILURE;
-                }
-            }
-        }
-        Cli {
-            command: Some(Command::Dodex(DodexManagementCli::parse().options)),
-        }
-    } else {
-        Cli::parse()
-    };
-    #[cfg(not(windows))]
     let cli = Cli::parse();
-
     let result = match cli.command {
-        Some(Command::DodexValidateProfile(args)) => profile_validation::run(args),
         #[cfg(any(target_os = "macos", windows))]
         Some(Command::SoftwareMaintenance { action }) => software_updates::run_action(action)
             .map(|snapshot| {
@@ -280,36 +158,15 @@ fn main() -> ExitCode {
             Err(error) => Err(error),
         },
         Some(Command::InstallCli) => cli_install::run(),
-        #[cfg(target_os = "macos")]
-        Some(Command::DodexApp {
-            install,
-            repair,
-            sync,
-            sync_on_launch,
-        }) => if let Some(app) = sync_on_launch {
-            macos_deployment::sync_desktop_on_launch(&app)
-        } else {
-            (if install {
-                macos_deployment::install_and_configure().map(|status| status.message)
-            } else if sync {
-                macos_deployment::sync_desktop()
+        #[cfg(any(target_os = "macos", windows))]
+        Some(Command::DodexTui { install, repair }) => {
+            let result = if install || repair {
+                tui_deployment::install_and_configure()
             } else {
-                macos_deployment::desktop_entry(repair)
-            })
-            .map(|message| println!("{message}"))
-        }
-        .map_err(std::io::Error::other),
-        #[cfg(windows)]
-        Some(Command::Dodex(DodexArgs { deploy, check })) => {
-            let result = if check {
-                windows_deployment::check_runtime()
-            } else if deploy {
-                windows_deployment::deploy().map(|status| status.message)
-            } else {
-                windows_deployment::launch(None).map(|_| "Dodex 已打开。".into())
+                Ok(tui_deployment::status())
             };
             result
-                .map(|message| out::outln!("{message}"))
+                .map(|status| out::outln!("{}", status.message))
                 .map_err(std::io::Error::other)
         }
         #[cfg(windows)]
@@ -347,108 +204,42 @@ fn main() -> ExitCode {
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
-mod macos_cli_tests {
-    use super::*;
-
-    #[test]
-    fn startup_sync_is_hidden_and_cannot_be_combined_with_manual_actions() {
-        let app = "/Applications/Dodex.app";
-        assert!(matches!(
-            Cli::try_parse_from(["agent-companion", "dodex-app", "--sync-on-launch", app])
-                .unwrap()
-                .command,
-            Some(Command::DodexApp {
-                install: false,
-                repair: false,
-                sync: false,
-                sync_on_launch: Some(path),
-            }) if path == std::path::Path::new(app)
-        ));
-        for option in ["--repair", "--sync", "--install"] {
-            assert!(
-                Cli::try_parse_from([
-                    "agent-companion",
-                    "dodex-app",
-                    "--sync-on-launch",
-                    app,
-                    option,
-                ])
-                .is_err()
-            );
-        }
-        assert!(
-            Cli::try_parse_from(["agent-companion", "dodex-app", "--sync-on-launch",]).is_err()
-        );
-        let help = Cli::try_parse_from(["agent-companion", "dodex-app", "--help"])
-            .unwrap_err()
-            .to_string();
-        assert!(help.contains("--sync"));
-        assert!(help.contains("--install"));
-        assert!(!help.contains("--sync-on-launch"));
-        assert!(matches!(
-            Cli::try_parse_from(["agent-companion", "dodex-app", "--install"])
-                .unwrap()
-                .command,
-            Some(Command::DodexApp {
-                install: true,
-                repair: false,
-                sync: false,
-                sync_on_launch: None
-            })
-        ));
-        for option in ["--repair", "--sync"] {
-            assert!(
-                Cli::try_parse_from(["agent-companion", "dodex-app", "--install", option]).is_err()
-            );
-        }
-    }
-}
-
-#[cfg(all(test, windows))]
+#[cfg(all(test, any(target_os = "macos", windows)))]
 mod cli_tests {
     use super::*;
-
     #[test]
-    fn installed_dodex_has_its_own_cli_and_keeps_deployment_flags() {
-        assert!(is_dodex_executable(std::path::Path::new(
-            r"C:\用户\a & b's %tools%!\DoDeX.EXE"
-        )));
-        assert!(!is_dodex_executable(std::path::Path::new(
-            "agent-companion.exe"
-        )));
-        assert!(!is_dodex_management(&[]));
-        for first in ["--help", "--version", "resume", "exec", "-p", "-C", "-c"] {
-            assert!(!is_dodex_management(&[first.into(), "--deploy".into()]));
-        }
-        assert!(is_dodex_management(&["--deploy".into()]));
-        assert!(is_dodex_management(&["--check".into()]));
-        assert!(
-            DodexManagementCli::try_parse_from(["dodex", "--deploy"])
-                .unwrap()
-                .options
-                .deploy
-        );
-        assert!(
-            DodexManagementCli::try_parse_from(["dodex", "--check"])
-                .unwrap()
-                .options
-                .check
-        );
-        assert!(DodexManagementCli::try_parse_from(["dodex", "--deploy", "--check"]).is_err());
-        assert!(DodexManagementCli::try_parse_from(["dodex", "--deploy", "exec"]).is_err());
-        assert!(DodexManagementCli::try_parse_from(["dodex", "--check", "-c", "x=1"]).is_err());
-        let help = DodexManagementCli::try_parse_from(["dodex", "--deploy", "--help"]).unwrap_err();
-        assert_eq!(help.kind(), clap::error::ErrorKind::DisplayHelp);
-        assert!(help.to_string().contains("Usage: dodex"));
+    fn tui_install_and_repair_replace_desktop_management() {
         assert!(matches!(
-            Cli::try_parse_from(["agent-companion", "dodex", "--deploy"])
+            Cli::try_parse_from(["agent-companion", "dodex-tui", "--install"])
                 .unwrap()
                 .command,
-            Some(Command::Dodex(DodexArgs {
-                deploy: true,
-                check: false
-            }))
+            Some(Command::DodexTui {
+                install: true,
+                repair: false
+            })
         ));
+        assert!(matches!(
+            Cli::try_parse_from(["agent-companion", "dodex-tui", "--repair"])
+                .unwrap()
+                .command,
+            Some(Command::DodexTui {
+                install: false,
+                repair: true
+            })
+        ));
+        assert!(
+            Cli::try_parse_from(["agent-companion", "dodex-tui", "--install", "--repair"]).is_err()
+        );
+        assert!(Cli::try_parse_from(["agent-companion", "dodex-app"]).is_err());
+        for action in ["update-codex", "update-dodex"] {
+            assert!(
+                Cli::try_parse_from(["agent-companion", "software-maintenance", action]).is_ok()
+            );
+        }
+        for action in ["align", "update-all"] {
+            assert!(
+                Cli::try_parse_from(["agent-companion", "software-maintenance", action]).is_err()
+            );
+        }
     }
 }

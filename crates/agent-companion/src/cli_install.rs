@@ -65,6 +65,7 @@ pub fn run() -> io::Result<()> {
                 source_dir.join("agent-companion"),
             ),
             ("acomp".to_owned(), source_dir.join("acomp")),
+            ("dodex".to_owned(), source_dir.join("dodex")),
         ],
     );
     #[cfg(windows)]
@@ -83,6 +84,7 @@ pub fn run() -> io::Result<()> {
                     source_dir.join("acomp.exe"),
                 ),
                 ("acomp.exe".to_owned(), source_dir.join("acomp.exe")),
+                ("dodex.exe".to_owned(), source_dir.join("dodex.exe")),
             ],
         )
     };
@@ -91,7 +93,7 @@ pub fn run() -> io::Result<()> {
     register_user_path(&directory)?;
     writeln!(
         io::stdout(),
-        "Installed acomp and agent-companion in {}",
+        "Installed acomp, agent-companion, and dodex in {}",
         directory.display()
     )?;
     #[cfg(unix)]
@@ -140,12 +142,19 @@ fn install(directory: &Path, sources: &[(String, PathBuf)]) -> io::Result<()> {
             return Err(io::Error::other("Packaged CLI entry is not a regular file"));
         }
         let destination = directory.join(name);
+        let expected = source_fingerprint(&source)?;
         if fs::symlink_metadata(&destination).is_ok() {
             let actual = fingerprint(&destination)?;
             if !ownership
                 .entries
                 .get(name)
                 .is_some_and(|known| known.contains(&actual))
+                && actual != expected
+                && !(name.starts_with("dodex")
+                    && crate::tui_deployment::command_is_owned(
+                        &destination,
+                        &fs::read(&destination)?,
+                    ))
             {
                 return Err(io::Error::other(format!(
                     "Refusing to replace an unrelated command: {}",
@@ -153,7 +162,6 @@ fn install(directory: &Path, sources: &[(String, PathBuf)]) -> io::Result<()> {
                 )));
             }
         }
-        let expected = source_fingerprint(&source)?;
         ownership
             .entries
             .entry(name.clone())
@@ -279,7 +287,7 @@ fn replace_entry(source: &Path, destination: &Path) -> io::Result<()> {
 }
 
 #[cfg(windows)]
-fn register_user_path(directory: &Path) -> io::Result<()> {
+pub(crate) fn register_user_path(directory: &Path) -> io::Result<()> {
     use std::{
         ffi::OsString,
         os::windows::ffi::{OsStrExt, OsStringExt},

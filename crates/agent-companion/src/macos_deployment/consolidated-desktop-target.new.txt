@@ -1,2 +1,0 @@
-        executables = {str(self.paths.runtime / "Contents/MacOS/ChatGPT"),
-                       "/Applications/Codex B Runtime.app/Contents/MacOS/ChatGPT"}

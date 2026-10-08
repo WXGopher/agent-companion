@@ -1,1 +1,0 @@
-                if fields[1] in executables:

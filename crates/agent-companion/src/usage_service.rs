@@ -357,6 +357,9 @@ fn user_home() -> Option<PathBuf> {
 }
 
 fn primary_executable() -> Option<PathBuf> {
+    if let Some(instance) = crate::tui_deployment::primary_instance() {
+        return instance.runtime().ok();
+    }
     #[cfg(windows)]
     {
         crate::codex::executable(None).ok()
@@ -395,15 +398,10 @@ fn primary_executable() -> Option<PathBuf> {
 fn primary_macos_executable(
     home: &Path,
     candidates: impl IntoIterator<Item = PathBuf>,
-    system_applications: &Path,
-    user_applications: &Path,
+    _system_applications: &Path,
+    _user_applications: &Path,
 ) -> Option<PathBuf> {
     for path in candidates.into_iter().filter(|path| is_executable(path)) {
-        if let Ok(native) = crate::software_updates::primary_native(home, &path)
-            && primary_runtime_location(home, &native)
-        {
-            return Some(native);
-        }
         // Reading usage also supports existing native Homebrew/standalone
         // binaries that predate the updater's complete-package layout. Resolve
         // links without executing a shell/Node wrapper that could select another
@@ -421,8 +419,7 @@ fn primary_macos_executable(
             }
         }
     }
-    crate::macos_primary_app::discover(system_applications, user_applications)
-        .and_then(|app| app.executable)
+    None
 }
 
 #[cfg(target_os = "macos")]
@@ -433,6 +430,7 @@ fn primary_runtime_location(home: &Path, path: &Path) -> bool {
     }) && ![
         "Library/Application Support/AgentCompanion/Tui",
         "Library/Application Support/AgentCompanion/Dodex",
+        "Library/Application Support/AgentCompanion/DodexApp",
         "Library/Application Support/Codex-B",
     ]
     .iter()
@@ -456,7 +454,7 @@ fn npm_native(entry: &Path) -> Option<PathBuf> {
         {
             return None;
         }
-        let bytes = crate::managed_tui::read_limited(&path, 64 * 1024).ok()?;
+        let bytes = agent_companion_core::tui_instance::read_limited(&path, 64 * 1024).ok()?;
         serde_json::from_slice(&bytes).ok()
     };
     let main = manifest(package)?;

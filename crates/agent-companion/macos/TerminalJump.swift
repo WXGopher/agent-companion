@@ -15,15 +15,18 @@ enum TerminalJump {
         }
         // Paginated desktop history can omit originator metadata. A local
         // Codex conversation link still selects the exact stored thread.
-        if task.client != "cli" {
+        if task.sourceID == "codex" && task.client != "cli" {
             openConversation(task.conversationID, instance: instance, completion: completion)
             return
         }
         queue.async {
             let target = terminalTarget(task, home: instance.codexHome)
             guard let target else {
-                DispatchQueue.main.async {
-                    completion("The original terminal could not be located. It may have closed. You can copy a command to resume this session.")
+                if instance.id == "dodex", let command = resumeCommand(task, instance: instance) {
+                    let result = run("/usr/bin/osascript", ["-e", "on run argv\n tell application \"Terminal\"\n activate\n do script (item 1 of argv)\n end tell\nend run", command], timeout: 15)
+                    DispatchQueue.main.async { completion(result.status == 0 ? nil : "Could not open the Dodex TUI terminal. Copy its resume command.") }
+                } else {
+                    DispatchQueue.main.async { completion("The original terminal could not be located. It may have closed. You can copy a command to resume this session.") }
                 }
                 return
             }
@@ -64,8 +67,7 @@ enum TerminalJump {
             completion("The running \(instance.label) app could not be located. Open \(instance.label) from Applications, then try again.")
             return
         }
-        // Address the selected instance directly; the global codex:// handler
-        // belongs to the primary app, not the locally signed Dodex mirror.
+        // Address the official running App directly to select the exact thread.
         let event = NSAppleEventDescriptor(eventClass: AEEventClass(kInternetEventClass),
             eventID: AEEventID(kAEGetURL), targetDescriptor: NSAppleEventDescriptor(processIdentifier: app.processIdentifier),
             returnID: AEReturnID(kAutoGenerateReturnID), transactionID: AETransactionID(kAnyTransactionID))
@@ -85,7 +87,7 @@ enum TerminalJump {
     }
 
     static func resumeCommand(_ task: CodexTask, instance: CodexInstance) -> String? {
-        let runtime = instance.executablePath ?? (instance.id == "codex" ? PrimaryCodexApp.findCLIExecutable()?.path : nil)
+        let runtime = instance.executablePath
         guard task.sourceID == instance.id, UUID(uuidString: task.conversationID) != nil,
               instance.codexHome.hasPrefix("/"),
               let executable = runtime, executable.hasPrefix("/"),
@@ -96,11 +98,13 @@ enum TerminalJump {
         // terminal's containment, proxies and certificates. A system zsh child
         // provides parameter-name enumeration without reading user shell rc files
         // or changing the caller's environment. Values stay out of the command.
+        let standalone = executable.contains("/packages/standalone/")
+        let install = (instance.id == "dodex" || standalone) ? instance.codexHome + "/native-bin" : URL(fileURLWithPath: executable).deletingLastPathComponent().path
         let script = InstanceEnvironment.shellCleanup
-            + "; export CODEX_HOME=\"$1\" CODEX_SQLITE_HOME=\"$2\"; shift 2; exec \"$@\""
+            + "; export CODEX_HOME=\"$1\" CODEX_SQLITE_HOME=\"$2\" CODEX_INSTALL_DIR=\"$3\"; shift 3; exec \"$@\""
         let arguments = InstanceEnvironment.configurationArguments(instance.usageSource) + ["resume", task.conversationID]
         return "/bin/zsh -f -c " + quote(script) + " companion-resume "
-            + ([instance.codexHome, database, executable] + arguments).map(quote).joined(separator: " ")
+            + ([instance.codexHome, database, install, executable] + arguments).map(quote).joined(separator: " ")
     }
 
     struct TerminalTarget {

@@ -1,7 +1,7 @@
 import { SettingsButton, SettingsCard, SettingsColors } from "settings-common.slint";
 
 export component DualSetup inherits SettingsCard {
-    in property <bool> app-installed;
+    in property <bool> tui-installed;
     in property <bool> tui-available;
     in property <bool> monitored;
     in property <bool> busy;
@@ -11,46 +11,35 @@ export component DualSetup inherits SettingsCard {
     in property <string> message;
     callback setup();
     callback open();
-
     vertical-stretch: 0;
     VerticalLayout {
         padding: 18px;
         spacing: 10px;
-        Text { text: "安装并配置 Dodex"; font-size: 15px; font-weight: 600; color: SettingsColors.text; }
-        Text {
-            text: "一次完成 App、TUI、dodex 命令和 Companion 接入。App 与 TUI 共用独立副账号，首次使用请自行登录。";
-            font-size: 12px;
-            color: SettingsColors.secondary;
-            wrap: word-wrap;
-        }
+        Text { text: "TUI 双开"; font-size: 15px; font-weight: 600; color: SettingsColors.text; }
+        Text { text: "Codex 和 Dodex 独立管理账号、配置、历史、程序包及后台服务，允许使用不同版本。首次使用 Dodex 请自行登录。"; font-size: 12px; color: SettingsColors.secondary; wrap: word-wrap; }
         HorizontalLayout {
             spacing: 22px;
-            Text { text: root.app-installed ? "App · 已安装" : "App · 未安装"; font-size: 12px; color: root.app-installed ? SettingsColors.accent : SettingsColors.secondary; }
-            Text { text: root.tui-available ? "TUI · 已就绪" : "TUI · 未就绪"; font-size: 12px; color: root.tui-available ? SettingsColors.accent : SettingsColors.secondary; }
-            Text { text: root.monitored ? "Companion · 已接入" : "Companion · 未接入"; font-size: 12px; color: root.monitored ? SettingsColors.accent : SettingsColors.secondary; }
+            Text { text: root.tui-installed ? "Dodex TUI · 已安装" : "Dodex TUI · 未安装"; font-size: 12px; color: root.tui-installed ? SettingsColors.accent : SettingsColors.secondary; }
+            Text { text: root.tui-available ? "终端入口 · 已就绪" : "终端入口 · 未就绪"; font-size: 12px; color: root.tui-available ? SettingsColors.accent : SettingsColors.secondary; }
             Rectangle { horizontal-stretch: 1; }
         }
         HorizontalLayout {
             spacing: 10px;
             SettingsButton {
-                text: root.busy ? "正在配置…" : root.error ? "继续安装并配置" : "安装并配置 Dodex";
+                text: root.busy ? "正在配置…" : root.tui-installed ? "修复 TUI 安装" : "安装 Dodex TUI";
                 enabled: !root.busy && !root.blocked;
                 primary: true;
-                accessible-label: "一键安装并配置 Dodex App、TUI 和 Companion 接入";
+                accessible-label: root.tui-installed ? "修复独立 Dodex TUI 安装与终端入口" : "安装独立 Dodex TUI 与终端入口";
                 clicked => { root.setup(); }
             }
-            if root.app-installed: SettingsButton {
-                text: "打开 Dodex";
+            if root.tui-available: SettingsButton {
+                text: "打开终端";
+                accessible-label: "在终端中打开 Dodex TUI";
                 enabled: !root.busy && !root.blocked;
                 clicked => { root.open(); }
             }
             Rectangle { horizontal-stretch: 1; }
         }
-        if root.busy || root.message != "": Text {
-            text: root.busy ? root.phase : root.message;
-            font-size: 12px;
-            color: !root.busy && root.error ? SettingsColors.error : SettingsColors.secondary;
-            wrap: word-wrap;
-        }
+        if root.busy || root.message != "": Text { text: root.busy ? root.phase : root.message; font-size: 12px; color: !root.busy && root.error ? SettingsColors.error : SettingsColors.secondary; wrap: word-wrap; }
     }
 }

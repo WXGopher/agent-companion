@@ -2,13 +2,13 @@
 import AppKit
 
 enum SoftwareAction: String, CaseIterable {
-    case align
-    case updateAll = "update-all"
+    case updateCodex = "update-codex"
+    case updateDodex = "update-dodex"
 
     var title: String {
         switch self {
-        case .align: return "对齐 Codex/Dodex 版本"
-        case .updateAll: return "全部更新到最新"
+        case .updateCodex: return "更新 Codex TUI"
+        case .updateDodex: return "更新 Dodex TUI"
         }
     }
 
