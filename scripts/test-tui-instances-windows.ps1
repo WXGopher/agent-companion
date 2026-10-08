@@ -39,75 +39,18 @@ try {
         script = Join-Path $PSScriptRoot 'test-tui-instances.py'
         companion = $companionPath
         fixture = Join-Path $root 'f'
+        github_actions = $env:GITHUB_ACTIONS
         path = $env:Path
     }
     [IO.File]::WriteAllText((Join-Path $root 'launch.json'), ($launch | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
-    $bootstrap = Join-Path $root 'run.ps1'
-    [IO.File]::WriteAllText($bootstrap, @'
-$ErrorActionPreference = 'Stop'
-$result = 1
-$log = Join-Path $PSScriptRoot 'acceptance.log'
-try {
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    if ([Security.Principal.WindowsPrincipal]::new($identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        throw 'Native daemon acceptance must use a standard user.'
-    }
-    $launch = Get-Content (Join-Path $PSScriptRoot 'launch.json') -Raw | ConvertFrom-Json
-    $env:Path = $launch.path
-    $env:PYTHONIOENCODING = 'utf-8'
-    $env:TEMP = Join-Path $PSScriptRoot 'tmp'
-    $env:TMP = $env:TEMP
-    New-Item -ItemType Directory -Path $env:TEMP | Out-Null
-    # Avoid PS5 turning native stderr into a terminating NativeCommandError.
-    # Capture raw UTF-8 streams and wait on this process, without -Wait's job.
-    $child = Start-Process -FilePath $launch.python -WorkingDirectory $PSScriptRoot -ArgumentList @("`"$($launch.script)`"", '--companion', "`"$($launch.companion)`"", '--work-dir', "`"$($launch.fixture)`"") -RedirectStandardOutput (Join-Path $PSScriptRoot 'stdout.log') -RedirectStandardError (Join-Path $PSScriptRoot 'stderr.log') -PassThru
-    $null = $child.Handle
-    $child.WaitForExit()
-    $result = $child.ExitCode
-    if ($null -eq $result) { throw 'Native Python acceptance did not report an exit code.' }
-} catch {
-    $_ | Out-File -FilePath $log -Encoding utf8 -Append
-} finally {
-    $pending = Join-Path $PSScriptRoot 'result.pending'
-    [IO.File]::WriteAllText($pending, [string]$result)
-    [IO.File]::Move($pending, (Join-Path $PSScriptRoot 'result'))
-}
-exit $result
-'@, [Text.UTF8Encoding]::new($false))
-    $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    # Win32_Process.Create supplies a host outside GitHub's restrictive job.
-    # The broker immediately switches to the disposable standard account.
-    # Production launch flags and the runner's job are never changed.
-    # WMI applies its own quota job unless the startup requests breakaway.
-    # https://learn.microsoft.com/windows/win32/cimwin32prov/create-method-in-class-win32-process
+    # WMI places the host outside GitHub's process-tree job. The host loads
+    # the disposable profile and uses the standard user's primary token;
+    # credential-based profile launching would add a Secondary Logon job.
     $credentialPath = Join-Path $root 'credential.json'
     [IO.File]::WriteAllText($credentialPath, (@{user = "$env:COMPUTERNAME\$name"; password = ([Net.NetworkCredential]::new('', $secret).Password)} | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
-    $broker = Join-Path $root 'broker.ps1'
-    [IO.File]::WriteAllText($broker, @'
-$ErrorActionPreference = 'Stop'
-try {
-    $credentialPath = Join-Path $PSScriptRoot 'credential.json'
-    $login = Get-Content $credentialPath -Raw | ConvertFrom-Json
-    Remove-Item $credentialPath
-    $credential = [PSCredential]::new($login.user, (ConvertTo-SecureString $login.password -AsPlainText -Force))
-    $login = $null
-    $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $bootstrap = Join-Path $PSScriptRoot 'run.ps1'
-    # -Wait would add another restrictive process-tree job. Wait on this
-    # single handle; the fixture owns native daemon cleanup.
-    $child = Start-Process -FilePath $shell -Credential $credential -LoadUserProfile -WorkingDirectory $PSScriptRoot -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', "`"$bootstrap`"") -PassThru
-    $null = $child.Handle
-    $child.WaitForExit()
-} catch {
-    $_ | Out-File -FilePath (Join-Path $PSScriptRoot 'acceptance.log') -Encoding utf8 -Append
-    $pending = Join-Path $PSScriptRoot 'result.pending'
-    [IO.File]::WriteAllText($pending, '1')
-    [IO.File]::Move($pending, (Join-Path $PSScriptRoot 'result'))
-    exit 1
-}
-'@, [Text.UTF8Encoding]::new($false))
+    $broker = Join-Path $PSScriptRoot 'test-tui-windows-host.py'
     $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{CreateFlags = [uint32]0x01000000}
-    $spawn = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine = "`"$shell`" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$broker`""; CurrentDirectory = $root; ProcessStartupInformation = $startup}
+    $spawn = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine = "`"$($launch.python)`" `"$broker`" `"$root`""; CurrentDirectory = $root; ProcessStartupInformation = $startup}
     if ($spawn.ReturnValue -ne 0) { throw "Cannot start native acceptance host: $($spawn.ReturnValue)" }
     $brokerPid = $spawn.ProcessId
     $started = [DateTime]::UtcNow
@@ -139,7 +82,7 @@ try {
     }
     if ($brokerPid) {
         $process = Get-CimInstance Win32_Process -Filter "ProcessId=$brokerPid"
-        if ($process.Name -eq 'powershell.exe' -and $process.CommandLine.Contains($broker)) {
+        if ($process.Name -like 'python*.exe' -and $process.CommandLine.Contains($broker) -and $process.CommandLine.Contains($root)) {
             Stop-Process -Id $brokerPid -Force -ErrorAction SilentlyContinue
         }
     }
