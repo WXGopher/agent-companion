@@ -2,12 +2,10 @@
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    fs::{self, OpenOptions},
-    io::{self, Write},
+    fs::{self, File, OpenOptions},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
 };
-#[cfg(windows)]
-use std::{fs::File, io::Read};
 
 const OWNER: &str = "agent-companion/terminal-cli";
 const MARKER: &str = ".agent-companion-cli.json";
@@ -142,7 +140,7 @@ fn install(directory: &Path, sources: &[(String, PathBuf)]) -> io::Result<()> {
             return Err(io::Error::other("Packaged CLI entry is not a regular file"));
         }
         let destination = directory.join(name);
-        let expected = source_fingerprint(&source)?;
+        let expected = source_fingerprint(&source, name)?;
         if fs::symlink_metadata(&destination).is_ok() {
             let actual = fingerprint(&destination)?;
             if !ownership
@@ -239,24 +237,41 @@ fn is_link(path: &Path) -> io::Result<bool> {
 
 #[cfg(unix)]
 fn fingerprint(path: &Path) -> io::Result<String> {
-    fs::read_link(path)
-        .map(|target| target.to_string_lossy().into_owned())
-        .map_err(|_| io::Error::other("Existing command is not an owned symbolic link"))
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        Ok(fs::read_link(path)?.to_string_lossy().into_owned())
+    } else if metadata.is_file() {
+        file_fingerprint(path)
+    } else {
+        Err(io::Error::other(
+            "Existing command is not a supported CLI entry",
+        ))
+    }
 }
 #[cfg(unix)]
-fn source_fingerprint(source: &Path) -> io::Result<String> {
-    Ok(source.to_string_lossy().into_owned())
+fn source_fingerprint(source: &Path, name: &str) -> io::Result<String> {
+    if name == "dodex" {
+        file_fingerprint(source)
+    } else {
+        Ok(source.to_string_lossy().into_owned())
+    }
 }
 #[cfg(unix)]
 fn replace_entry(source: &Path, destination: &Path) -> io::Result<()> {
     let stage = tempfile::tempdir_in(destination.parent().unwrap())?;
-    let link = stage.path().join("entry");
-    std::os::unix::fs::symlink(source, &link)?;
-    fs::rename(link, destination)
+    let entry = stage.path().join("entry");
+    // TUI repair publishes regular, hash-owned console entries. Keep Dodex
+    // independent of the Companion bundle and compatible with repeat repair.
+    if destination.file_name().is_some_and(|name| name == "dodex") {
+        fs::copy(source, &entry)?;
+        File::open(&entry)?.sync_all()?;
+    } else {
+        std::os::unix::fs::symlink(source, &entry)?;
+    }
+    fs::rename(entry, destination)
 }
 
-#[cfg(windows)]
-fn fingerprint(path: &Path) -> io::Result<String> {
+fn file_fingerprint(path: &Path) -> io::Result<String> {
     use sha2::{Digest, Sha256};
     if is_link(path)? {
         return Err(io::Error::other("Existing command is redirected"));
@@ -274,7 +289,11 @@ fn fingerprint(path: &Path) -> io::Result<String> {
     Ok(format!("{:x}", digest.finalize()))
 }
 #[cfg(windows)]
-fn source_fingerprint(source: &Path) -> io::Result<String> {
+fn fingerprint(path: &Path) -> io::Result<String> {
+    file_fingerprint(path)
+}
+#[cfg(windows)]
+fn source_fingerprint(source: &Path, _name: &str) -> io::Result<String> {
     fingerprint(source)
 }
 #[cfg(windows)]
@@ -458,5 +477,28 @@ mod tests {
         install(&directory, &[("acomp".into(), source.clone())]).unwrap();
         install(&directory, &[("acomp".into(), source)]).unwrap();
         assert_eq!(fs::read_to_string(&entry).unwrap(), "test executable");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dodex_entry_is_regular_and_survives_a_companion_bundle_move() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let directory = root.join("bin");
+        let source = root.join("packaged-dodex");
+        fs::write(&source, "console generation 1").unwrap();
+        install(&directory, &[("dodex".into(), source.clone())]).unwrap();
+        let entry = directory.join("dodex");
+        assert!(
+            !fs::symlink_metadata(&entry)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        fs::write(&source, "console generation 2").unwrap();
+        install(&directory, &[("dodex".into(), source.clone())]).unwrap();
+        install(&directory, &[("dodex".into(), source.clone())]).unwrap();
+        fs::rename(&source, root.join("moved-package")).unwrap();
+        assert_eq!(fs::read_to_string(&entry).unwrap(), "console generation 2");
     }
 }

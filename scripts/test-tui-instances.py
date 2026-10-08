@@ -234,6 +234,13 @@ class Acceptance:
         self.execute(self.companion, ["dodex-tui", "--repair"], timeout=900)
         assert record == json.loads((self.support / "tui-instances.json").read_text())
         assert not (self.secondary / "auth.json").exists()
+        # Installing Companion's own terminal aliases must leave a repairable,
+        # independent TUI entry rather than a link into its desktop bundle.
+        self.execute(self.companion, ["install-cli"])
+        assert not self.dodex.is_symlink()
+        self.execute(self.companion, ["dodex-tui", "--repair"], timeout=900)
+        assert record == json.loads((self.support / "tui-instances.json").read_text())
+        assert not (self.secondary / "auth.json").exists()
         print("Verifying native command parity and independent versions", flush=True)
         for arguments in [["--help"], ["resume", "--help"], ["fork", "--help"],
                           ["exec", "--help"], ["login", "--help"], ["mcp", "--help"],

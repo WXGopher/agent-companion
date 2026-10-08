@@ -17,6 +17,8 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 $suffix = [Guid]::NewGuid().ToString('N').Substring(0, 8)
 $name = 'tui-' + $suffix
 $root = Join-Path $env:SystemDrive ('t' + $suffix)
+$taskName = 'AgentCompanion-TuiAcceptance-' + $suffix
+$registered = $false
 $created = $null
 $result = 1
 try {
@@ -44,32 +46,55 @@ try {
     $bootstrap = Join-Path $root 'run.ps1'
     [IO.File]::WriteAllText($bootstrap, @'
 $ErrorActionPreference = 'Stop'
-$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-if ([Security.Principal.WindowsPrincipal]::new($identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    throw 'Native daemon acceptance must use a standard user.'
-}
-$launch = Get-Content (Join-Path $PSScriptRoot 'launch.json') -Raw | ConvertFrom-Json
-$env:Path = $launch.path
-$env:PYTHONIOENCODING = 'utf-8'
-$env:TEMP = Join-Path $PSScriptRoot 'tmp'
-$env:TMP = $env:TEMP
-New-Item -ItemType Directory -Path $env:TEMP | Out-Null
-& $launch.python $launch.script --companion $launch.companion --work-dir $launch.fixture
-exit $LASTEXITCODE
-'@, [Text.UTF8Encoding]::new($false))
-    $credential = [PSCredential]::new("$env:COMPUTERNAME\$name", $secret)
-    $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    # Start-Process -Wait creates a job that forbids native daemon breakaway.
-    # Wait on this process handle only; the fixture owns daemon cleanup.
-    $child = Start-Process -FilePath $shell -Credential $credential -LoadUserProfile -WorkingDirectory $root -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', "`"$bootstrap`"") -RedirectStandardOutput (Join-Path $root 'stdout.log') -RedirectStandardError (Join-Path $root 'stderr.log') -PassThru
-    $null = $child.Handle
-    $child.WaitForExit()
-    $result = $child.ExitCode
-    if ($null -eq $result) { throw 'The native acceptance process did not report an exit code.' }
-    foreach ($log in @('stdout.log', 'stderr.log')) {
-        Write-Output ([IO.File]::ReadAllText((Join-Path $root $log)))
+$result = 1
+$log = Join-Path $PSScriptRoot 'acceptance.log'
+try {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    if ([Security.Principal.WindowsPrincipal]::new($identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        throw 'Native daemon acceptance must use a standard user.'
     }
+    $launch = Get-Content (Join-Path $PSScriptRoot 'launch.json') -Raw | ConvertFrom-Json
+    $env:Path = $launch.path
+    $env:PYTHONIOENCODING = 'utf-8'
+    [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+    $env:TEMP = Join-Path $PSScriptRoot 'tmp'
+    $env:TMP = $env:TEMP
+    New-Item -ItemType Directory -Path $env:TEMP | Out-Null
+    & $launch.python $launch.script --companion $launch.companion --work-dir $launch.fixture *>&1 | Out-File -FilePath $log -Encoding utf8
+    $result = $LASTEXITCODE
+} catch {
+    $_ | Out-File -FilePath $log -Encoding utf8 -Append
 } finally {
+    [IO.File]::WriteAllText((Join-Path $PSScriptRoot 'result'), [string]$result)
+}
+exit $result
+'@, [Text.UTF8Encoding]::new($false))
+    $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    # GitHub's outer runner job prevents native daemon breakaway even with a
+    # different logon. Task Scheduler supplies an independent standard-user
+    # host; neither production launch flags nor the runner's job are changed.
+    $action = New-ScheduledTaskAction -Execute $shell -WorkingDirectory $root -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$bootstrap`""
+    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 25) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    Register-ScheduledTask -TaskName $taskName -Action $action -Settings $settings -User "$env:COMPUTERNAME\$name" -Password ([Net.NetworkCredential]::new('', $secret).Password) -RunLevel Limited | Out-Null
+    $registered = $true
+    Start-ScheduledTask -TaskName $taskName
+    $deadline = [DateTime]::UtcNow.AddMinutes(25)
+    $resultPath = Join-Path $root 'result'
+    while (-not (Test-Path $resultPath)) {
+        if ([DateTime]::UtcNow -gt $deadline) {
+            $info = Get-ScheduledTaskInfo -TaskName $taskName
+            throw "Native acceptance timed out; Task Scheduler result: $($info.LastTaskResult)"
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    $result = [int]([IO.File]::ReadAllText($resultPath))
+} finally {
+    $log = Join-Path $root 'acceptance.log'
+    if (Test-Path $log) { Write-Output ([IO.File]::ReadAllText($log)) }
+    if ($registered) {
+        Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+    }
     if ($created) {
         # Reap only processes belonging to the account created by this run.
         foreach ($process in Get-CimInstance Win32_Process) {
