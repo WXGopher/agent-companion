@@ -131,7 +131,7 @@ enum Command {
 #[cfg(windows)]
 #[derive(Debug, clap::Args)]
 struct DodexArgs {
-    /// Create or validate the isolated runtime and repair shell support, without opening it.
+    /// Create or validate the isolated runtime and repair Start menu / shell entries.
     #[arg(long, conflicts_with = "check")]
     deploy: bool,
     /// Check the locally installed official runtime without deploying it.
@@ -149,6 +149,20 @@ struct DodexArgs {
     about = "Manage the isolated second Codex environment. Run dodex to open its CLI."
 )]
 struct DodexManagementCli {
+    #[command(flatten)]
+    options: DodexArgs,
+}
+
+/// The Start menu uses a GUI copy with the same name as the console command.
+/// Its PE subsystem fixes the role even when launched from a terminal or pipe.
+#[cfg(windows)]
+#[derive(Debug, Parser)]
+#[command(
+    name = "dodex",
+    version,
+    about = "Open the isolated Dodex desktop app."
+)]
+struct DodexDesktopCli {
     #[command(flatten)]
     options: DodexArgs,
 }
@@ -191,16 +205,24 @@ fn main() -> ExitCode {
     #[cfg(windows)]
     let standalone_dodex =
         std::env::current_exe().is_ok_and(|executable| is_dodex_executable(&executable));
+    #[cfg(windows)]
+    let desktop_dodex = standalone_dodex
+        && std::env::current_exe()
+            .is_ok_and(|executable| windows_deployment::is_desktop_launcher(&executable));
     // Only the subcommands belong on a terminal. The bare app must never
     // attach: launched from a shell-adjacent parent (a scripted start, a
     // hotkey runner), attaching would spill its startup banner into whatever
     // TUI happens to own that console.
     #[cfg(windows)]
-    if standalone_dodex || std::env::args_os().nth(1).is_some() {
+    if (standalone_dodex && !desktop_dodex) || std::env::args_os().nth(1).is_some() {
         attach_parent_console();
     }
     #[cfg(windows)]
-    let cli = if standalone_dodex {
+    let cli = if desktop_dodex {
+        Cli {
+            command: Some(Command::Dodex(DodexDesktopCli::parse().options)),
+        }
+    } else if standalone_dodex {
         let arguments: Vec<_> = std::env::args_os().skip(1).collect();
         if !is_dodex_management(&arguments) {
             use agent_companion_core::codex_args::{self, Action};
@@ -341,6 +363,20 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
+            #[cfg(windows)]
+            if desktop_dodex && std::env::args_os().nth(1).is_none() {
+                use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
+                use windows::core::{HSTRING, w};
+                unsafe {
+                    let _ = MessageBoxW(
+                        None,
+                        &HSTRING::from(error.to_string()),
+                        w!("Dodex"),
+                        MB_OK | MB_ICONERROR,
+                    );
+                }
+                return ExitCode::FAILURE;
+            }
             errln!("agent-companion: {error}");
             ExitCode::FAILURE
         }

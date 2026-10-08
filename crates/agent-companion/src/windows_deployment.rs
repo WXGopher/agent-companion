@@ -19,8 +19,14 @@ use std::{
 const MANIFEST: &str = "companion-deployment.json";
 const READY: &str = "环境已就绪。打开 Dodex 后，请使用第二个账号登录。";
 
+mod desktop;
+mod launcher;
 pub(crate) mod maintenance;
 mod shell;
+
+pub fn is_desktop_launcher(executable: &Path) -> bool {
+    launcher::kind(executable).is_ok_and(|kind| kind == launcher::Kind::Desktop)
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InstanceConfig {
@@ -401,11 +407,21 @@ pub fn deploy() -> Result<DeploymentStatus, String> {
             .status
             .phase = "shell".into();
         let shell = shell::ensure()?;
+        let desktop = desktop::ensure(&instance)?;
+        let cli = if instance
+            .runtime_app
+            .parent()
+            .is_some_and(|runtime| instance.cli_path == runtime.join("resources/codex.exe"))
+        {
+            "Dodex CLI 使用已验签的桌面包内置版本；独立 TUI 对齐和更新需安装受支持的 standalone 包。"
+        } else {
+            "Dodex CLI 已接入独立 standalone 包。"
+        };
         save_preference(&root, true)?;
         Ok((
             Some(instance),
             true,
-            Some(format!("{READY} {}", shell.message())),
+            Some(format!("{READY} {desktop} {cli} {}", shell.message())),
         ))
     })
 }
@@ -561,6 +577,23 @@ fn validate_with_config(
     }
     if runtime && let Some(tui) = &manifest.tui {
         maintenance::verify_tui(tui)?;
+    }
+    if runtime && manifest.tui.is_none() {
+        let runtime = instance
+            .runtime_app
+            .parent()
+            .ok_or("桌面运行程序路径无效。")?;
+        if instance.cli_path != runtime.join("resources/codex.exe") {
+            // Older schema-2 manifests retain the original bundled CLI until
+            // deployment repairs them. Verify that executable before any use.
+            no_links(&instance.cli_path, false)?;
+            let original_runtime = instance
+                .cli_path
+                .parent()
+                .and_then(Path::parent)
+                .ok_or("Dodex CLI 路径无效。")?;
+            verify(original_runtime)?;
+        }
     }
     Ok(manifest)
 }
@@ -752,11 +785,11 @@ pub fn check_runtime() -> Result<String, String> {
 }
 
 fn verify_runtime(path: &Path, allow_hardlinks: bool) -> Result<String, String> {
-    for file in ["ChatGPT.exe", "resources/app.asar"] {
+    for file in ["ChatGPT.exe", "resources/app.asar", "resources/codex.exe"] {
         no_links(&path.join(file), allow_hardlinks)?;
     }
     powershell(
-        "$ErrorActionPreference='Stop'; $r=$env:COMPANION_RUNTIME_CHECK; $s=Get-AuthenticodeSignature -LiteralPath (Join-Path $r 'ChatGPT.exe'); if ($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notmatch 'O=\"?OpenAI OpCo, LLC\"?,') { exit 1 }; (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $r 'resources/app.asar')).Hash",
+        "$ErrorActionPreference='Stop'; $r=$env:COMPANION_RUNTIME_CHECK; foreach ($file in @('ChatGPT.exe', 'resources/codex.exe')) { $s=Get-AuthenticodeSignature -LiteralPath (Join-Path $r $file); if ($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notmatch 'O=\"?OpenAI OpCo, LLC\"?,') { exit 1 } }; (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $r 'resources/app.asar')).Hash",
         Some(path),
     )
 }
@@ -876,6 +909,22 @@ fn launch_with(thread: Option<&str>, workspace: Option<&Path>) -> Result<(), Str
     let manifest = validate(&root, true)?;
     let instance = manifest.instance;
     prepare_sandbox_bin(&instance.codex_home)?;
+    let mut command = desktop_command(&instance);
+    if let Some(thread) = thread {
+        let uri = crate::app::win::codex::thread_uri(thread).ok_or("无效的会话 ID。")?;
+        command.arg(uri);
+    }
+    if let Some(workspace) = workspace {
+        if !workspace.is_dir() {
+            return Err("项目目录不存在。".into());
+        }
+        command.arg("--open-project").arg(workspace);
+    }
+    command.spawn().map_err(|_| "无法打开 Dodex。")?;
+    Ok(())
+}
+
+fn desktop_command(instance: &InstanceConfig) -> Command {
     let mut command = isolated_command(
         &instance.runtime_app,
         &instance.codex_home,
@@ -898,22 +947,9 @@ fn launch_with(thread: Option<&str>, workspace: Option<&Path>) -> Result<(), Str
         .current_dir(&instance.desktop_user_data)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    if let Some(thread) = thread {
-        let uri = crate::app::win::codex::thread_uri(thread).ok_or("无效的会话 ID。")?;
-        command.arg(uri);
-    }
-    if let Some(workspace) = workspace {
-        if !workspace.is_dir() {
-            return Err("项目目录不存在。".into());
-        }
-        command.arg("--open-project").arg(workspace);
-    }
+        .stderr(Stdio::null())
+        .creation_flags(0x08000000);
     command
-        .creation_flags(0x08000000)
-        .spawn()
-        .map_err(|_| "无法打开 Dodex。")?;
-    Ok(())
 }
 
 #[cfg(test)]

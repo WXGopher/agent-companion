@@ -50,7 +50,9 @@ dodex -C C:\projects\demo
 
 普通参数直接传给 Codex CLI，`--help` 和 `--version` 也由 Codex 处理；`dodex app [PATH]` 打开隔离桌面，`dodex update` 进入统一维护流程。以 `--check` 或 `--deploy` 开头时进入环境管理：`dodex --check` 只检查官方运行程序；`dodex --deploy` 部署或校验环境并修复 shell 支持。升级旧版命令时，从新版程序运行 `.\agent-companion.exe dodex --deploy`。独立环境位于 `%LOCALAPPDATA%\AgentCompanion\Dodex`，已有账号、会话和个人配置继续使用。
 
-桌面版可通过任务栏或托盘菜单的 **打开 Dodex**，或 `.\agent-companion.exe dodex` 打开，使用同一份第二实例配置。
+**开始菜单打开 App，终端打开 CLI**：部署后，在开始菜单搜索 **Dodex** 打开桌面 App；快捷方式指向 `%LOCALAPPDATA%\AgentCompanion\Dodex\dodex.exe`（GUI 启动器，无控制台窗口）。PATH 命令目录中的另一份 `dodex.exe` 专供 PowerShell、cmd 和 Git Bash，运行 `dodex` 仍会打开第二个 profile 的 Codex CLI。两个入口使用同一份第二实例配置。任务栏或托盘菜单的 **打开 Dodex**、`.\agent-companion.exe dodex` 也可打开桌面版。
+
+已有环境从新版程序运行 `.\agent-companion.exe dodex --deploy` 即可补齐或修复开始菜单入口和 CLI 命令，无需重新登录。两个启动器均安装在固定位置，不依赖下载或构建目录。未安装官方 standalone TUI 时，Dodex 使用已验签的桌面包内置 CLI；不会改动现有 npm Codex 命令。独立 TUI 版本对齐和更新仍需受支持的完整 standalone 包。
 
 命令优先放入当前 PATH 已包含的用户命令目录，现有终端即可发现；Git Bash 如缓存了旧命令，可运行 `hash -r`。若需要新增 PATH 目录，设置会提示完全退出并重开终端。已有无关的同名命令不会被覆盖，设置会指出冲突路径。
 
@@ -121,7 +123,9 @@ dodex -C C:\projects\demo
 
 Regular arguments pass directly to Codex CLI, including `--help` and `--version`. `dodex app [PATH]` opens the isolated desktop; `dodex update` enters paired maintenance. A leading `--check` or `--deploy` selects deployment management: `dodex --check` checks the official runtime; `dodex --deploy` deploys or validates the environment and repairs shell support. To upgrade an older command, run `.\agent-companion.exe dodex --deploy` from the new release. The isolated environment lives under `%LOCALAPPDATA%\AgentCompanion\Dodex`; existing account data, sessions and personal settings stay in use.
 
-For the desktop app, choose **打开 Dodex** from the taskbar or tray menu, or run `.\agent-companion.exe dodex`. It uses the same second-instance profile.
+**Start menu opens the app; terminals open the CLI.** After deployment, search for **Dodex** in Start to open the desktop app. Its shortcut targets `%LOCALAPPDATA%\AgentCompanion\Dodex\dodex.exe`, a GUI launcher with no console window. The separate `dodex.exe` in the PATH command directory remains a console launcher: `dodex` in PowerShell, cmd or Git Bash starts Codex CLI with the second profile. Both entry points share that second-instance profile. **打开 Dodex** in the taskbar or tray menu and `.\agent-companion.exe dodex` also open the desktop app.
+
+For an existing environment, run `.\agent-companion.exe dodex --deploy` from the new build to add or repair the Start menu entry and CLI command without signing in again. Both launchers are installed in stable locations and do not depend on the download or build directory. When the official standalone TUI is absent, Dodex uses the verified desktop package's bundled CLI and leaves an existing npm Codex command unchanged. Separate TUI version alignment and updates still require a supported complete standalone package.
 
 The command is installed in a supported user command directory already on the current PATH when possible, so existing terminals can find it. Run `hash -r` in Git Bash if it cached an older command. If a new PATH entry is needed, Settings asks you to fully quit and reopen the terminal. Unrelated commands with the same name are preserved, and Settings reports the conflicting path.
 

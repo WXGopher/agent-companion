@@ -150,8 +150,63 @@ fn usage_and_launcher_commands_bind_paths_and_do_not_inherit_overrides() {
         "NODE_OPTIONS",
         "ELECTRON_RUN_AS_NODE",
     ] {
-        assert!(!env.contains_key(std::ffi::OsStr::new(key)));
+        // env_remove records an explicit None when the parent supplied an
+        // override; that is just as isolated as an absent variable.
+        assert_eq!(
+            env.get(std::ffi::OsStr::new(key)).copied().flatten(),
+            None,
+            "inherited override {key} must not reach Dodex"
+        );
     }
+}
+
+#[test]
+fn desktop_and_cli_commands_share_the_second_profile_but_use_distinct_programs() {
+    let instance = InstanceConfig::at(Path::new(r"C:\用户\a & b's %tools%!\Dodex"));
+    let desktop = desktop_command(&instance);
+    let cli = cli_command(&instance, &[]);
+    assert_eq!(desktop.get_program(), instance.runtime_app.as_os_str());
+    assert_eq!(cli.get_program(), instance.cli_path.as_os_str());
+    assert_eq!(
+        desktop.get_current_dir(),
+        Some(instance.desktop_user_data.as_path())
+    );
+    assert_eq!(cli.get_current_dir(), None);
+    for key in ["CODEX_HOME", "CODEX_SQLITE_HOME"] {
+        let read = |command: &Command| {
+            command
+                .get_envs()
+                .find(|(name, _)| name.eq_ignore_ascii_case(key))
+                .and_then(|(_, value)| value.map(OsString::from))
+        };
+        assert_eq!(read(&desktop), read(&cli));
+        assert!(read(&desktop).is_some());
+    }
+    assert!(desktop.get_args().any(|arg| arg
+        == OsString::from(format!(
+            "--user-data-dir={}",
+            instance.desktop_user_data.display()
+        ))));
+    let overrides = agent_companion_core::codex_args::config_overrides(
+        &cli.get_args().map(OsString::from).collect::<Vec<_>>(),
+    );
+    assert_eq!(overrides.len(), 3);
+    assert_eq!(overrides[0], r#"cli_auth_credentials_store="file""#);
+    assert!(
+        desktop
+            .get_envs()
+            .any(|(key, value)| key == "CODEX_APP_SERVER_USE_LOCAL_DAEMON"
+                && value == Some(std::ffi::OsStr::new("0")))
+    );
+    assert!(desktop.get_envs().any(
+        |(key, value)| key == "CODEX_CLI_PATH" && value == Some(instance.cli_path.as_os_str())
+    ));
+    assert!(
+        desktop
+            .get_envs()
+            .any(|(key, value)| key == "CODEX_ELECTRON_USER_DATA_PATH"
+                && value == Some(instance.desktop_user_data.as_os_str()))
+    );
 }
 
 #[test]

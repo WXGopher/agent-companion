@@ -77,7 +77,11 @@ impl Operations for System {
                 .app_version(&maintenance::official_desktop()?)
                 .map(Some),
             Target::CodexTui => {
-                let package = maintenance::official_tui()?;
+                let Some(package) = maintenance::optional_official_tui()? else {
+                    // An npm-managed primary is outside standalone version
+                    // maintenance; it does not make a working Dodex invalid.
+                    return Ok(None);
+                };
                 self.cli_version(
                     &package.package.join("bin/codex.exe"),
                     &deployment::primary_home().map_err(|_| "无法定位主账号目录。")?,

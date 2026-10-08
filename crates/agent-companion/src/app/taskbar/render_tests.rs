@@ -6,8 +6,7 @@ use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferTyp
 use slint::platform::{Platform, WindowAdapter, WindowEvent};
 use slint::{PlatformError, Rgb8Pixel};
 
-use super::{Along, Chip, TaskOutcomes, TaskbarView};
-use agent_companion_core::protocol::HookSource;
+use super::{Along, Chip, ChipSource, TaskOutcomes, TaskbarView};
 use agent_companion_core::state::AgentTasks;
 
 struct TestPlatform(Rc<MinimalSoftwareWindow>);
@@ -30,14 +29,180 @@ fn draw(window: &MinimalSoftwareWindow) -> Option<Vec<Rgb8Pixel>> {
 }
 
 #[test]
+fn account_identity_is_visible_and_maximum_quota_fits_at_every_scale() {
+    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    slint::platform::set_platform(Box::new(TestPlatform(Rc::clone(&window)))).unwrap();
+    let bar = TaskbarView::new(super::TaskbarBar::new().unwrap());
+    bar.show();
+    let quota_pixels = |pixels: &[Rgb8Pixel]| {
+        pixels
+            .iter()
+            .filter(|pixel| {
+                i32::from(pixel.g) - i32::from(pixel.r) > 50
+                    && i32::from(pixel.g) - i32::from(pixel.b) > 30
+            })
+            .count()
+    };
+    for scale in [1.0_f32, 1.25, 1.5, 2.0] {
+        let mut primary_pixels = None;
+        for source in [ChipSource::Codex, ChipSource::Dodex] {
+            let chip = Chip {
+                agent: Some(source),
+                value: "100%*".into(),
+                tier: "good",
+                tasks: AgentTasks::default(),
+                outcomes: TaskOutcomes::default(),
+            };
+            bar.set_chips(&[chip], Along::Vertical);
+            bar.sync_scale(scale);
+            let pixels = draw(&window).unwrap();
+            if let Some(primary) = &primary_pixels {
+                assert_ne!(
+                    primary, &pixels,
+                    "same quota still renders different C/D labels"
+                );
+            } else {
+                primary_pixels = Some(pixels.clone());
+            }
+            let foreground = quota_pixels(&pixels);
+            assert!(foreground > 0);
+
+            // A wider reference must reveal no additional quota pixels: this
+            // catches a clipped instance initial, percentage or failure star.
+            let size = window.size();
+            window.set_size(slint::PhysicalSize::new(
+                size.width + (32.0 * scale).round() as u32,
+                size.height,
+            ));
+            let reference = draw(&window).unwrap();
+            assert_eq!(
+                foreground,
+                quota_pixels(&reference),
+                "{source:?} at {scale}"
+            );
+            bar.sync_scale(scale);
+            let _ = draw(&window);
+        }
+    }
+}
+
+#[test]
+fn simultaneous_accounts_keep_their_task_rows_in_both_orientations_and_all_dpis() {
+    use slint::Model;
+
+    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    slint::platform::set_platform(Box::new(TestPlatform(Rc::clone(&window)))).unwrap();
+    let bar = TaskbarView::new(super::TaskbarBar::new().unwrap());
+    bar.show();
+    let chips = [
+        Chip {
+            agent: Some(ChipSource::Codex),
+            value: "100%*".into(),
+            tier: "good",
+            tasks: AgentTasks {
+                running: 2,
+                ..Default::default()
+            },
+            outcomes: TaskOutcomes::default(),
+        },
+        Chip {
+            agent: Some(ChipSource::Dodex),
+            value: "13%".into(),
+            tier: "low",
+            tasks: AgentTasks {
+                pending: 1,
+                done: 3,
+                running: 0,
+            },
+            outcomes: TaskOutcomes {
+                failed: 1,
+                stopped: 1,
+            },
+        },
+    ];
+    for scale in [1.0_f32, 1.25, 1.5, 2.0] {
+        for along in [Along::Vertical, Along::Horizontal] {
+            bar.set_chips(&chips, along);
+            bar.sync_scale(scale);
+            let pixels = draw(&window).expect("orientation or DPI changes repaint both accounts");
+            let logical = super::bar_size(&[chips[0].tasks, chips[1].tasks], along);
+            assert_eq!(
+                bar.physical_size(),
+                (
+                    (logical.0 * scale).round() as i32,
+                    (logical.1 * scale).round() as i32,
+                )
+            );
+            let primary = bar.ui.get_chips().row_data(0).unwrap();
+            let secondary = bar.ui.get_chips().row_data(1).unwrap();
+            assert_eq!(
+                (primary.agent.as_str(), primary.value.as_str()),
+                ("codex", "100%*")
+            );
+            assert_eq!(
+                (secondary.agent.as_str(), secondary.value.as_str()),
+                ("dodex", "13%")
+            );
+            assert_eq!(
+                (
+                    primary.pending,
+                    primary.running,
+                    primary.done,
+                    primary.failed
+                ),
+                (0, 2, 0, 0)
+            );
+            assert_eq!(
+                (
+                    secondary.pending,
+                    secondary.running,
+                    secondary.done,
+                    secondary.failed
+                ),
+                (1, 0, 3, 1)
+            );
+            assert!(
+                pixels
+                    .iter()
+                    .any(|pixel| i32::from(pixel.r) - i32::from(pixel.g) > 20),
+                "Dodex's low quota is visible"
+            );
+            if let Some(dir) = agent_companion_core::compat::var_os("AGENT_COMPANION_RENDER_DIR") {
+                let dir = std::path::PathBuf::from(dir);
+                std::fs::create_dir_all(&dir).unwrap();
+                let size = window.size();
+                let mut bytes = format!("P6\n{} {}\n255\n", size.width, size.height).into_bytes();
+                bytes.extend(pixels.iter().flat_map(|pixel| [pixel.r, pixel.g, pixel.b]));
+                let orientation = if along.is_vertical() {
+                    "vertical"
+                } else {
+                    "horizontal"
+                };
+                std::fs::write(
+                    dir.join(format!("dual-readout-{orientation}-{scale}.ppm")),
+                    bytes,
+                )
+                .unwrap();
+            }
+
+            bar.set_chips(&chips, along);
+            assert!(
+                draw(&window).is_none(),
+                "unchanged dual readouts schedule no frame"
+            );
+        }
+    }
+}
+
+#[test]
 fn idle_readout_rescales_its_pixels_and_repairs_size_without_changing_chips() {
     let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
     slint::platform::set_platform(Box::new(TestPlatform(Rc::clone(&window)))).unwrap();
     let bar = TaskbarView::new(super::TaskbarBar::new().unwrap());
     let chips = [Chip {
-        agent: Some(HookSource::Codex),
+        agent: Some(ChipSource::Codex),
         outcomes: TaskOutcomes::default(),
-        value: "C 72%".into(),
+        value: "72%".into(),
         tier: "good",
         tasks: AgentTasks {
             done: 1,
@@ -52,7 +217,7 @@ fn idle_readout_rescales_its_pixels_and_repairs_size_without_changing_chips() {
         assert_eq!(window.scale_factor(), scale);
         assert_eq!(
             bar.physical_size(),
-            ((61.0 * scale).round() as i32, (39.0 * scale).round() as i32)
+            ((67.0 * scale).round() as i32, (39.0 * scale).round() as i32)
         );
         let pixels = draw(&window).expect("DPI changes repaint idle content");
         if let Some(dir) = agent_companion_core::compat::var_os("AGENT_COMPANION_RENDER_DIR") {
@@ -100,7 +265,7 @@ fn idle_readout_rescales_its_pixels_and_repairs_size_without_changing_chips() {
     window.set_size(slint::PhysicalSize::new(45, 39));
     let _ = draw(&window);
     bar.sync_scale(1.5);
-    assert_eq!(bar.physical_size(), (92, 59));
+    assert_eq!(bar.physical_size(), (101, 59));
     assert!(draw(&window).is_some());
 }
 
@@ -158,12 +323,12 @@ fn task_status_colours_prioritize_waiting_and_breathe_only_while_active() {
             yellow,
         ),
     ];
-    for agent in [HookSource::Claude, HookSource::Codex] {
+    for agent in [ChipSource::Claude, ChipSource::Codex, ChipSource::Dodex] {
         for (tasks, expected) in cases {
             let chip = Chip {
                 agent: Some(agent),
                 outcomes: TaskOutcomes::default(),
-                value: "C 72%".into(),
+                value: "72%".into(),
                 tier: "good",
                 tasks,
             };
@@ -212,23 +377,31 @@ fn task_status_colours_prioritize_waiting_and_breathe_only_while_active() {
     }
     let identities = [
         Chip {
-            agent: Some(HookSource::Codex),
-            value: "C 72%".into(),
+            agent: Some(ChipSource::Codex),
+            value: "72%".into(),
             outcomes: TaskOutcomes::default(),
             tier: "good",
             tasks: AgentTasks::default(),
         },
         Chip {
-            agent: Some(HookSource::Codex),
-            value: "D 31%".into(),
+            agent: Some(ChipSource::Dodex),
+            value: "31%".into(),
             outcomes: TaskOutcomes::default(),
             tier: "warn",
             tasks: AgentTasks::default(),
         },
     ];
     bar.set_chips(&identities, Along::Horizontal);
-    assert_eq!(bar.ui.get_chips().row_data(0).unwrap().value, "C 72%");
-    assert_eq!(bar.ui.get_chips().row_data(1).unwrap().value, "D 31%");
+    let primary = bar.ui.get_chips().row_data(0).unwrap();
+    let secondary = bar.ui.get_chips().row_data(1).unwrap();
+    assert_eq!(
+        (primary.agent.as_str(), primary.value.as_str()),
+        ("codex", "72%")
+    );
+    assert_eq!(
+        (secondary.agent.as_str(), secondary.value.as_str()),
+        ("dodex", "31%")
+    );
     let _ = draw(&window);
     bar.breathe(0.5);
     assert!(draw(&window).is_none(), "quotas without tasks remain idle");
@@ -288,12 +461,12 @@ fn task_status_failed_and_stopped_outcomes_never_look_all_completed() {
             yellow,
         ),
     ];
-    for label in ["C 72%", "D 31%"] {
+    for source in [ChipSource::Codex, ChipSource::Dodex] {
         for (tasks, outcomes, expected) in cases {
             bar.set_chips(
                 &[Chip {
-                    agent: Some(HookSource::Codex),
-                    value: label.into(),
+                    agent: Some(source),
+                    value: "72%".into(),
                     tier: "good",
                     tasks,
                     outcomes,
@@ -307,7 +480,7 @@ fn task_status_failed_and_stopped_outcomes_never_look_all_completed() {
             assert_eq!(
                 bright[11 * width + 7],
                 expected,
-                "{label}, {outcomes:?}, {tasks:?}"
+                "{source:?}, {outcomes:?}, {tasks:?}"
             );
             assert_eq!(
                 bar.ui.get_chips().row_data(0).unwrap().done,
@@ -335,28 +508,35 @@ fn task_status_failed_and_stopped_outcomes_never_look_all_completed() {
     if let Some(dir) = agent_companion_core::compat::var_os("AGENT_COMPANION_RENDER_DIR") {
         let preview = [
             (
-                "C run",
+                ChipSource::Codex,
+                "run",
                 AgentTasks {
                     running: 1,
                     ..Default::default()
                 },
                 TaskOutcomes::default(),
             ),
-            ("D done", finished, TaskOutcomes::default()),
+            (ChipSource::Dodex, "done", finished, TaskOutcomes::default()),
             (
-                "C wait",
+                ChipSource::Codex,
+                "wait",
                 AgentTasks {
                     pending: 1,
                     ..Default::default()
                 },
                 TaskOutcomes::default(),
             ),
-            ("D idle", AgentTasks::default(), TaskOutcomes::default()),
-            ("C fail", finished, failed),
-            ("D stop", finished, stopped),
+            (
+                ChipSource::Dodex,
+                "idle",
+                AgentTasks::default(),
+                TaskOutcomes::default(),
+            ),
+            (ChipSource::Codex, "fail", finished, failed),
+            (ChipSource::Dodex, "stop", finished, stopped),
         ]
-        .map(|(label, tasks, outcomes)| Chip {
-            agent: Some(HookSource::Codex),
+        .map(|(source, label, tasks, outcomes)| Chip {
+            agent: Some(source),
             value: label.into(),
             tier: "",
             tasks,
@@ -381,14 +561,14 @@ fn readout_updates_colours_and_layout_without_scheduling_idle_frames() {
     let bar = TaskbarView::new(super::TaskbarBar::new().unwrap());
     let mut chips = vec![
         Chip {
-            agent: Some(HookSource::Claude),
+            agent: Some(ChipSource::Claude),
             value: "23%".into(),
             outcomes: TaskOutcomes::default(),
             tier: "warn",
             tasks: AgentTasks::default(),
         },
         Chip {
-            agent: Some(HookSource::Codex),
+            agent: Some(ChipSource::Codex),
             value: "34%".into(),
             outcomes: TaskOutcomes::default(),
             tier: "warn",

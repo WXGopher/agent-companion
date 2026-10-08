@@ -341,3 +341,25 @@ fn identical_console_binary_still_migrates_the_owned_legacy_update_route() {
     register(&source, &env).unwrap();
     assert_eq!(fs::read(&target).unwrap(), original);
 }
+
+#[test]
+fn gui_and_console_entries_reject_unknown_ownership_without_replacing_bytes() {
+    let temporary = tempfile::tempdir().unwrap();
+    let source = temporary.path().join("companion.exe");
+    fs::write(&source, executable(b"same-version", 2)).unwrap();
+    for kind in [launcher::Kind::Desktop, launcher::Kind::Console] {
+        let directory = temporary.path().join(format!("{kind:?}"));
+        fs::create_dir(&directory).unwrap();
+        launcher::install_command(&source, &directory, kind).unwrap();
+        let target = directory.join("dodex.exe");
+        let original = fs::read(&target).unwrap();
+        let mut marker: serde_json::Value =
+            serde_json::from_slice(&fs::read(directory.join(MARKER)).unwrap()).unwrap();
+        marker["entry_revision"] = serde_json::json!(99);
+        let foreign = serde_json::to_vec(&marker).unwrap();
+        fs::write(directory.join(MARKER), &foreign).unwrap();
+        assert!(launcher::install_command(&source, &directory, kind).is_err());
+        assert_eq!(fs::read(&target).unwrap(), original);
+        assert_eq!(fs::read(directory.join(MARKER)).unwrap(), foreign);
+    }
+}
