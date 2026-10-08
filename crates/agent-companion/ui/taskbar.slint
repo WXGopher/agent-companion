@@ -2,7 +2,8 @@ import { Theme, UsageChip } from "common.slint";
 
 // The usage readout that sits inside the taskbar.
 //
-// One block per agent: `● 92%` for the quota, and — while the agent has live
+// One block per instance: `● C 92%` / `● D 31%` identify Codex / Dodex, and —
+// while the instance has live
 // sessions — a task line with a segment per state: `? 1` waiting on the human,
 // a breathing dot with the running count, `✓ 2` finished. Blocks stack on a
 // vertical taskbar and sit side by side on a horizontal one. Rust decides
@@ -48,7 +49,8 @@ component AgentBlock {
                 }
             }
             Text {
-                text: chip.value;
+                text: chip.agent == "codex" ? "C " + chip.value
+                    : chip.agent == "dodex" ? "D " + chip.value : chip.value;
                 color: chip.tier == "low"
                     ? Theme.spent
                     : (chip.tier == "warn" ? Theme.thin : (chip.tier == "good" ? Theme.plenty : Theme.faint));
@@ -140,8 +142,8 @@ export component TaskbarBar inherits Window {
     background: transparent;
 
     in property <[UsageChip]> chips;
-    in property <string> usage-tooltip;
-    Tooltip { text: @markdown("\{root.usage-tooltip}"); }
+    // Rust provides a native tooltip: winit renders Slint tooltips inside this
+    // tiny window, which clips them before they can extend over the desktop.
     // Set from the taskbar's own shape, not from a docking constant.
     in property <bool> vertical: true;
     // Gray-to-status-colour blend, 0..1; see `TaskbarView::breathe`.

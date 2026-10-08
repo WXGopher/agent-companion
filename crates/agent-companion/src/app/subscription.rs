@@ -289,6 +289,14 @@ impl Snapshot {
         self.limits.as_ref()?.weekly()
     }
 
+    /// Retain a successful reading during refresh. Before the first reading,
+    /// distinguish an in-flight query from an unavailable account/window.
+    pub fn weekly_value(&self) -> String {
+        self.weekly()
+            .map(|quota| quota_value(quota.0, self.failed()))
+            .unwrap_or_else(|| if self.loading { "…" } else { "—" }.into())
+    }
+
     pub fn failed(&self) -> bool {
         !self.limits_error.is_empty()
     }
@@ -301,6 +309,9 @@ impl Snapshot {
         if self.failed() {
             status.push_str(" · ");
             status.push_str(&self.limits_error);
+        }
+        if self.loading {
+            status.push_str(" · Reading allowance…");
         }
         status
     }

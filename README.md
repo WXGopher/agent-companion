@@ -6,10 +6,13 @@
 
 在 Windows 任务栏或 macOS 菜单栏查看 Codex 的任务状态与订阅用量。
 
+Windows 只保留任务栏 C / D 读数入口；点击打开面板，右键可打开设置、Dodex 或退出。本地编译默认显示版本 `100.0`，关闭 Companion 更新检查和新版提示，详见[构建说明](docs/RELEASING.md)。
+
 ### 主要功能
 
 - **会话接力 CLI**：`acomp resume` 按当前目录搜索 Codex / Dodex 原会话，保留历史和设置，并选择本次使用的额度账号。通过 `agent-companion install-cli` 安装命令；macOS 需要受支持的原生 CLI 与登录方式，Windows 暂不支持恢复启动。详见[接力用法与兼容性](docs/RESUME.md)。
 - **更新提示**：主动打开面板时在后台检查 GitHub 正式发布版本，每 24 小时最多检查一次，重启后仍复用本地记录。发现更高版本时显示版本号，点击“查看更新”打开对应 Release 页面。检查不阻塞面板；断网或检查失败时静默保留已有提示，不自动下载或安装。
+  设置窗口提供 **检查更新** 按钮，可立即检查最新正式版。按钮下方显示检查进度和结果；发现新版后，点击 **查看 GitHub Release** 打开发布页面。检查失败可重试；不会自动下载、安装或打开浏览器。
 - **任务状态**：查看运行中、待处理和已结束的任务，点击返回对应对话或终端。
 - **Tasks / Usage**：切换任务与用量，查看剩余额度、重置时间、累计 Token 和最近七个有记录日期的用量柱状图。
 - **状态栏定制**：选择 Codex CLI 状态栏组件，实时预览并保存。
@@ -23,6 +26,8 @@
 订阅用量复用本机 Codex TUI 已有的 ChatGPT 登录，无需另设 API Key。默认每 5 分钟自动刷新，设置可调整为 1–60 分钟；手动刷新只查询当前实例。额度与历史分别加载，查询不创建模型任务、不消耗推理 Token。Codex 的托管策略继续生效；无法确认账号或配置时显示原因。
 
 界面保留同一账号最后成功的额度读数，查询失败后以 `*` 标注；尚无读数时显示 `—`。换号或登出会清除旧读数，额度重置时间到达后等待下次查询，不推算剩余额度。Usage 显示最后成功时间、失败原因和历史 Token 统计。详见[用量查询行为](docs/USAGE_QUERIES.md)。
+
+**v0.3.30 Windows 修复**：任务栏额度悬浮提示使用独立窗口，避免被小尺寸任务栏入口裁切；点击打开面板后立即隐藏，鼠标离开入口前不会再次弹出。提示按显示缩放调整，并保持在屏幕工作区内。详见[版本说明](docs/releases/v0.3.30.md)及 [Windows 验证记录](docs/WINDOWS_VALIDATION.md)。
 
 ### 安装
 
@@ -38,7 +43,7 @@
 
 随后在 Codex 中用 `/hooks` 审阅并信任配置，再开启新会话。如需提问卡片及精确终端跳转，使用同目录的 `agent-companion-codex.exe` 启动 Codex。
 
-**Windows TUI 双开**：右键任务栏读数或托盘图标 → **Settings… → TUI 双开 → 安装 Dodex TUI**。也可从解压目录运行：
+**Windows TUI 双开**：右键任务栏读数 → **Settings… → TUI 双开 → 安装 Dodex TUI**。也可从解压目录运行：
 
 ```powershell
 .\agent-companion.exe dodex-tui --install
@@ -75,10 +80,13 @@ macOS 从菜单栏打开任务／用量面板，设置位于面板底部；重�
 
 See Codex tasks and subscription usage in the Windows taskbar or macOS menu bar.
 
+Windows uses only the C / D taskbar readout: click for the panel, or right-click for Settings, Dodex and Quit. Local builds show version `100.0` and disable Companion release checks and update notices. See [build instructions](docs/RELEASING.md).
+
 ### Features
 
 - **Session handoff CLI**: `acomp resume` finds original Codex / Dodex sessions in the current directory, preserves history and settings, and lets you choose the quota account for this run. Install commands with `agent-companion install-cli`. macOS requires a supported native CLI and login method; Windows resume launch is not supported. See [resume usage and compatibility](docs/RESUME.md).
 - **Update notifications**: opening the panel checks for a newer stable GitHub release in the background, at most once every 24 hours across restarts. Updates link to their release page; the app does not download or install them automatically.
+  Use **检查更新** (Check for updates) in Settings to check the latest stable release immediately. Progress and results appear below the button. When a newer version is available, select **查看 GitHub Release** to open its release page. Failed checks can be retried; checking never automatically downloads, installs, or opens the browser.
 - **Tasks**: track running, waiting and finished tasks, then jump back to the conversation or terminal.
 - **Tasks / Usage**: switch to remaining quota, reset times, lifetime tokens and a bar chart of the last seven reported days.
 - **Status bar editor**: choose Codex CLI components with a live preview.
@@ -92,6 +100,8 @@ See Codex tasks and subscription usage in the Windows taskbar or macOS menu bar.
 Subscription usage reuses the existing ChatGPT login from your local Codex TUI, with no separate API key. Automatic refresh defaults to five minutes and can be set to 1–60 minutes; manual refresh queries only the selected instance. Quota and history load independently. Queries do not create model tasks or spend inference tokens. Codex's managed policies still apply, and unverifiable accounts or configurations show a reason.
 
 The interface retains the last successful quota reading for the same account, marking it with `*` after a failed query and showing `—` before a reading is available. Switching accounts or signing out clears old readings. After a quota reset time, the app waits for the next query instead of estimating the remaining allowance. Usage shows the last success time, failure reason and historical token totals. See [usage query behavior](docs/USAGE_QUERIES.md).
+
+**v0.3.30 Windows fix:** taskbar quota tooltips use a separate window so the small taskbar entry cannot clip them. Opening the panel immediately dismisses the tooltip and prevents it from reappearing until the pointer leaves the entry. Tooltips follow display scaling and stay inside the screen's work area. See the [release notes](docs/releases/v0.3.30.md) and [Windows validation record](docs/WINDOWS_VALIDATION.md).
 
 ### Install
 

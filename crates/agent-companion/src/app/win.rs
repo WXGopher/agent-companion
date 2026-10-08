@@ -29,6 +29,8 @@ pub mod target;
 pub use readout::prepare as prepare_readout;
 mod preview;
 pub use preview::set_no_activate;
+mod tooltip;
+pub use tooltip::UsageTooltip;
 
 #[cfg(test)]
 mod readout_tests;
@@ -89,7 +91,7 @@ pub fn within_window(window: Option<isize>, container: Option<isize>) -> bool {
 ///
 /// Native rather than a Slint window because that is what a context menu on a
 /// taskbar control is: it dismisses when the user clicks anywhere else, it
-/// clips nowhere, and it matches the tray icon's own menu exactly.
+/// clips nowhere, and follows the shell's menu behavior.
 pub fn popup_menu(owner: isize, items: &[(&str, bool)]) -> Option<usize> {
     let window = hwnd(owner);
     unsafe {
@@ -534,13 +536,6 @@ fn work_area_of(monitor: HMONITOR) -> Option<Rect> {
 pub fn work_area_at(x: i32, y: i32) -> Rect {
     let monitor = unsafe { MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST) };
     work_area_of(monitor).unwrap_or(FALLBACK_WORK_AREA)
-}
-
-/// The side the shell draws small icons at, which is the size the tray wants.
-/// 16 at 100 % scaling, 20 at 125 %, 24 at 150 %.
-pub fn small_icon_size() -> u32 {
-    let size = unsafe { GetSystemMetrics(SM_CXSMICON) };
-    if size <= 0 { 16 } else { size as u32 }
 }
 
 /// Seconds to add to a UTC Unix timestamp to get local wall-clock time.

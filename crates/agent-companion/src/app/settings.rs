@@ -43,7 +43,7 @@ pub fn read_status(settings_path: &Path) -> io::Result<HookStatus> {
 /// The line under "Claude Code" in the settings window.
 ///
 /// Hooks and nothing else. The status-line bridge is a terminal affair the CLI
-/// still knows how to wire; Agent Companion's own windows are the tray's, and they do
+/// still knows how to wire; Agent Companion's settings belong to the taskbar app, and they do
 /// not mention it.
 pub fn describe(status: &HookStatus) -> String {
     if !status.is_installed() {
@@ -64,7 +64,7 @@ pub fn describe_error(error: &io::Error) -> String {
 ///
 /// Hooks only: `statusLine` is never touched from here. The terminal-side
 /// usage bridge still exists for whoever wants it, but it belongs to the CLI
-/// (`agent-companion setup install claude`), not to the tray's settings window.
+/// (`agent-companion setup install claude`), not to the app's settings window.
 pub fn install(settings_path: &Path) -> io::Result<String> {
     // A copy of Agent Companion that no `cargo build` can pull out from under a live
     // session; see `install::install_binaries`.
@@ -179,7 +179,7 @@ mod tests {
         );
     }
 
-    /// The status line is a terminal affair the tray's window says nothing
+    /// The status line is a terminal affair the app's window says nothing
     /// about: somebody else's `statusLine` must neither change the summary nor
     /// get in the way of reading the hooks.
     #[test]

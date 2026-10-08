@@ -9,6 +9,8 @@ mod codex_tui;
 mod macos;
 #[path = "../src/macos_primary_app.rs"]
 mod macos_primary_app;
+#[path = "../src/settings_update.rs"]
+mod settings_update;
 #[path = "../src/software_updates.rs"]
 mod software_updates;
 #[path = "../src/tui_deployment.rs"]

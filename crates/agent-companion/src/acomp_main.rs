@@ -10,7 +10,7 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 #[derive(Debug, Parser)]
 #[command(
     name = "acomp",
-    version,
+    version = env!("AGENT_COMPANION_VERSION"),
     about = "Resume Codex and Dodex sessions with a chosen quota account",
     arg_required_else_help = true
 )]

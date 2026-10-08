@@ -16,7 +16,9 @@ static SNAPSHOT: OnceLock<Mutex<Snapshot>> = OnceLock::new();
 /// Borrowed, NUL-terminated build version. The native UI must not free it.
 #[unsafe(no_mangle)]
 extern "C" fn agent_companion_version() -> *const c_char {
-    concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr().cast()
+    concat!(env!("AGENT_COMPANION_VERSION"), "\0")
+        .as_ptr()
+        .cast()
 }
 
 /// A launcher must not redirect the primary monitor through its inherited

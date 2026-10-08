@@ -28,6 +28,7 @@ fn service(
             counted.fetch_add(1, Ordering::SeqCst);
             fetch()
         }),
+        true,
     );
     (service, calls)
 }
@@ -38,6 +39,37 @@ fn wait_idle(service: &UpdateService) {
         assert!(Instant::now() < deadline, "Release worker did not complete");
         std::thread::sleep(Duration::from_millis(1));
     }
+}
+
+#[test]
+fn local_builds_skip_all_checks_and_ignore_newer_cached_releases() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("updates.json");
+    save_cache(
+        &path,
+        &Cache {
+            last_attempt_at: Some(0),
+            latest_tag: Some("v101.0.0".into()),
+        },
+    )
+    .unwrap();
+    let original = fs::read(&path).unwrap();
+    for _ in 0..2 {
+        let local = UpdateService::create(
+            Some(path.clone()),
+            "100.0.0",
+            Box::new(|| panic!("Local builds must never contact the release service")),
+            false,
+        );
+        for now in [0, CHECK_INTERVAL_SECS, CHECK_INTERVAL_SECS * 2] {
+            local.panel_open(now);
+            local.check_now(now);
+            assert_eq!(local.snapshot(), UpdateSnapshot::default());
+            assert_eq!(local.manual_snapshot(), ManualCheck::Disabled);
+            assert!(!local.inner.state().in_flight);
+        }
+    }
+    assert_eq!(fs::read(path).unwrap(), original);
 }
 
 #[test]
@@ -339,4 +371,147 @@ fn snapshot_serializes_for_both_desktop_bridges() {
             "releaseUrl": "https://github.com/WXGopher/agent-companion/releases/tag/v0.3.22"
         })
     );
+}
+
+#[test]
+fn manual_checks_bypass_daily_cache_and_report_semantic_version_results() {
+    for (current, latest, newer) in [
+        ("1.2.3", "v1.2.3", false),
+        ("1.2.4", "v1.2.3", false),
+        ("1.2.3+local", "v1.2.3+release", false),
+        ("1.2.3", "v1.2.10", true),
+    ] {
+        let (service, calls) = service(None, current, move || Ok(release(latest)));
+        service.panel_open(100);
+        wait_idle(&service);
+        assert_eq!(service.manual_snapshot(), ManualCheck::Idle);
+        service.check_now(101);
+        wait_idle(&service);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let expected = if newer {
+            ManualCheck::Available(service.snapshot())
+        } else {
+            ManualCheck::UpToDate
+        };
+        assert_eq!(service.manual_snapshot(), expected);
+        service.panel_open(102);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        service.check_now(102);
+        wait_idle(&service);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(service.manual_snapshot(), expected);
+    }
+}
+
+#[test]
+fn manual_failure_never_presents_cached_success_and_allows_immediate_retry() {
+    for error in [
+        io::ErrorKind::TimedOut,
+        io::ErrorKind::PermissionDenied,
+        io::ErrorKind::InvalidData,
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("updates.json");
+        save_cache(
+            &path,
+            &Cache {
+                last_attempt_at: Some(100),
+                latest_tag: Some("v1.2.9".into()),
+            },
+        )
+        .unwrap();
+        let retry = AtomicUsize::new(0);
+        let (service, calls) = service(Some(path), "1.2.3", move || {
+            if retry.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err(io::Error::new(error, "Synthetic private diagnostic"))
+            } else {
+                Ok(release("v1.2.10"))
+            }
+        });
+        assert_eq!(service.manual_snapshot(), ManualCheck::Idle);
+        service.check_now(101);
+        wait_idle(&service);
+        assert_eq!(service.manual_snapshot(), ManualCheck::Failed);
+        assert_eq!(service.snapshot().latest_version.as_deref(), Some("1.2.9"));
+        service.check_now(101);
+        wait_idle(&service);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            service.manual_snapshot(),
+            ManualCheck::Available(service.snapshot())
+        );
+        assert_eq!(service.snapshot().latest_version.as_deref(), Some("1.2.10"));
+    }
+}
+
+#[test]
+fn manual_checks_join_an_in_flight_request_without_blocking_or_refetching() {
+    for background_first in [false, true] {
+        let (started_tx, started_rx) = mpsc::channel();
+        let (finish_tx, finish_rx) = mpsc::channel();
+        let finish_rx = Mutex::new(finish_rx);
+        let (service, calls) = service(None, "1.2.3", move || {
+            started_tx.send(()).unwrap();
+            finish_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap();
+            Ok(release("v1.2.4"))
+        });
+        if background_first {
+            service.panel_open(100);
+        } else {
+            service.check_now(100);
+        }
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        for _ in 0..20 {
+            service.check_now(101);
+            service.panel_open(100 + CHECK_INTERVAL_SECS);
+            assert_eq!(service.manual_snapshot(), ManualCheck::Checking);
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+        }
+        finish_tx.send(()).unwrap();
+        wait_idle(&service);
+        assert_eq!(
+            service.manual_snapshot(),
+            ManualCheck::Available(service.snapshot())
+        );
+    }
+}
+
+#[test]
+fn background_checks_do_not_replace_the_last_manual_feedback() {
+    let attempts = AtomicUsize::new(0);
+    let service = UpdateService::fixture("1.2.3", move || {
+        if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+            Ok(release("v1.2.3"))
+        } else {
+            Ok(release("v1.2.4"))
+        }
+    });
+    service.check_now(0);
+    wait_idle(&service);
+    assert_eq!(service.manual_snapshot(), ManualCheck::UpToDate);
+    service.panel_open(CHECK_INTERVAL_SECS);
+    wait_idle(&service);
+    assert!(service.snapshot().release_url.is_some());
+    assert_eq!(service.manual_snapshot(), ManualCheck::UpToDate);
+}
+
+#[test]
+fn manual_checks_report_invalid_or_unstable_responses_as_failure() {
+    for body in [
+        release("v2.0.0-rc.1"),
+        release("v2.0.0/elsewhere"),
+        br#"{"tag_name":"v2.0.0","draft":true,"prerelease":false}"#.to_vec(),
+        br#"{"tag_name":"v2.0.0","draft":false,"prerelease":true}"#.to_vec(),
+        br#"{"message":"rate limited"}"#.to_vec(),
+    ] {
+        let service = UpdateService::fixture("1.2.3", move || Ok(body.clone()));
+        service.check_now(0);
+        wait_idle(&service);
+        assert_eq!(service.manual_snapshot(), ManualCheck::Failed);
+        assert!(service.snapshot().release_url.is_none());
+    }
 }

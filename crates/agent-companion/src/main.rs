@@ -4,7 +4,7 @@
 //! `codex-tui` opens the independent status bar editor; closing that editor exits
 //! its process.
 //! On Windows it runs the app: a usage readout in the taskbar, cards
-//! for the approvals a session needs, a tray icon, and the named-pipe server
+//! for the approvals a session needs, the taskbar readout, and the named-pipe server
 //! that feeds them all. The subcommands are the parts that have to
 //! work from a terminal — `headless` for watching the raw event stream, `setup`
 //! for hook installation, and `statusline` for the usage bridge Claude Code
@@ -29,6 +29,8 @@ mod macos;
 mod macos_primary_app;
 mod out;
 mod resume_cli;
+#[cfg(any(target_os = "macos", windows))]
+mod settings_update;
 #[cfg(any(target_os = "macos", windows))]
 mod software_updates;
 #[cfg(any(target_os = "macos", windows))]
@@ -60,7 +62,7 @@ use crate::out::errln;
 
 /// Codex task and usage companion, with a native CLI status bar editor.
 #[derive(Debug, Parser)]
-#[command(name = "agent-companion", version, about, long_about = None)]
+#[command(name = "agent-companion", version = env!("AGENT_COMPANION_VERSION"), about, long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,

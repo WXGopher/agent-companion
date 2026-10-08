@@ -94,6 +94,13 @@ config is backed up as `config.toml.before-tui`. Monitoring opt-outs survive
 repair. Old active desktop records are removed only after the TUI registry has
 been committed; their recovery copies remain available.
 
+On Windows, repair also retires a hash-owned old desktop launcher and its
+matching Start menu shortcut. Copies and a replayable retirement journal are
+kept in `TuiMigration`. An unrelated shortcut is preserved. If Windows still
+holds the old launcher open, close that desktop and repeat repair; running
+TUI processes are never terminated. Account, database and log directories are
+not moved.
+
 On macOS, after verifying the new TUI and original history, run the repository's
 `scripts/retire-dodex-app.py` to move the specifically recognized
 `~/Applications/Dodex.app` to Trash and deregister its desktop entry. The script

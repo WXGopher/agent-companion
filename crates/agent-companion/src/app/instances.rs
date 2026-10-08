@@ -3,6 +3,116 @@
 use super::*;
 use crate::tui_deployment::{self, InstanceConfig};
 
+/// Keep account identity, allowance and task state together until they reach
+/// the UI. Dodex uses Codex's hook protocol, not Codex's account or task table.
+struct InstanceReadout {
+    source: taskbar::ChipSource,
+    snapshot: subscription::Snapshot,
+    tasks: AgentTasks,
+    outcomes: task_status::TaskOutcomes,
+}
+
+impl InstanceReadout {
+    fn chip(&self, good: i64, warn: i64) -> taskbar::Chip {
+        taskbar::Chip {
+            agent: Some(self.source),
+            value: self.snapshot.weekly_value(),
+            tier: self
+                .snapshot
+                .weekly()
+                .map(|quota| crate::usage_cache::left_tier(quota.0, good, warn))
+                .unwrap_or(""),
+            tasks: self.tasks,
+            outcomes: self.outcomes,
+        }
+    }
+
+    fn details(&self, now: u64, offset: i64) -> String {
+        let quota = self.snapshot.weekly();
+        let reset = match quota.and_then(|quota| quota.1) {
+            Some(at) if at <= now => "Reset time reached · waiting for the next query".into(),
+            Some(at) => crate::usage_cache::reset_label(Some(at), now, offset)
+                .map(|label| format!("Week · resets {label}"))
+                .unwrap_or_default(),
+            None if quota.is_none()
+                && self.snapshot.read_at.is_some()
+                && !self.snapshot.failed() =>
+            {
+                "No weekly allowance reported".into()
+            }
+            None => "Weekly remaining".into(),
+        };
+        format!("{reset} · {}", self.snapshot.status(now, offset))
+    }
+
+    fn row(&self, now: u64, offset: i64, good: i64, warn: i64) -> ui::UsageRow {
+        let chip = self.chip(good, warn);
+        ui::UsageRow {
+            heading: true,
+            agent: self.source.as_str().into(),
+            label: self.source.label().into(),
+            value: chip.value.into(),
+            tier: chip.tier.into(),
+            fill: self
+                .snapshot
+                .weekly()
+                .map(|quota| quota.0 as f32 / 100.0)
+                .unwrap_or(0.0),
+            resets: self.details(now, offset).into(),
+        }
+    }
+}
+
+fn quota_tooltip(readouts: &[InstanceReadout], now: u64, offset: i64) -> String {
+    // Put both account values before the longer reset/error descriptions.
+    let summary = readouts
+        .iter()
+        .map(|readout| {
+            format!(
+                "{} ({}) week {} left",
+                readout.source.label(),
+                readout.source.compact_label(),
+                readout.snapshot.weekly_value()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" · ");
+    std::iter::once(summary)
+        .chain(readouts.iter().map(|readout| {
+            format!(
+                "{}: {}",
+                readout.source.label(),
+                readout.details(now, offset)
+            )
+        }))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn append_readout_chips(
+    chips: &mut Vec<taskbar::Chip>,
+    readouts: &[InstanceReadout],
+    show: bool,
+    good: i64,
+    warn: i64,
+) {
+    // Replace account blocks as a unit: disabling Dodex cannot leave its last
+    // reading behind, and repeated refreshes cannot duplicate either account.
+    chips.retain(|chip| chip.agent == Some(taskbar::ChipSource::Claude));
+    if show {
+        chips.extend(readouts.iter().map(|readout| readout.chip(good, warn)));
+    }
+    if chips.is_empty() {
+        chips.push(taskbar::Chip {
+            agent: None,
+            value: "--".into(),
+            tier: "",
+            tasks: AgentTasks::default(),
+            outcomes: task_status::TaskOutcomes::default(),
+        });
+    }
+}
+
 pub struct Secondary {
     pub instance: InstanceConfig,
     watcher: sessions::CodexWatcher,
@@ -22,19 +132,39 @@ impl Secondary {
 }
 
 impl App {
+    fn instance_readouts(&self) -> Vec<InstanceReadout> {
+        let mut readouts = vec![InstanceReadout {
+            source: taskbar::ChipSource::Codex,
+            snapshot: self.subscription_snapshot("codex"),
+            tasks: self.agent_tasks(HookSource::Codex),
+            outcomes: self.agent_outcomes(HookSource::Codex),
+        }];
+        if let Some(secondary) = self.secondary.borrow().as_ref() {
+            let now = now_unix_secs();
+            readouts.push(InstanceReadout {
+                source: taskbar::ChipSource::Dodex,
+                snapshot: self.subscription_snapshot("dodex"),
+                tasks: secondary.table.tasks(HookSource::Codex, now),
+                outcomes: task_status::outcomes(&secondary.table, HookSource::Codex, now),
+            });
+        }
+        readouts
+    }
+
     pub(super) fn instance_quota_tooltip(&self) -> String {
-        let mut items: Vec<String> = self
-            .instance_quotas()
-            .into_iter()
-            .map(|row| format!("{} week {} · {}", row.label, row.value, row.resets))
-            .collect();
+        let mut tooltip = quota_tooltip(
+            &self.instance_readouts(),
+            now_unix_secs(),
+            win::local_offset_secs(),
+        );
         if self.display.borrow().visible(HookSource::Claude) {
             let claude = self.usage.borrow().compact(&[HookSource::Claude]);
             if !claude.is_empty() {
-                items.push(claude);
+                tooltip.push_str("\n\n");
+                tooltip.push_str(&claude);
             }
         }
-        items.join("\n")
+        tooltip
     }
     pub(super) fn secondary_tasks(&self) -> Option<AgentTasks> {
         self.secondary
@@ -100,108 +230,27 @@ impl App {
 
     pub(super) fn instance_quotas(&self) -> Vec<ui::UsageRow> {
         let now = now_unix_secs();
+        let offset = win::local_offset_secs();
         let (good, warn) = self.config.borrow().taskbar.thresholds();
-        let row = |id: &str, label: &str| {
-            let snapshot = self.subscription_snapshot(id);
-            let quota = snapshot.weekly();
-            let reset = match quota.and_then(|q| q.1) {
-                Some(at) if at <= now => "Reset time reached · waiting for the next query".into(),
-                Some(at) => {
-                    crate::usage_cache::reset_label(Some(at), now, win::local_offset_secs())
-                        .map(|s| format!("Week · resets {s}"))
-                        .unwrap_or_default()
-                }
-                None => "Weekly remaining".into(),
-            };
-            ui::UsageRow {
-                heading: true,
-                agent: id.into(),
-                label: label.into(),
-                value: quota
-                    .map(|q| subscription::quota_value(q.0, snapshot.failed()))
-                    .unwrap_or_else(|| "—".into())
-                    .into(),
-                tier: quota
-                    .map(|q| crate::usage_cache::left_tier(q.0, good, warn))
-                    .unwrap_or("")
-                    .into(),
-                fill: quota.map(|q| q.0 as f32 / 100.0).unwrap_or(0.0),
-                resets: format!(
-                    "{reset} · {}",
-                    snapshot.status(now, win::local_offset_secs())
-                )
-                .into(),
-            }
-        };
-        let mut rows = vec![row("codex", "Codex")];
-        if self.secondary.borrow().is_some() {
-            rows.push(row("dodex", "Dodex"));
-        }
-        rows
+        self.instance_readouts()
+            .iter()
+            .map(|readout| readout.row(now, offset, good, warn))
+            .collect()
     }
 
     pub(super) fn append_instance_chips(
         &self,
         chips: &mut Vec<taskbar::Chip>,
-        primary: taskbar::AgentLine,
         good: i64,
         warn: i64,
     ) {
-        chips.retain(|chip| chip.agent.is_some());
-        let quotas = self.instance_quotas();
-        let secondary = self.secondary.borrow();
-        for row in quotas {
-            let is_secondary = row.agent == "dodex";
-            if !self.config.borrow().taskbar.codex || (is_secondary && secondary.is_none()) {
-                continue;
-            }
-            let tasks = if is_secondary {
-                secondary
-                    .as_ref()
-                    .unwrap()
-                    .table
-                    .tasks(HookSource::Codex, now_unix_secs())
-            } else {
-                primary.tasks
-            };
-            let outcomes = if is_secondary {
-                task_status::outcomes(
-                    &secondary.as_ref().unwrap().table,
-                    HookSource::Codex,
-                    now_unix_secs(),
-                )
-            } else {
-                primary.outcomes
-            };
-            chips.push(taskbar::Chip {
-                agent: Some(HookSource::Codex),
-                value: format!(
-                    "{} {}",
-                    if is_secondary { "D" } else { "C" },
-                    if row.tier.is_empty() {
-                        "—"
-                    } else {
-                        row.value.as_str()
-                    }
-                ),
-                tier: if row.tier.is_empty() {
-                    ""
-                } else {
-                    crate::usage_cache::left_tier((row.fill * 100.0).round() as i64, good, warn)
-                },
-                tasks,
-                outcomes,
-            });
-        }
-        if chips.is_empty() {
-            chips.push(taskbar::Chip {
-                agent: None,
-                value: "--".into(),
-                tier: "",
-                tasks: AgentTasks::default(),
-                outcomes: task_status::TaskOutcomes::default(),
-            });
-        }
+        append_readout_chips(
+            chips,
+            &self.instance_readouts(),
+            self.config.borrow().taskbar.codex,
+            good,
+            warn,
+        );
     }
 
     pub(super) fn jump_secondary(self: &Rc<Self>, id: &str) {
@@ -236,3 +285,6 @@ impl App {
         });
     }
 }
+
+#[cfg(test)]
+mod tests;

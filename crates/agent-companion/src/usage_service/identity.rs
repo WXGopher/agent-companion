@@ -65,8 +65,25 @@ pub(super) fn configuration_matches(source: &Source, native: &Value) -> bool {
             .as_str()
             .map(|v| v.trim_end_matches('/'))
             == Some(expected.service.as_str())
-        && native["sqlite_home"].as_str() == Some(source.database_path.to_string_lossy().as_ref())
+        && native["sqlite_home"]
+            .as_str()
+            .is_some_and(|path| same_database_directory(Path::new(path), &source.database_path))
         && native["features"]["secret_auth_storage"].as_bool() != Some(true)
+}
+
+fn same_database_directory(native: &Path, expected: &Path) -> bool {
+    if !native.is_absolute() || !expected.is_absolute() {
+        return false;
+    }
+    // Windows canonicalization adds a verbatim (\\?\) prefix, while native
+    // config/read returns the ordinary drive path. Verify the resolved
+    // directory instead of treating these spellings as different sources.
+    native == expected
+        || native.canonicalize().is_ok_and(|native| {
+            expected
+                .canonicalize()
+                .is_ok_and(|expected| native == expected)
+        })
 }
 
 fn read_with(
@@ -490,6 +507,39 @@ mod tests {
             database_path: home.join("db"),
             executable_path: None,
         }
+    }
+
+    #[test]
+    fn database_verification_keeps_different_and_unresolved_directories_separate() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first");
+        let second = directory.path().join("second");
+        fs::create_dir(&first).unwrap();
+        fs::create_dir(&second).unwrap();
+        assert!(same_database_directory(
+            &first,
+            &first.canonicalize().unwrap()
+        ));
+        assert!(!same_database_directory(&first, &second));
+        assert!(!same_database_directory(&first, Path::new("first")));
+        assert!(!same_database_directory(Path::new("first"), &first));
+        assert!(!same_database_directory(
+            &directory.path().join("missing-first"),
+            &directory.path().join("missing-second"),
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_windows_database_spelling_matches_the_verbatim_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let canonical = directory.path().canonicalize().unwrap();
+        let verbatim = canonical.to_str().unwrap();
+        assert!(verbatim.starts_with(r"\\?\"));
+        let ordinary = PathBuf::from(verbatim.strip_prefix(r"\\?\").unwrap());
+        assert_ne!(ordinary, canonical);
+        assert!(same_database_directory(&ordinary, &canonical));
+        assert!(same_database_directory(&canonical, &ordinary));
     }
 
     #[test]

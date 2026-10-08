@@ -19,6 +19,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(windows)]
+#[path = "tui_deployment/windows_retirement.rs"]
+mod windows_retirement;
+
 #[cfg(target_os = "macos")]
 #[path = "tui_deployment/shell.rs"]
 mod shell;
@@ -269,6 +273,8 @@ fn install(layout: &Layout) -> io::Result<()> {
     #[cfg(windows)]
     crate::cli_install::register_user_path(&layout.public_bin())?;
     write_registry(layout, &record)?;
+    #[cfg(windows)]
+    windows_retirement::retire(layout, &record)?;
     retire_legacy_records(layout)?;
     fs::remove_file(pending_path)?;
     Ok(())

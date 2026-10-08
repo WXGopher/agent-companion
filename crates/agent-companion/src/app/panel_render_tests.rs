@@ -38,7 +38,7 @@ fn draw(window: &MinimalSoftwareWindow, name: &str) -> Vec<Rgb8Pixel> {
         let mut buffer = vec![Rgb8Pixel::default(); (size.width * size.height) as usize];
         renderer.render(&mut buffer, size.width as usize);
         assert!(buffer.iter().any(|pixel| pixel.r != pixel.b));
-        if let Some(dir) = agent_companion_core::compat::var_os("AGENT_COMPANION_RENDER_DIR") {
+        if let Some(dir) = std::env::var_os("AGENT_COMPANION_RENDER_DIR") {
             let dir = std::path::PathBuf::from(dir);
             std::fs::create_dir_all(&dir).unwrap();
             let mut bytes = format!("P6\n{} {}\n255\n", size.width, size.height).into_bytes();
@@ -663,7 +663,7 @@ fn flyout_pages_render_and_preserve_scroll(
             assert_eq!(refreshed.get(), before + 1);
         }
     }
-    if agent_companion_core::compat::var_os("AGENT_COMPANION_RENDER_DIR").is_some() {
+    if std::env::var_os("AGENT_COMPANION_RENDER_DIR").is_some() {
         render_readme_flyout(panel, windows);
     }
     let mut subscription = panel.get_subscription();

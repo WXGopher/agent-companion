@@ -149,7 +149,7 @@ class Acceptance:
         self.support = (self.home / "Library/Application Support/AgentCompanion"
                         if sys.platform == "darwin" else self.home / "local/AgentCompanion")
         self.environment = {name: os.environ[name] for name in (
-            "PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "LANG") if name in os.environ}
+            "PATH", "SystemRoot", "WINDIR", "OS", "TEMP", "TMP", "LANG") if name in os.environ}
         self.environment.update(HOME=str(self.home), USERPROFILE=str(self.home),
                                 LOCALAPPDATA=str(self.home / "local"),
                                 APPDATA=str(self.home / "roaming"),

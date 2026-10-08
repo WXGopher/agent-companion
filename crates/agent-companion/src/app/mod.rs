@@ -1,4 +1,4 @@
-//! The app: the taskbar readout, the detail panel, the cards, the tray icon,
+//! The app: the taskbar readout, the detail panel, the cards,
 //! the settings window, and the pipe server that feeds them all.
 //!
 //! # Shape
@@ -33,7 +33,6 @@ pub(crate) mod config;
 mod display;
 mod flyout;
 mod form;
-mod icon;
 mod instances;
 mod navigation;
 pub mod net;
@@ -45,7 +44,6 @@ mod settings;
 mod subscription;
 mod task_status;
 mod taskbar;
-mod tray;
 pub(crate) mod win;
 
 /// The Slint markup, compiled by `build.rs`.
@@ -70,20 +68,16 @@ use self::bridge::HookEvent;
 use self::card::Card;
 use self::cardview::{CardKind, CardView};
 use self::config::Config;
-use self::icon::IconState;
 use self::taskbar::TaskbarView;
-use self::tray::{Tray, TrayCommand};
 use self::win::Rect;
 use crate::out::errln;
 use crate::usage_cache::UsageSnapshot;
 use crate::util::{clean_title, project_name, truncate};
 
-/// The housekeeping beat: sweeps dead sessions, re-reads usage, keeps the tray
-/// count honest.
+/// The housekeeping beat: sweeps dead sessions and re-reads usage.
 const TICK: Duration = Duration::from_millis(500);
-/// How often the tray's channels are read. Short, because this is the latency
-/// between clicking a menu item and it happening.
-const TRAY_POLL: Duration = Duration::from_millis(100);
+/// Keep the readout's status dots breathing independently of pointer input.
+const ANIMATION_POLL: Duration = Duration::from_millis(100);
 /// How often a new window is looked for so it can be taken out of the taskbar.
 const ADOPT_POLL: Duration = Duration::from_millis(150);
 /// One full breath of the waiting animation.
@@ -119,7 +113,7 @@ fn notification_clicked(session_id: &str) {
     if let Some(app) = APP.with(|slot| slot.borrow().clone()) {
         app.close_flyout();
         if let Some(taskbar) = app.host.get().or_else(win::taskbar) {
-            app.show_flyout(taskbar.rect, Anchor::Tray, false);
+            app.show_flyout(taskbar.rect, Anchor::Taskbar, false);
         }
         app.jump(session_id);
     }
@@ -142,8 +136,7 @@ pub fn run() -> io::Result<()> {
     APP.with(|slot| *slot.borrow_mut() = Some(Rc::clone(&app)));
     app.start();
 
-    // Not `run_event_loop`: that returns once the last window closes, and a
-    // tray-only Agent Companion has no windows open at all.
+    // Keep monitoring even when the settings, panel and cards are closed.
     let result = slint::run_event_loop_until_quit().map_err(io::Error::other);
 
     app.subscription.borrow_mut().stop();
@@ -174,7 +167,6 @@ struct App {
     flyout_handle: Cell<Option<isize>>,
     settings_window: RefCell<Option<ui::CodexTuiWindow>>,
     codex_tui_editor: RefCell<Option<Rc<codex_tui::Editor>>>,
-    tray: RefCell<Option<Tray>>,
 
     table: RefCell<SessionTable>,
     jump_request: Cell<u64>,
@@ -222,7 +214,7 @@ struct App {
     tick: slint::Timer,
     /// Samples the pointer over the taskbar readout; see [`taskbar`].
     pointer_timer: slint::Timer,
-    tray_timer: slint::Timer,
+    animation_timer: slint::Timer,
     adopt_timer: slint::Timer,
     dismiss_timer: slint::Timer,
 }
@@ -249,7 +241,6 @@ impl App {
             flyout_handle: Cell::new(None),
             settings_window: RefCell::new(None),
             codex_tui_editor: RefCell::new(None),
-            tray: RefCell::new(None),
             table: RefCell::new(SessionTable::new()),
             jump_request: Cell::new(0),
             codex_sessions: sessions::CodexWatcher::new(),
@@ -279,7 +270,7 @@ impl App {
             started: Instant::now(),
             tick: slint::Timer::default(),
             pointer_timer: slint::Timer::default(),
-            tray_timer: slint::Timer::default(),
+            animation_timer: slint::Timer::default(),
             adopt_timer: slint::Timer::default(),
             dismiss_timer: slint::Timer::default(),
         });
@@ -308,7 +299,7 @@ impl App {
         self.start_adopting();
         self.start_watching_the_readout();
         self.start_ticking();
-        self.start_tray();
+        self.start_animation();
     }
 
     /// Take whatever window is currently open out of the taskbar and the
@@ -395,33 +386,11 @@ impl App {
         });
     }
 
-    /// The tray icon is created from a timer for the same reason the taskbar
-    /// tweak is: `tray-icon` wants a running message loop on this thread.
-    fn start_tray(self: &Rc<Self>) {
+    fn start_animation(self: &Rc<Self>) {
         let app = Rc::downgrade(self);
-        self.tray_timer
-            .start(slint::TimerMode::Repeated, TRAY_POLL, move || {
+        self.animation_timer
+            .start(slint::TimerMode::Repeated, ANIMATION_POLL, move || {
                 let Some(app) = app.upgrade() else { return };
-                if app.tray.borrow().is_none() {
-                    match Tray::new(win::small_icon_size()) {
-                        Ok(tray) => {
-                            *app.tray.borrow_mut() = Some(tray);
-                        }
-                        Err(error) => {
-                            // Losing the tray is a degraded app, not a dead one:
-                            // the readout and the cards still work. Say so once
-                            // and stop retrying, rather than failing every
-                            // 100 ms forever.
-                            errln!("agent-companion: could not create the tray icon: {error}");
-                            app.tray_timer.stop();
-                            return;
-                        }
-                    }
-                }
-                app.handle_tray();
-                app.refresh_tray_icon();
-                // The readout's breathing dot rides the same 100 ms beat; a
-                // readout with no task line ignores this without repainting.
                 app.bar.breathe(app.pulse());
             });
     }
@@ -536,14 +505,18 @@ impl App {
                     Some(taskbar::Click::Menu) => app.readout_menu(),
                     None => app.poll_peek(),
                 }
+                app.bar.poll_tooltip(
+                    app.started.elapsed().as_millis() as u64,
+                    !app.flyout_open.get(),
+                );
             },
         );
     }
 
-    /// The readout's right-click menu: the same commands the tray offers,
-    /// in the same words. A native menu, so it dismisses like every other
+    /// The readout's right-click menu. A native menu dismisses like every other
     /// taskbar menu and never fights the panel for space.
     fn readout_menu(self: &Rc<Self>) {
+        self.bar.dismiss_tooltip();
         self.close_flyout();
         let Some(handle) = self.bar.window_handle() else {
             return;
@@ -552,7 +525,7 @@ impl App {
             handle,
             &[
                 ("Settings…", true),
-                (tray::DODEX_LABEL, self.can_open_dodex()),
+                ("打开 Dodex", self.can_open_dodex()),
                 ("-", true),
                 ("Quit Agent Companion", true),
             ],
@@ -712,7 +685,7 @@ impl App {
         }
         // The user has seen this card and moved on. Give them a while to come
         // back, then get out of the way — the approval itself stays pending, and
-        // the tray icon keeps counting it.
+        // the taskbar readout keeps tracking it.
         let app = Rc::downgrade(self);
         self.dismiss_timer.start(
             slint::TimerMode::SingleShot,
@@ -1070,28 +1043,19 @@ impl App {
             .get()
             .map(|taskbar| taskbar::Along::of(taskbar.rect))
             .unwrap_or(taskbar::Along::Vertical);
-        let (lines, good_at, warn_at) = {
+        let (claude, good_at, warn_at) = {
             let config = self.config.borrow();
-            let lines = [
-                taskbar::AgentLine {
-                    agent: HookSource::Claude,
-                    show: config.taskbar.claude
-                        && self.display.borrow().visible(HookSource::Claude),
-                    tasks: self.agent_tasks(HookSource::Claude),
-                    outcomes: self.agent_outcomes(HookSource::Claude),
-                },
-                taskbar::AgentLine {
-                    agent: HookSource::Codex,
-                    show: config.taskbar.codex && self.display.borrow().visible(HookSource::Codex),
-                    tasks: self.agent_tasks(HookSource::Codex),
-                    outcomes: self.agent_outcomes(HookSource::Codex),
-                },
-            ];
+            let claude = taskbar::AgentLine {
+                agent: HookSource::Claude,
+                show: config.taskbar.claude && self.display.borrow().visible(HookSource::Claude),
+                tasks: self.agent_tasks(HookSource::Claude),
+                outcomes: self.agent_outcomes(HookSource::Claude),
+            };
             let (good_at, warn_at) = config.taskbar.thresholds();
-            (lines, good_at, warn_at)
+            (claude, good_at, warn_at)
         };
-        let mut chips = taskbar::chips(&self.usage.borrow(), &lines[..1], good_at, warn_at);
-        self.append_instance_chips(&mut chips, lines[1], good_at, warn_at);
+        let mut chips = taskbar::chips(&self.usage.borrow(), &[claude], good_at, warn_at);
+        self.append_instance_chips(&mut chips, good_at, warn_at);
         self.bar.set_chips(&chips, along);
         self.bar.set_usage_tooltip(&self.instance_quota_tooltip());
     }
@@ -1338,65 +1302,11 @@ impl App {
         }
     }
 
-    fn refresh_tray_icon(&self) {
-        let tray = self.tray.borrow();
-        let Some(tray) = tray.as_ref() else { return };
-        tray.set_dodex_enabled(self.can_open_dodex());
-
-        let mut tasks: Vec<_> = AGENTS
-            .into_iter()
-            .map(|source| self.agent_tasks(source))
-            .collect();
-        if let Some(tasks_secondary) = self.secondary_tasks() {
-            tasks.push(tasks_secondary);
-        }
-        let sessions = tasks.iter().map(|tasks| tasks.total()).sum();
-        let waiting = tasks.iter().map(|tasks| tasks.pending).sum();
-        tray.refresh(IconState {
-            sessions,
-            waiting,
-            // Quantised so the icon is redrawn a handful of times a second
-            // rather than ten: every redraw is a Shell_NotifyIcon round trip.
-            // With nothing waiting the pulse is not drawn at all, so pinning it
-            // keeps the comparison from asking for a redraw that looks the same.
-            pulse: if waiting > 0 {
-                quantise(self.pulse())
-            } else {
-                0.0
-            },
-        });
-        tray.set_tooltip(&tray_tooltip(
-            sessions,
-            waiting,
-            &self.instance_quota_tooltip(),
-        ));
-    }
-
     /// 0 → 1 → 0 over [`PULSE_PERIOD_MS`].
     fn pulse(&self) -> f32 {
         let phase =
             (self.started.elapsed().as_millis() % PULSE_PERIOD_MS) as f32 / PULSE_PERIOD_MS as f32;
         (1.0 - (phase * std::f32::consts::TAU).cos()) / 2.0
-    }
-
-    // ----------------------------------------------------------------- tray
-
-    fn handle_tray(self: &Rc<Self>) {
-        let commands = match self.tray.borrow().as_ref() {
-            Some(tray) => tray.poll(),
-            None => return,
-        };
-        for command in commands {
-            match command {
-                TrayCommand::OpenSettings => self.open_settings(),
-                TrayCommand::OpenDodex => self.open_dodex(),
-                TrayCommand::Quit => {
-                    self.close_flyout();
-                    slint::quit_event_loop().ok();
-                }
-                TrayCommand::ToggleFlyout(rect) => self.toggle_flyout(rect, Anchor::Tray),
-            }
-        }
     }
 
     fn can_open_dodex(&self) -> bool {
@@ -1409,13 +1319,11 @@ impl App {
         }
         self.close_flyout();
         self.launching_dodex.set(true);
-        self.refresh_tray_icon();
         std::thread::spawn(|| {
             let result = crate::tui_deployment::open_terminal(None);
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(app) = APP.with(|slot| slot.borrow().clone()) {
                     app.launching_dodex.set(false);
-                    app.refresh_tray_icon();
                     if let Err(error) = result {
                         app.open_settings();
                         if let Some(editor) = app.codex_tui_editor.borrow().as_ref() {
@@ -1449,7 +1357,7 @@ impl App {
     /// What the readout managed to do, in words, for the settings window.
     fn taskbar_status(&self) -> &'static str {
         if !self.bar.is_shown() {
-            return "Agent Companion's usage numbers stay in the tray icon's tooltip and its panel.";
+            return "The readout is hidden. Enable it here, or reopen Settings with agent-companion codex-tui.";
         }
         match (self.host.get().is_some(), self.bar.is_embedded()) {
             (true, true) => {
@@ -1534,6 +1442,7 @@ impl App {
     }
 
     fn show_flyout(self: &Rc<Self>, anchor: Rect, from: Anchor, peek: bool) {
+        self.bar.dismiss_tooltip();
         let opened =
             subscription::opens_full_panel(self.flyout_open.get(), self.flyout_peek.get(), peek);
         self.flyout_peek.set(peek);
@@ -1615,15 +1524,7 @@ impl App {
         let panel = self.flyout_handle.get();
         let target = if win::within_window(under_pointer, panel) {
             flyout::PointerTarget::Panel
-        } else if win::within_window(under_pointer, self.bar.window_handle())
-            || (buttons != 0
-                && point.is_some_and(|(x, y)| {
-                    self.tray
-                        .borrow()
-                        .as_ref()
-                        .is_some_and(|tray| tray.contains_point(x, y))
-                }))
-        {
+        } else if win::within_window(under_pointer, self.bar.window_handle()) {
             flyout::PointerTarget::Launcher
         } else {
             flyout::PointerTarget::Outside
@@ -1888,8 +1789,8 @@ impl App {
         }
     }
 
-    /// Painting reads the cached result; only a full panel opening can check
-    /// GitHub. The previous version remains visible during a later refresh.
+    /// Painting only reads the cached result; requests belong to a full panel
+    /// opening or the explicit settings action. Keep the last known version.
     fn render_update(&self) {
         let update = self.updates.snapshot();
         let version = if update.release_url.is_some() {
@@ -1902,10 +1803,6 @@ impl App {
     }
 
     fn open_release(&self) {
-        use windows::Win32::UI::Shell::ShellExecuteW;
-        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-        use windows::core::{PCWSTR, w};
-
         if self.flyout_peek.get() {
             return;
         }
@@ -1914,18 +1811,7 @@ impl App {
         let Some(url) = self.updates.snapshot().release_url else {
             return;
         };
-        let url: Vec<u16> = url.encode_utf16().chain(Some(0)).collect();
-        let result = unsafe {
-            ShellExecuteW(
-                None,
-                w!("open"),
-                PCWSTR(url.as_ptr()),
-                None,
-                None,
-                SW_SHOWNORMAL,
-            )
-        };
-        if result.0 as isize > 32 {
+        if crate::settings_update::open_release(&url).is_ok() {
             self.close_flyout();
         } else {
             crate::util::debug_log("could not open the Agent Companion release page");
@@ -1953,7 +1839,7 @@ impl App {
             (height * scale).round() as i32,
         );
         let (x, y) = match from {
-            Anchor::Tray => place_flyout(anchor, size, area),
+            Anchor::Taskbar => place_flyout(anchor, size, area),
             Anchor::Readout => place_flyout_beside(anchor, size, area),
         };
         self.flyout
@@ -2023,7 +1909,8 @@ impl App {
             return;
         }
         let editor = crate::tui_deployment::primary_home().and_then(|home| {
-            codex_tui::Editor::new(home.join("config.toml")).map_err(io::Error::other)
+            codex_tui::Editor::with_release_updates(home.join("config.toml"), self.updates.clone())
+                .map_err(io::Error::other)
         });
         let editor = match editor {
             Ok(editor) => editor,
@@ -2328,7 +2215,7 @@ impl App {
 /// Which thing the session list was opened from, and so where it opens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Anchor {
-    Tray,
+    Taskbar,
     Readout,
 }
 
@@ -2425,7 +2312,7 @@ fn session_title(project: Option<&str>, summary: Option<&str>, session_id: &str)
     truncate(&label, TITLE_LIMIT)
 }
 
-/// The phase, in words, for the tray panel.
+/// The phase, in words, for the session panel.
 fn describe_phase(phase: Phase, tool: Option<&str>) -> String {
     match phase {
         Phase::Running => "Working".to_string(),
@@ -2450,37 +2337,14 @@ fn describe_session(state: &agent_companion_core::state::SessionState) -> String
     }
 }
 
-fn tray_tooltip(sessions: usize, waiting: usize, usage: &str) -> String {
-    let mut text = match sessions {
-        0 => "Agent Companion · no sessions".to_string(),
-        1 => "Agent Companion · 1 session".to_string(),
-        many => format!("Agent Companion · {many} sessions"),
-    };
-    if waiting > 0 {
-        text.push_str(&format!(", {waiting} waiting"));
-    }
-    if !usage.is_empty() {
-        text.push_str(&format!("\n{usage}"));
-    }
-    text
-}
-
-/// Round to eighths, so a smoothly advancing pulse only produces a few distinct
-/// icons per second.
-fn quantise(value: f32) -> f32 {
-    (value.clamp(0.0, 1.0) * 8.0).round() / 8.0
-}
-
-/// Put the panel beside the tray icon, on the same side of the screen the
-/// taskbar is.
+/// Put a notification-opened panel beside the taskbar.
 fn place_flyout(anchor: Rect, size: (i32, i32), area: Rect) -> (i32, i32) {
     let (width, height) = size;
     let x = (anchor.right - width).clamp(
         area.left + FLYOUT_MARGIN,
         (area.right - width - FLYOUT_MARGIN).max(area.left + FLYOUT_MARGIN),
     );
-    // A tray icon in the top half of the screen means the taskbar is up there,
-    // so the panel hangs below it instead of above.
+    // A taskbar in the top half of the screen opens the panel below it.
     let top_taskbar = anchor.top < (area.top + area.bottom) / 2;
     let y = if top_taskbar {
         area.top + FLYOUT_MARGIN

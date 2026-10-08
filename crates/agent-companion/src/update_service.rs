@@ -1,5 +1,6 @@
-//! Read-only release awareness. Opening the panel may start a daily check;
-//! reading the snapshot never schedules work or touches the network.
+//! Read-only release awareness. Panel opens are throttled to daily checks;
+//! explicit settings checks bypass that throttle. Snapshot reads never fetch.
+//! Local builds skip release checks and never advertise cached updates.
 use std::{
     fs,
     io::{self, Read, Write},
@@ -30,6 +31,19 @@ pub struct UpdateSnapshot {
     pub release_url: Option<String>,
 }
 
+/// Feedback belongs to an explicit check, never to a result loaded from disk.
+/// Background refreshes retain this feedback until the next manual request.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ManualCheck {
+    #[default]
+    Idle,
+    Disabled,
+    Checking,
+    UpToDate,
+    Available(UpdateSnapshot),
+    Failed,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 struct Cache {
@@ -41,6 +55,7 @@ struct Cache {
 struct State {
     cache: Cache,
     in_flight: bool,
+    manual: ManualCheck,
 }
 
 type Fetch = dyn Fn() -> io::Result<Vec<u8>> + Send + Sync;
@@ -49,6 +64,7 @@ struct Inner {
     state: Mutex<State>,
     path: Option<PathBuf>,
     current_version: Version,
+    checks_enabled: bool,
     fetch: Box<Fetch>,
 }
 
@@ -65,6 +81,7 @@ impl Inner {
     }
 }
 
+#[derive(Clone)]
 pub struct UpdateService {
     inner: Arc<Inner>,
 }
@@ -74,20 +91,36 @@ impl UpdateService {
         let path = agent_companion_core::usage_service::settings_path()
             .ok()
             .map(|path| path.with_file_name("updates.json"));
-        Self::create(path, env!("CARGO_PKG_VERSION"), Box::new(fetch_latest))
+        Self::create(
+            path,
+            env!("AGENT_COMPANION_SEMVER_VERSION"),
+            Box::new(fetch_latest),
+            !cfg!(companion_local_build),
+        )
     }
 
-    fn create(path: Option<PathBuf>, current_version: &str, fetch: Box<Fetch>) -> Self {
+    fn create(
+        path: Option<PathBuf>,
+        current_version: &str,
+        fetch: Box<Fetch>,
+        checks_enabled: bool,
+    ) -> Self {
         let cache = path.as_deref().map(load_cache).unwrap_or_default();
         Self {
             inner: Arc::new(Inner {
                 state: Mutex::new(State {
                     cache,
                     in_flight: false,
+                    manual: if checks_enabled {
+                        ManualCheck::Idle
+                    } else {
+                        ManualCheck::Disabled
+                    },
                 }),
                 path,
                 current_version: Version::parse(current_version)
-                    .expect("Cargo package versions are semantic versions"),
+                    .expect("Build versions are semantic versions"),
+                checks_enabled,
                 fetch,
             }),
         }
@@ -96,10 +129,33 @@ impl UpdateService {
     /// `now` is Unix seconds. Failed attempts share the same daily throttle as
     /// successes. No network or disk IO runs on this caller's thread.
     pub fn panel_open(&self, now: u64) {
+        self.start_check(now, false);
+    }
+
+    /// Start a fresh request even within the daily interval. If a request is
+    /// already running, observe its result instead of issuing a second one.
+    pub fn check_now(&self, now: u64) {
+        self.start_check(now, true);
+    }
+
+    pub fn manual_snapshot(&self) -> ManualCheck {
+        self.inner.state().manual.clone()
+    }
+
+    fn start_check(&self, now: u64, manual: bool) {
+        if !self.inner.checks_enabled {
+            return;
+        }
         let attempt = {
             let mut state = self.inner.state();
-            if state.in_flight
-                || state
+            if manual {
+                state.manual = ManualCheck::Checking;
+            }
+            if state.in_flight {
+                return;
+            }
+            if !manual
+                && state
                     .cache
                     .last_attempt_at
                     .is_some_and(|last| now.saturating_sub(last) < CHECK_INTERVAL_SECS)
@@ -121,35 +177,68 @@ impl UpdateService {
                 let result = (inner.fetch)().and_then(|body| parse_release(&body));
                 let completed = {
                     let mut state = inner.state();
-                    if let Ok(tag) = result {
-                        state.cache.latest_tag = Some(tag);
+                    if let Ok(tag) = &result {
+                        state.cache.latest_tag = Some(tag.clone());
                     }
                     state.cache.clone()
                 };
                 // Keep the in-flight gate until persistence completes, without
                 // holding the state mutex over either filesystem operation.
                 inner.save(&completed);
-                inner.state().in_flight = false;
+                let mut state = inner.state();
+                if state.manual == ManualCheck::Checking {
+                    state.manual = match result {
+                        Ok(tag) => {
+                            let update = update_snapshot(Some(tag), &inner.current_version);
+                            if update.release_url.is_some() {
+                                ManualCheck::Available(update)
+                            } else {
+                                ManualCheck::UpToDate
+                            }
+                        }
+                        Err(_) => ManualCheck::Failed,
+                    };
+                }
+                state.in_flight = false;
             });
         if spawned.is_err() {
-            self.inner.state().in_flight = false;
+            let mut state = self.inner.state();
+            if state.manual == ManualCheck::Checking {
+                state.manual = ManualCheck::Failed;
+            }
+            state.in_flight = false;
         }
     }
 
     /// A cached release stops being advertised after the app is upgraded to it.
     /// Background completions become visible here without reopening the panel.
     pub fn snapshot(&self) -> UpdateSnapshot {
-        let tag = self.inner.state().cache.latest_tag.clone();
-        let Some((tag, version)) = tag
-            .and_then(|tag| stable_version(&tag).map(|version| (tag, version)))
-            .filter(|(_, version)| version.cmp_precedence(&self.inner.current_version).is_gt())
-        else {
+        if !self.inner.checks_enabled {
             return UpdateSnapshot::default();
-        };
-        UpdateSnapshot {
-            latest_version: Some(version.to_string()),
-            release_url: Some(format!("{RELEASE_URL_PREFIX}{tag}")),
         }
+        let tag = self.inner.state().cache.latest_tag.clone();
+        update_snapshot(tag, &self.inner.current_version)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture(
+        current_version: &str,
+        fetch: impl Fn() -> io::Result<Vec<u8>> + Send + Sync + 'static,
+    ) -> Self {
+        Self::create(None, current_version, Box::new(fetch), true)
+    }
+}
+
+fn update_snapshot(tag: Option<String>, current_version: &Version) -> UpdateSnapshot {
+    let Some((tag, version)) = tag
+        .and_then(|tag| stable_version(&tag).map(|version| (tag, version)))
+        .filter(|(_, version)| version.cmp_precedence(current_version).is_gt())
+    else {
+        return UpdateSnapshot::default();
+    };
+    UpdateSnapshot {
+        latest_version: Some(version.to_string()),
+        release_url: Some(format!("{RELEASE_URL_PREFIX}{tag}")),
     }
 }
 
@@ -158,7 +247,7 @@ fn request_config() -> ureq::config::Config {
         .timeout_global(Some(REQUEST_TIMEOUT))
         .https_only(true)
         .max_redirects(0)
-        .user_agent(concat!("agent-companion/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("agent-companion/", env!("AGENT_COMPANION_VERSION")))
         .build()
 }
 

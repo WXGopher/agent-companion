@@ -67,10 +67,18 @@ fn main() {
             } else {
                 setting("chatgpt_base_url")
             };
-            Some(format!(
-                "{{\"id\":2,\"result\":{{\"config\":{{\"cli_auth_credentials_store\":{},\"chatgpt_base_url\":{service},\"sqlite_home\":{}}}}}}}",
-                setting("cli_auth_credentials_store"),
+            let database = if cfg!(windows) {
+                let path = env::var("CODEX_SQLITE_HOME").unwrap();
+                fs::create_dir_all(&path).unwrap();
+                // Native Windows config/read normalizes the verbatim paths
+                // supplied by the reader back to their ordinary drive form.
+                format!("{:?}", path.strip_prefix(r"\\?\").unwrap_or(&path))
+            } else {
                 setting("sqlite_home")
+            };
+            Some(format!(
+                "{{\"id\":2,\"result\":{{\"config\":{{\"cli_auth_credentials_store\":{},\"chatgpt_base_url\":{service},\"sqlite_home\":{database}}}}}}}",
+                setting("cli_auth_credentials_store"),
             ))
         } else if line.contains("account/rateLimits/read") {
             if mode == "exit" {

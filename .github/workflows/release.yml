@@ -10,6 +10,9 @@ permissions:
   id-token: write
   attestations: write
 
+env:
+  AGENT_COMPANION_RELEASE_BUILD: "1"
+
 jobs:
   build:
     name: Package (${{ matrix.target }})

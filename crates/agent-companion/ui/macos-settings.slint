@@ -7,8 +7,15 @@ import { ProfileSyncFile } from "profile-sync.slint";
 import { SoftwareVersion } from "software-updates.slint";
 
 import { DualSettings } from "dual-settings.slint";
+import { UpdateCheck } from "update-check.slint";
 
 export component MacSettings inherits Rectangle {
+    in property <bool> update-checking;
+    in property <bool> update-failed;
+    in property <bool> update-available;
+    in property <string> update-message;
+    callback check-updates();
+    callback view-release();
     in property <[SoftwareVersion]> software-versions;
     in property <bool> software-busy;
     in property <bool> software-error;
@@ -108,6 +115,14 @@ export component MacSettings inherits Rectangle {
             }
         }
 
+        UpdateCheck {
+            checking: root.update-checking;
+            failed: root.update-failed;
+            available: root.update-available;
+            message: root.update-message;
+            check => { root.check-updates(); }
+            view-release => { root.view-release(); }
+        }
         HorizontalLayout {
             height: 32px;
             spacing: 8px;

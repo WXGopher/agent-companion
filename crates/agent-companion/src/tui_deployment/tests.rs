@@ -1,6 +1,6 @@
 use super::*;
 
-fn fixture() -> (tempfile::TempDir, Layout) {
+pub(super) fn fixture() -> (tempfile::TempDir, Layout) {
     let temporary = tempfile::tempdir().unwrap();
     let home = temporary.path().canonicalize().unwrap().join("user");
     fs::create_dir_all(&home).unwrap();
