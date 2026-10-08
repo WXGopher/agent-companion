@@ -13,6 +13,8 @@ mod macos_deployment;
 mod macos_primary_app;
 #[path = "../src/managed_tui.rs"]
 mod managed_tui;
+#[path = "../src/settings_update.rs"]
+mod settings_update;
 #[path = "../src/software_updates.rs"]
 mod software_updates;
 #[path = "../src/update_service.rs"]

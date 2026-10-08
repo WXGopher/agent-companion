@@ -21,6 +21,10 @@ mod macos_primary_app;
 mod managed_tui;
 #[cfg(target_os = "macos")]
 #[allow(dead_code, unused_imports)]
+#[path = "../src/settings_update.rs"]
+mod settings_update;
+#[cfg(target_os = "macos")]
+#[allow(dead_code, unused_imports)]
 #[path = "../src/software_updates.rs"]
 mod software_updates;
 #[cfg(target_os = "macos")]
@@ -39,6 +43,67 @@ pub mod ui {
 fn main() {
     #[cfg(target_os = "macos")]
     check_editor_startup();
+}
+
+/// Keep pointer acceptance tied to the visible control when the common
+/// settings header grows. This still sends real pointer events, not callbacks.
+#[cfg(target_os = "macos")]
+fn click_control(
+    window: &ui::CodexTuiWindow,
+    label: &str,
+    role: slint::private_unstable_api::re_exports::AccessibleRole,
+) {
+    use slint::ComponentHandle;
+    use slint::platform::{PointerEventButton, WindowEvent};
+    use slint::private_unstable_api::re_exports::{AccessibleStringProperty, ItemRc, WindowInner};
+
+    let root = ItemRc::new_root(WindowInner::from_pub(window.window()).component());
+    let mut pending = vec![root];
+    let mut controls = Vec::new();
+    while let Some(item) = pending.pop() {
+        let mut child = item.first_child();
+        while let Some(next) = child {
+            child = next.next_sibling();
+            pending.push(next);
+        }
+        if item.is_accessible()
+            && item.is_visible()
+            && item.accessible_role() == role
+            && item
+                .accessible_string_property(AccessibleStringProperty::Label)
+                .is_some_and(|value| value == label)
+        {
+            let geometry = item.geometry();
+            controls.push((item.map_to_window(geometry.origin), geometry.size));
+        }
+    }
+    assert_eq!(controls.len(), 1, "one visible {role:?} named {label}");
+    let (origin, size) = controls.remove(0);
+    let bounds = window
+        .window()
+        .size()
+        .to_logical(window.window().scale_factor());
+    assert!(
+        size.width > 0.0
+            && size.height > 0.0
+            && origin.x >= 0.0
+            && origin.y >= 0.0
+            && origin.x + size.width <= bounds.width
+            && origin.y + size.height <= bounds.height,
+        "{label} must fit inside the visible settings window"
+    );
+    let position =
+        slint::LogicalPosition::new(origin.x + size.width / 2.0, origin.y + size.height / 2.0);
+    window.window().dispatch_event(WindowEvent::PointerPressed {
+        position,
+        button: PointerEventButton::Left,
+    });
+    window
+        .window()
+        .dispatch_event(WindowEvent::PointerReleased {
+            position,
+            button: PointerEventButton::Left,
+        });
 }
 
 #[cfg(target_os = "macos")]
@@ -276,17 +341,11 @@ fn check_editor_startup() {
             .unwrap();
             image.write_all(pixels.as_bytes()).unwrap();
         }
-        let click = |x, y| {
-            use slint::platform::{PointerEventButton, WindowEvent};
-            let position = slint::LogicalPosition::new(x, y);
-            window.window().dispatch_event(WindowEvent::PointerPressed {
-                position,
-                button: PointerEventButton::Left,
-            });
-            window.window().dispatch_event(WindowEvent::PointerReleased {
-                position,
-                button: PointerEventButton::Left,
-            });
+        let click = |label| {
+            click_control(
+                &window, label,
+                slint::private_unstable_api::re_exports::AccessibleRole::Button,
+            );
         };
         match phase {
             0 => window.set_settings_page(1),
@@ -644,16 +703,10 @@ fn check_editor_startup() {
                 });
                 // The fixture uses the minimum 820×720 logical layout here.
                 let click_switch = || {
-                    use slint::platform::{PointerEventButton, WindowEvent};
-                    let position = slint::LogicalPosition::new(398.0, 163.0);
-                    window.window().dispatch_event(WindowEvent::PointerPressed {
-                        position,
-                        button: PointerEventButton::Left,
-                    });
-                    window.window().dispatch_event(WindowEvent::PointerReleased {
-                        position,
-                        button: PointerEventButton::Left,
-                    });
+                    click_control(
+                        &window, "登录时自动启动",
+                        slint::private_unstable_api::re_exports::AccessibleRole::Switch,
+                    );
                 };
                 click_switch();
                 assert!(!window.get_run_at_login());
@@ -702,9 +755,9 @@ fn check_editor_startup() {
                 assert!(!window.get_dual_app_installed() && !window.get_dual_tui_configured());
                 // Real pointer events at the minimum 820×720 layout verify
                 // forwarding through MacSettings → DualSettings → root.
-                click(100.0, 257.0);
+                click("一键安装并配置 Dodex App、TUI 和 Companion 接入");
                 assert_eq!(setup_requests.get(), 1);
-                click(80.0, 403.0);
+                click("分别对齐 Codex 与 Dodex 的 App 和 TUI 版本");
                 assert!(maintenance_requests.borrow().is_empty(), "Alignment requires a configured TUI");
                 window.set_dual_app_installed(true);
                 window.set_dual_tui_available(true);
@@ -714,9 +767,9 @@ fn check_editor_startup() {
             38 => {
                 assert!(window.get_dual_app_installed() && window.get_dual_tui_available());
                 assert!(!window.get_dual_tui_configured() && window.get_dual_error());
-                click(100.0, 257.0);
+                click("一键安装并配置 Dodex App、TUI 和 Companion 接入");
                 assert_eq!(setup_requests.get(), 2, "A partial installation must allow retry");
-                click(80.0, 430.0);
+                click("分别对齐 Codex 与 Dodex 的 App 和 TUI 版本");
                 assert!(maintenance_requests.borrow().is_empty(), "The App's bundled CLI is not a configured TUI entry");
                 window.set_dual_tui_configured(true);
                 window.set_dual_enabled(true);
@@ -726,22 +779,22 @@ fn check_editor_startup() {
             39 => {
                 assert!(window.get_dual_tui_configured() && window.get_dual_enabled());
                 assert!(!window.get_dual_error(), "Waiting for the user's login is a successful installation state");
-                click(235.0, 257.0);
+                click("打开 Dodex");
                 assert_eq!(open_requests.get(), 1);
-                click(80.0, 430.0);
+                click("分别对齐 Codex 与 Dodex 的 App 和 TUI 版本");
                 assert_eq!(*maintenance_requests.borrow(), ["align"]);
-                click(70.0, 524.0);
+                click("显示双开高级设置");
                 assert!(window.get_dual_advanced_open(), "Advanced controls must be reachable through the visible button");
-                click(70.0, 524.0);
+                click("收起双开高级设置");
                 assert!(!window.get_dual_advanced_open());
                 window.set_software_busy(true);
                 window.set_software_message("正在对齐 Dodex TUI，保留副账号配置与会话…".into());
             }
             40 => {
                 assert!(window.get_software_busy() && !window.get_dual_busy(), "Alignment must not masquerade as installation progress");
-                click(100.0, 257.0);
-                click(235.0, 257.0);
-                click(80.0, 430.0);
+                click("一键安装并配置 Dodex App、TUI 和 Companion 接入");
+                click("打开 Dodex");
+                click("分别对齐 Codex 与 Dodex 的 App 和 TUI 版本");
                 assert_eq!(setup_requests.get(), 2, "Installing is disabled while alignment owns the maintenance lock");
                 assert_eq!(open_requests.get(), 1);
                 assert_eq!(*maintenance_requests.borrow(), ["align"], "Repeated alignment clicks must be disabled");

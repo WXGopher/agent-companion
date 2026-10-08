@@ -1879,8 +1879,8 @@ impl App {
         }
     }
 
-    /// Painting reads the cached result; only a full panel opening can check
-    /// GitHub. The previous version remains visible during a later refresh.
+    /// Painting only reads the cached result; requests belong to a full panel
+    /// opening or the explicit settings action. Keep the last known version.
     fn render_update(&self) {
         let update = self.updates.snapshot();
         let version = if update.release_url.is_some() {
@@ -1893,10 +1893,6 @@ impl App {
     }
 
     fn open_release(&self) {
-        use windows::Win32::UI::Shell::ShellExecuteW;
-        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-        use windows::core::{PCWSTR, w};
-
         if self.flyout_peek.get() {
             return;
         }
@@ -1905,18 +1901,7 @@ impl App {
         let Some(url) = self.updates.snapshot().release_url else {
             return;
         };
-        let url: Vec<u16> = url.encode_utf16().chain(Some(0)).collect();
-        let result = unsafe {
-            ShellExecuteW(
-                None,
-                w!("open"),
-                PCWSTR(url.as_ptr()),
-                None,
-                None,
-                SW_SHOWNORMAL,
-            )
-        };
-        if result.0 as isize > 32 {
+        if crate::settings_update::open_release(&url).is_ok() {
             self.close_flyout();
         } else {
             crate::util::debug_log("could not open the Agent Companion release page");
@@ -2014,7 +1999,8 @@ impl App {
             return;
         }
         let editor = crate::windows_deployment::primary_home().and_then(|home| {
-            codex_tui::Editor::new(home.join("config.toml")).map_err(io::Error::other)
+            codex_tui::Editor::with_release_updates(home.join("config.toml"), self.updates.clone())
+                .map_err(io::Error::other)
         });
         let editor = match editor {
             Ok(editor) => editor,

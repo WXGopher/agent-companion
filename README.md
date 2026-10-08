@@ -10,6 +10,7 @@
 
 - **会话接力 CLI**：`acomp resume` 按当前目录搜索 Codex / Dodex 原会话，保留历史和设置，并选择本次使用的额度账号。通过 `agent-companion install-cli` 安装命令；macOS 需要受支持的原生 CLI 与登录方式，Windows 暂不支持恢复启动。详见[接力用法与兼容性](docs/RESUME.md)。
 - **更新提示**：主动打开面板时在后台检查 GitHub 正式发布版本，每 24 小时最多检查一次，重启后仍复用本地记录。发现更高版本时显示版本号，点击“查看更新”打开对应 Release 页面。检查不阻塞面板；断网或检查失败时静默保留已有提示，不自动下载或安装。
+  设置窗口提供 **检查更新** 按钮，可立即检查最新正式版。按钮下方显示检查进度和结果；发现新版后，点击 **查看 GitHub Release** 打开发布页面。检查失败可重试；不会自动下载、安装或打开浏览器。
 - **任务状态**：查看运行中、待处理和已结束的任务，点击返回对应对话或终端。
 - **Tasks / Usage**：切换任务与用量，查看剩余额度、重置时间、累计 Token 和最近七个有记录日期的用量柱状图。
 - **状态栏定制**：选择 Codex CLI 状态栏组件，实时预览并保存。
@@ -87,6 +88,7 @@ See Codex tasks and subscription usage in the Windows taskbar or macOS menu bar.
 
 - **Session handoff CLI**: `acomp resume` finds original Codex / Dodex sessions in the current directory, preserves history and settings, and lets you choose the quota account for this run. Install commands with `agent-companion install-cli`. macOS requires a supported native CLI and login method; Windows resume launch is not supported. See [resume usage and compatibility](docs/RESUME.md).
 - **Update notifications**: opening the panel checks for a newer stable GitHub release in the background, at most once every 24 hours across restarts. Updates link to their release page; the app does not download or install them automatically.
+  Use **检查更新** (Check for updates) in Settings to check the latest stable release immediately. Progress and results appear below the button. When a newer version is available, select **查看 GitHub Release** to open its release page. Failed checks can be retried; checking never automatically downloads, installs, or opens the browser.
 - **Tasks**: track running, waiting and finished tasks, then jump back to the conversation or terminal.
 - **Tasks / Usage**: switch to remaining quota, reset times, lifetime tokens and a bar chart of the last seven reported days.
 - **Status bar editor**: choose Codex CLI components with a live preview.
