@@ -17,8 +17,7 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 $suffix = [Guid]::NewGuid().ToString('N').Substring(0, 8)
 $name = 'tui-' + $suffix
 $root = Join-Path $env:SystemDrive ('t' + $suffix)
-$taskName = 'AgentCompanion-TuiAcceptance-' + $suffix
-$registered = $false
+$brokerPid = $null
 $created = $null
 $result = 1
 try {
@@ -72,33 +71,55 @@ try {
 exit $result
 '@, [Text.UTF8Encoding]::new($false))
     $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    # GitHub's outer runner job prevents native daemon breakaway even with a
-    # different logon. Task Scheduler supplies an independent standard-user
-    # host; neither production launch flags nor the runner's job are changed.
-    $action = New-ScheduledTaskAction -Execute $shell -WorkingDirectory $root -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$bootstrap`""
-    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 25) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-    Register-ScheduledTask -TaskName $taskName -Action $action -Settings $settings -User "$env:COMPUTERNAME\$name" -Password ([Net.NetworkCredential]::new('', $secret).Password) -RunLevel Limited | Out-Null
-    $registered = $true
-    Start-ScheduledTask -TaskName $taskName
+    # Win32_Process.Create supplies a host outside GitHub's restrictive job.
+    # The broker immediately switches to the disposable standard account.
+    # Production launch flags and the runner's job are never changed.
+    # https://learn.microsoft.com/windows/win32/procthread/job-objects
+    $credentialPath = Join-Path $root 'credential.json'
+    [IO.File]::WriteAllText($credentialPath, (@{user = "$env:COMPUTERNAME\$name"; password = ([Net.NetworkCredential]::new('', $secret).Password)} | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+    $broker = Join-Path $root 'broker.ps1'
+    [IO.File]::WriteAllText($broker, @'
+$ErrorActionPreference = 'Stop'
+try {
+    $credentialPath = Join-Path $PSScriptRoot 'credential.json'
+    $login = Get-Content $credentialPath -Raw | ConvertFrom-Json
+    Remove-Item $credentialPath
+    $credential = [PSCredential]::new($login.user, (ConvertTo-SecureString $login.password -AsPlainText -Force))
+    $login = $null
+    $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $bootstrap = Join-Path $PSScriptRoot 'run.ps1'
+    # -Wait would add another restrictive process-tree job. Wait on this
+    # single handle; the fixture owns native daemon cleanup.
+    $child = Start-Process -FilePath $shell -Credential $credential -LoadUserProfile -WorkingDirectory $PSScriptRoot -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', "`"$bootstrap`"") -PassThru
+    $null = $child.Handle
+    $child.WaitForExit()
+} catch {
+    $_ | Out-File -FilePath (Join-Path $PSScriptRoot 'acceptance.log') -Encoding utf8 -Append
+    $pending = Join-Path $PSScriptRoot 'result.pending'
+    [IO.File]::WriteAllText($pending, '1')
+    [IO.File]::Move($pending, (Join-Path $PSScriptRoot 'result'))
+    exit 1
+}
+'@, [Text.UTF8Encoding]::new($false))
+    $spawn = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine = "`"$shell`" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$broker`""; CurrentDirectory = $root}
+    if ($spawn.ReturnValue -ne 0) { throw "Cannot start native acceptance host: $($spawn.ReturnValue)" }
+    $brokerPid = $spawn.ProcessId
     $started = [DateTime]::UtcNow
     $deadline = $started.AddMinutes(25)
     $nextProgress = $started.AddSeconds(15)
     $resultPath = Join-Path $root 'result'
     while (-not (Test-Path $resultPath)) {
         if ([DateTime]::UtcNow -gt $nextProgress) {
-            $task = Get-ScheduledTask -TaskName $taskName
-            $info = Get-ScheduledTaskInfo -TaskName $taskName
-            Write-Output "Native acceptance task: $($task.State); Task Scheduler result: $($info.LastTaskResult)"
+            Write-Output 'Native acceptance host is running under the disposable standard account.'
             $log = Join-Path $root 'acceptance.log'
             if (Test-Path $log) { Get-Content $log -Tail 5 -ErrorAction SilentlyContinue }
-            if ($task.State -ne 'Running' -and -not (Test-Path $resultPath)) {
-                throw "Native acceptance host did not remain running; Task Scheduler result: $($info.LastTaskResult)"
+            if (-not (Get-Process -Id $brokerPid -ErrorAction SilentlyContinue) -and -not (Test-Path $resultPath)) {
+                throw 'Native acceptance host exited without reporting a result.'
             }
             $nextProgress = [DateTime]::UtcNow.AddSeconds(30)
         }
         if ([DateTime]::UtcNow -gt $deadline) {
-            $info = Get-ScheduledTaskInfo -TaskName $taskName
-            throw "Native acceptance timed out; Task Scheduler result: $($info.LastTaskResult)"
+            throw 'Native acceptance timed out.'
         }
         Start-Sleep -Milliseconds 500
     }
@@ -108,9 +129,11 @@ exit $result
 } finally {
     $log = Join-Path $root 'acceptance.log'
     if (Test-Path $log) { Write-Output ([IO.File]::ReadAllText($log)) }
-    if ($registered) {
-        Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+    if ($brokerPid) {
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId=$brokerPid"
+        if ($process.Name -eq 'powershell.exe' -and $process.CommandLine.Contains($broker)) {
+            Stop-Process -Id $brokerPid -Force -ErrorAction SilentlyContinue
+        }
     }
     if ($created) {
         # Reap only processes belonging to the account created by this run.
