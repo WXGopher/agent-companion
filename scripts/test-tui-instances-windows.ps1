@@ -55,12 +55,16 @@ try {
     $launch = Get-Content (Join-Path $PSScriptRoot 'launch.json') -Raw | ConvertFrom-Json
     $env:Path = $launch.path
     $env:PYTHONIOENCODING = 'utf-8'
-    [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
     $env:TEMP = Join-Path $PSScriptRoot 'tmp'
     $env:TMP = $env:TEMP
     New-Item -ItemType Directory -Path $env:TEMP | Out-Null
-    & $launch.python $launch.script --companion $launch.companion --work-dir $launch.fixture *>&1 | Out-File -FilePath $log -Encoding utf8
-    $result = $LASTEXITCODE
+    # Avoid PS5 turning native stderr into a terminating NativeCommandError.
+    # Capture raw UTF-8 streams and wait on this process, without -Wait's job.
+    $child = Start-Process -FilePath $launch.python -WorkingDirectory $PSScriptRoot -ArgumentList @("`"$($launch.script)`"", '--companion', "`"$($launch.companion)`"", '--work-dir', "`"$($launch.fixture)`"") -RedirectStandardOutput (Join-Path $PSScriptRoot 'stdout.log') -RedirectStandardError (Join-Path $PSScriptRoot 'stderr.log') -PassThru
+    $null = $child.Handle
+    $child.WaitForExit()
+    $result = $child.ExitCode
+    if ($null -eq $result) { throw 'Native Python acceptance did not report an exit code.' }
 } catch {
     $_ | Out-File -FilePath $log -Encoding utf8 -Append
 } finally {
@@ -111,7 +115,7 @@ try {
     while (-not (Test-Path $resultPath)) {
         if ([DateTime]::UtcNow -gt $nextProgress) {
             Write-Output 'Native acceptance host is running under the disposable standard account.'
-            $log = Join-Path $root 'acceptance.log'
+            $log = Join-Path $root 'stdout.log'
             if (Test-Path $log) { Get-Content $log -Tail 5 -ErrorAction SilentlyContinue }
             if (-not (Get-Process -Id $brokerPid -ErrorAction SilentlyContinue) -and -not (Test-Path $resultPath)) {
                 throw 'Native acceptance host exited without reporting a result.'
@@ -127,8 +131,10 @@ try {
     if ($reported -notmatch '^-?\d+$') { throw 'Native acceptance did not publish an exit code.' }
     $result = [int]$reported
 } finally {
-    $log = Join-Path $root 'acceptance.log'
-    if (Test-Path $log) { Write-Output ([IO.File]::ReadAllText($log)) }
+    foreach ($name in @('stdout.log', 'stderr.log', 'acceptance.log')) {
+        $log = Join-Path $root $name
+        if (Test-Path $log) { Write-Output ([IO.File]::ReadAllText($log)) }
+    }
     if ($brokerPid) {
         $process = Get-CimInstance Win32_Process -Filter "ProcessId=$brokerPid"
         if ($process.Name -eq 'powershell.exe' -and $process.CommandLine.Contains($broker)) {
