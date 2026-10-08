@@ -190,7 +190,8 @@ class Acceptance:
 
     def configure(self, home, account):
         config = home / "config.toml"
-        original = config.read_text() if config.exists() else ""
+        original = "\n".join(line for line in config.read_text().splitlines()
+                              if line.startswith(("cli_auth_credentials_store", "sqlite_home", "log_dir"))) if config.exists() else ""
         config.write_text(original + "\n" + "\n".join([
             'model="gpt-5.2"', 'model_provider="fixture"',
             'approval_policy="never"', 'sandbox_mode="read-only"',
@@ -256,7 +257,9 @@ class Acceptance:
                                   https_proxy="http://127.0.0.1:1", HTTP_PROXY="http://127.0.0.1:1",
                                   http_proxy="http://127.0.0.1:1")
         failed = run([self.dodex, "update"], failed_environment, self.project, timeout=90, check=False)
-        assert failed.returncode != 0, "The offline updater unexpectedly succeeded"
+        # Some vendor releases report the curl failure but return 0 from their
+        # curl|sh bootstrap. The public entry must preserve that native status.
+        assert failed.returncode != 0 or "curl:" in failed.stderr, "The offline updater unexpectedly succeeded"
         assert self.execute(self.dodex, ["--version"]).stdout == selected_version
         self.execute(self.companion, ["dodex-tui", "--repair"], timeout=900)
         assert tree_hash(self.primary / "packages/standalone/releases") == before_packages
@@ -266,7 +269,8 @@ class Acceptance:
         self.configure(self.secondary, "selected-account")
         # The primary keeps its own file credentials and configured database.
         primary_config = self.primary / "config.toml"
-        primary_config.write_text('cli_auth_credentials_store="file"\n' + primary_config.read_text())
+        if "cli_auth_credentials_store" not in primary_config.read_text():
+            primary_config.write_text('cli_auth_credentials_store="file"\n' + primary_config.read_text())
         for entry in [self.codex, self.dodex]:
             self.execute(entry, ["login", "status"])
             result = self.execute(entry, ["app-server", "daemon", "start"], timeout=900)
@@ -281,14 +285,21 @@ class Acceptance:
             assert account + "@example.invalid" in json.dumps(result)
         thread = secondary.call(3, "thread/start", {"cwd": str(self.project), "model": "gpt-5.2",
                                 "modelProvider": "fixture", "approvalPolicy": "never", "sandbox": "read-only"})["thread"]["id"]
+        # Native start persists its rollout on the first turn. Hold that turn
+        # at the loopback server while a second terminal resumes the live task.
+        self.server.hold_next_response = True
+        secondary.call(10, "turn/start", {"threadId": thread,
+                                          "input": [{"type": "text", "text": "first-fixture-marker"}]})
+        assert self.server.started.wait(25), "Native turn did not reach the loopback server"
         other_terminal.call(4, "thread/resume", {"threadId": thread})
         assert thread not in json.dumps(primary.call(5, "thread/list", {}))
         print("Checking queue, multi-terminal resume and per-instance daemon stop", flush=True)
         self.execute(self.dodex, ["queue", "--thread", thread, "--message", "queued-fixture-marker"])
+        self.server.release.set()
         end = time.monotonic() + 30
-        while not self.server.model_requests() and time.monotonic() < end:
+        while len(self.server.model_requests()) < 2 and time.monotonic() < end:
             time.sleep(0.1)
-        assert self.server.model_requests(), "Native queue never reached the loopback server"
+        assert len(self.server.model_requests()) >= 2, "Native queue never reached the loopback server"
         requests = self.server.model_requests()
         assert all({k.lower(): v for k, v in request[1].items()}["chatgpt-account-id"] == "selected-account" for request in requests)
         for client in [secondary, other_terminal]:

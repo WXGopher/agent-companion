@@ -8,8 +8,10 @@ use agent_companion_core::{
     },
 };
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
+use std::fs::File;
 use std::{
-    fs::{self, File},
+    fs,
     io::{self, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -350,6 +352,7 @@ pub(crate) fn command_is_owned(path: &Path, bytes: &[u8]) -> bool {
         })
         .unwrap_or(false)
 }
+#[cfg(not(windows))]
 fn packaged_entry_matches(entry: &Path) -> io::Result<bool> {
     let source =
         std::env::current_exe()?.with_file_name(if cfg!(windows) { "dodex.exe" } else { "dodex" });
@@ -828,7 +831,7 @@ fn copy_tree(source: &Path, destination: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn install_native(instance: &InstanceConfig) -> io::Result<()> {
+pub(crate) fn install_native(instance: &InstanceConfig) -> io::Result<()> {
     install_native_release(instance, None)
 }
 fn install_native_release(instance: &InstanceConfig, release: Option<&str>) -> io::Result<()> {

@@ -377,9 +377,9 @@ impl InstanceDashboards {
         let database = agent_companion_core::dashboard::database_home(home);
         let found = crate::macos_primary_app::discover(system_applications, user_applications);
         let app = found.map(|found| found.app);
-        let executable = crate::tui_deployment::primary_instance()
-            .filter(|instance| instance.codex_home == home)
-            .and_then(|instance| instance.runtime().ok());
+        let tui = crate::tui_deployment::primary_instance()
+            .filter(|instance| instance.codex_home == home);
+        let executable = tui.as_ref().and_then(|instance| instance.runtime().ok());
         (
             Instance {
                 instance_id: "codex".into(),
@@ -387,6 +387,12 @@ impl InstanceDashboards {
                 codex_home: home.to_string_lossy().into_owned(),
                 app_path: app.map(|path| path.to_string_lossy().into_owned()),
                 executable_path: executable.map(|path| path.to_string_lossy().into_owned()),
+                command_path: tui
+                    .filter(|instance| {
+                        instance.command_path.is_file()
+                            && agent_companion_core::tui_instance::is_native(&instance.command_path)
+                    })
+                    .map(|instance| instance.command_path.to_string_lossy().into_owned()),
                 database_path: Some(database.to_string_lossy().into_owned()),
             },
             database,
@@ -419,6 +425,7 @@ impl InstanceDashboards {
             codex_home: config.codex_home.to_string_lossy().into_owned(),
             app_path: None,
             executable_path: Some(config.cli_path.to_string_lossy().into_owned()),
+            command_path: Some(config.command_path.to_string_lossy().into_owned()),
             database_path: Some(config.database_dir.to_string_lossy().into_owned()),
         }
     }
@@ -439,6 +446,7 @@ impl InstanceDashboards {
             // become a launch, database scan or account-query route.
             app_path: None,
             executable_path: None,
+            command_path: None,
             database_path: None,
         })
     }

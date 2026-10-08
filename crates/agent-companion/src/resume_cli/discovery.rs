@@ -21,6 +21,17 @@ pub fn discover() -> io::Result<Discovery> {
             executable: instance.cli_path,
             database_home: Some(instance.database_dir),
         });
+    } else {
+        // Local history remains inspectable when its native program is missing.
+        // Keep the original identity; launch validation reports the missing TUI.
+        let home = layout.user_home.join(".codex");
+        environments.push(Environment {
+            id: "codex".into(),
+            label: "Codex".into(),
+            executable: agent_companion_core::tui_instance::standalone_entry(&home),
+            database_home: Some(agent_companion_core::dashboard::database_home(&home)),
+            home,
+        });
     }
     match layout.read() {
         Ok(Some(record)) => {

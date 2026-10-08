@@ -103,6 +103,14 @@ fn selected(action: Action) -> Option<InstanceConfig> {
 }
 
 fn update_instance(instance: &InstanceConfig) -> Result<(), String> {
+    if instance.channel == Channel::Standalone {
+        // Download first, then run the official installer. Unlike a vendor
+        // curl|sh bootstrap, a failed download cannot masquerade as success.
+        tui_deployment::install_native(instance).map_err(|e| e.to_string())?;
+        tui_deployment::verify_package(instance).map_err(|e| e.to_string())?;
+        version(instance)?;
+        return Ok(());
+    }
     let mut command = if instance.channel == Channel::Homebrew {
         let mut command = Command::new(
             instance
@@ -118,10 +126,6 @@ fn update_instance(instance: &InstanceConfig) -> Result<(), String> {
         instance.environment(&mut command);
         command.args(["install", "--global", "@openai/codex@latest"]);
         command
-    } else if instance.channel == Channel::Standalone {
-        instance
-            .command(&["update".into()])
-            .map_err(|e| e.to_string())?
     } else {
         return Err("请通过 Codex 原安装渠道更新；Companion 不会自动迁移安装方式。".into());
     };

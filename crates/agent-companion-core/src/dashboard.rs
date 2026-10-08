@@ -33,6 +33,7 @@ pub struct Instance {
     pub codex_home: String,
     pub app_path: Option<String>,
     pub executable_path: Option<String>,
+    pub command_path: Option<String>,
     pub database_path: Option<String>,
 }
 

@@ -25,6 +25,16 @@ fn fixture() -> (tempfile::TempDir, Layout, Registry) {
     let layout = Layout { user_home, support };
     let home = layout.support.join("DodexApp/codex-home");
     let instance = layout.secondary(home.clone(), home.join("sqlite"), home.join("log"));
+    fs::create_dir_all(&home).unwrap();
+    fs::write(
+        home.join("config.toml"),
+        format!(
+            "cli_auth_credentials_store=\"file\"\nsqlite_home={}\nlog_dir={}\n",
+            serde_json::to_string(&instance.database_dir.to_string_lossy()).unwrap(),
+            serde_json::to_string(&instance.log_dir.to_string_lossy()).unwrap()
+        ),
+    )
+    .unwrap();
     let package = home.join("packages/standalone/releases/1.0.0");
     fs::create_dir_all(package.join("bin")).unwrap();
     let native = package.join("bin").join(tui_instance::executable_name());
@@ -189,6 +199,11 @@ fn terminal_arguments_identity_stdin_cwd_exit_and_dynamic_versions_are_native() 
         }
         assert!(text.contains("CODEX_SANDBOX=inherited-containment"));
         assert!(text.contains("HTTPS_PROXY=http://synthetic-proxy.invalid"));
+        assert_eq!(
+            text.lines().next().unwrap(),
+            format!("args={arguments:?}"),
+            "Native daemon attachment must not see synthetic overrides"
+        );
         assert_eq!(
             text.contains("--no-daemon"),
             arguments.contains(&"--no-daemon")

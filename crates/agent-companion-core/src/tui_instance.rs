@@ -337,24 +337,19 @@ impl InstanceConfig {
             crate::install::profile_sync::validate_isolated_overrides(
                 &crate::codex_args::config_overrides(arguments),
             )?;
+            crate::install::profile_sync::validate_isolated_profile(
+                &self.codex_home,
+                &crate::install::profile_sync::IsolationPaths {
+                    sqlite_home: self.database_dir.clone(),
+                    log_dir: self.log_dir.clone(),
+                },
+            )?;
         }
         let mut command = Command::new(self.runtime()?);
         self.environment(&mut command);
-        if self.id == "dodex" {
-            for setting in [
-                "cli_auth_credentials_store=\"file\"".to_owned(),
-                format!(
-                    "sqlite_home={}",
-                    serde_json::to_string(&self.database_dir.to_string_lossy())?
-                ),
-                format!(
-                    "log_dir={}",
-                    serde_json::to_string(&self.log_dir.to_string_lossy())?
-                ),
-            ] {
-                command.arg("-c").arg(setting);
-            }
-        }
+        // Isolation lives in the validated user config, never synthetic -c
+        // arguments: any CLI override can make native Codex select its embedded
+        // server and prevents queue/agents from joining the shared daemon.
         command.args(arguments);
         if crate::codex_args::is_update_command(arguments) {
             // The installer finds its own visible codex and sees PATH already

@@ -87,6 +87,15 @@ enum TerminalJump {
     }
 
     static func resumeCommand(_ task: CodexTask, instance: CodexInstance) -> String? {
+        if task.sourceID == instance.id, UUID(uuidString: task.conversationID) != nil,
+           let entry = instance.commandPath, entry.hasPrefix("/"),
+           FileManager.default.isExecutableFile(atPath: entry) {
+            func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+            return quote(entry) + " resume " + quote(task.conversationID)
+        }
+        // A secondary task always uses its fixed identity entry. Raw -c
+        // overrides would make native Codex detach from the shared daemon.
+        guard instance.id == "codex" else { return nil }
         let runtime = instance.executablePath
         guard task.sourceID == instance.id, UUID(uuidString: task.conversationID) != nil,
               instance.codexHome.hasPrefix("/"),
