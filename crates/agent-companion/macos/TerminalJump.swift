@@ -87,16 +87,7 @@ enum TerminalJump {
     }
 
     static func resumeCommand(_ task: CodexTask, instance: CodexInstance) -> String? {
-        if task.sourceID == instance.id, UUID(uuidString: task.conversationID) != nil,
-           let entry = instance.commandPath, entry.hasPrefix("/"),
-           FileManager.default.isExecutableFile(atPath: entry) {
-            func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-            return quote(entry) + " resume " + quote(task.conversationID)
-        }
-        // A secondary task always uses its fixed identity entry. Raw -c
-        // overrides would make native Codex detach from the shared daemon.
-        guard instance.id == "codex" else { return nil }
-        let runtime = instance.executablePath
+        let runtime = instance.commandPath ?? (instance.id == "codex" ? instance.executablePath : nil)
         guard task.sourceID == instance.id, UUID(uuidString: task.conversationID) != nil,
               instance.codexHome.hasPrefix("/"),
               let executable = runtime, executable.hasPrefix("/"),
@@ -107,11 +98,12 @@ enum TerminalJump {
         // terminal's containment, proxies and certificates. A system zsh child
         // provides parameter-name enumeration without reading user shell rc files
         // or changing the caller's environment. Values stay out of the command.
-        let standalone = executable.contains("/packages/standalone/")
+        let standalone = (instance.executablePath ?? executable).contains("/packages/standalone/")
         let install = (instance.id == "dodex" || standalone) ? instance.codexHome + "/native-bin" : URL(fileURLWithPath: executable).deletingLastPathComponent().path
         let script = InstanceEnvironment.shellCleanup
             + "; export CODEX_HOME=\"$1\" CODEX_SQLITE_HOME=\"$2\" CODEX_INSTALL_DIR=\"$3\"; shift 3; exec \"$@\""
-        let arguments = InstanceEnvironment.configurationArguments(instance.usageSource) + ["resume", task.conversationID]
+        // Synthetic -c arguments detach native clients from their daemon.
+        let arguments = ["resume", task.conversationID]
         return "/bin/zsh -f -c " + quote(script) + " companion-resume "
             + ([instance.codexHome, database, install, executable] + arguments).map(quote).joined(separator: " ")
     }

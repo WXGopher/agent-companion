@@ -108,6 +108,7 @@ enum SubscriptionUsageTests {
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
         var commandInstance = secondary
         commandInstance.executablePath = executable.path
+        commandInstance.commandPath = executable.path
         commandInstance.codexHome = directory.appendingPathComponent("home '").path
         commandInstance.databasePath = directory.appendingPathComponent("sqlite '").path
         let command = TerminalJump.resumeCommand(secondTask, instance: commandInstance)!
@@ -139,8 +140,7 @@ enum SubscriptionUsageTests {
         precondition(result["clean"] as? Bool == true)
         precondition(result["home"] as? String == commandInstance.codexHome && result["database"] as? String == commandInstance.databasePath)
         let arguments = result["args"] as! [String]
-        precondition(arguments.suffix(2) == ["resume", id] && arguments.contains("cli_auth_credentials_store=\"file\""))
-        precondition(arguments.contains { $0.hasPrefix("sqlite_home=") })
+        precondition(arguments == ["resume", id], "Navigation injected overrides that disable native daemon attachment")
         let environment = result["environment"] as! [String: String]
         for (key, value) in kept {
             precondition(environment[key] == value, "Resume removed or changed inherited containment/proxy setting: \(key)")
