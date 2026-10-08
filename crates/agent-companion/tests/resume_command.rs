@@ -56,12 +56,25 @@ impl Fixture {
         rollout(&dodex_home, &project, DODEX_SESSION, "second environment");
         let record = support.join("tui-instances.json");
         fs::create_dir_all(record.parent().unwrap()).unwrap();
-        let layout = agent_companion_core::tui_instance::Layout { user_home: home.clone(), support: support.clone() };
-        fs::write(&record, serde_json::to_vec(&agent_companion_core::tui_instance::Registry {
-            schema: agent_companion_core::tui_instance::SCHEMA, primary: None,
-            dodex: layout.secondary(dodex_home.clone(), support.join("Dodex/sqlite"), dodex_home.join("log")),
-            dodex_enabled: false,
-        }).unwrap()).unwrap();
+        let layout = agent_companion_core::tui_instance::Layout {
+            user_home: home.clone(),
+            support: support.clone(),
+        };
+        fs::write(
+            &record,
+            serde_json::to_vec(&agent_companion_core::tui_instance::Registry {
+                schema: agent_companion_core::tui_instance::SCHEMA,
+                primary: None,
+                dodex: layout.secondary(
+                    dodex_home.clone(),
+                    support.join("Dodex/sqlite"),
+                    dodex_home.join("log"),
+                ),
+                dodex_enabled: false,
+            })
+            .unwrap(),
+        )
+        .unwrap();
         Self {
             _temporary: temporary,
             home,
