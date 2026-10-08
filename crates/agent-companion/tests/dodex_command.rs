@@ -199,7 +199,15 @@ fn terminal_arguments_identity_stdin_cwd_exit_and_dynamic_versions_are_native() 
             registry.dodex.install_dir.display()
         )));
         assert!(text.contains("stdin=native input"));
-        assert!(text.contains(&format!("cwd={}", layout.user_home.display())));
+        let native_cwd = text
+            .lines()
+            .find_map(|line| line.strip_prefix("cwd="))
+            .unwrap();
+        assert_eq!(
+            Path::new(native_cwd).canonicalize().unwrap(),
+            layout.user_home.canonicalize().unwrap(),
+            "The native working directory must remain the original directory"
+        );
         for name in [
             "CODEX_CLI_PATH",
             "CODEX_THREAD_ID",
@@ -282,9 +290,19 @@ fn terminal_arguments_identity_stdin_cwd_exit_and_dynamic_versions_are_native() 
         .output()
         .unwrap();
     assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).contains(
-        &format!("runtime={}", second.join("bin").join(tui_instance::executable_name()).display())
-    ));
+    let text = String::from_utf8(output.stdout).unwrap();
+    let runtime = text
+        .lines()
+        .find_map(|line| line.strip_prefix("runtime="))
+        .unwrap();
+    assert_eq!(
+        Path::new(runtime).canonicalize().unwrap(),
+        second
+            .join("bin")
+            .join(tui_instance::executable_name())
+            .canonicalize()
+            .unwrap()
+    );
     assert_eq!(fs::read(layout.record()).unwrap(), record_before);
 }
 
