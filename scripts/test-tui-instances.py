@@ -56,16 +56,19 @@ class SocketClient:
     def __init__(self, path):
         self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.socket.settimeout(25)
-        # The native transport supports a socket in a deep canonical home;
-        # Python's sockaddr construction has a shorter absolute-string limit.
-        # Resolve the existing endpoint relative to its directory for this
-        # test client. This does not change any Codex environment or routing.
-        current = Path.cwd()
-        try:
-            os.chdir(Path(path).parent)
-            self.socket.connect(Path(path).name)
-        finally:
-            os.chdir(current)
+        if os.name == "nt":
+            # Windows already validates its short canonical native address.
+            self.socket.connect(str(path))
+        else:
+            # Native macOS supports deep homes. Python's sockaddr construction
+            # has a shorter absolute-string limit; use the existing endpoint
+            # relative to its directory without changing any Codex routing.
+            current = Path.cwd()
+            try:
+                os.chdir(Path(path).parent)
+                self.socket.connect(Path(path).name)
+            finally:
+                os.chdir(current)
         nonce = base64.b64encode(os.urandom(16))
         self.socket.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: " + nonce + b"\r\n\r\n")
         header = bytearray()
