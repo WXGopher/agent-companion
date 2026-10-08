@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Native standard-user CI host; never used by the installed launchers.
 
-Called through WMI outside the runner job on an ephemeral GitHub Windows VM.
+Called as a temporary test service on an ephemeral GitHub Windows VM.
 Load the disposable user's profile explicitly and launch with its primary token,
 avoiding the process-tree job used by the Secondary Logon/profile launcher.
 """
@@ -70,10 +70,6 @@ def start(root):
     security.LookupPrivilegeValueW.argtypes = [w.LPCWSTR, w.LPCWSTR, ctypes.POINTER(Luid)]
     security.AdjustTokenPrivileges.argtypes = [w.HANDLE, w.BOOL, ctypes.POINTER(Privilege),
                                              w.DWORD, ctypes.c_void_p, ctypes.c_void_p]
-    security.CreateProcessWithTokenW.argtypes = [w.HANDLE, w.DWORD, w.LPCWSTR, w.LPWSTR,
-                                                w.DWORD, ctypes.c_void_p, w.LPCWSTR,
-                                                ctypes.POINTER(Startup), ctypes.POINTER(Process)]
-    security.CreateProcessWithTokenW.restype = w.BOOL
 
     def checked(value, operation):
         if not value:
@@ -139,26 +135,13 @@ def start(root):
         command = ctypes.create_unicode_buffer(command_text)
         # Token-based creation does not inherit the caller's file handles.
         # Give the test an ordinary console and let it open its own logs.
-        startup = Startup(size=ctypes.sizeof(Startup))
+        startup = Startup(size=ctypes.sizeof(Startup), desktop="")
         # The caller owns no restrictive job. Explicit breakaway also makes
         # any unexpected CI host containment fail before package downloads.
         flags = subprocess.CREATE_BREAKAWAY_FROM_JOB | subprocess.CREATE_NEW_CONSOLE | 0x400
         created = security.CreateProcessAsUserW(token, launch["python"], command,
                                                  None, None, False, flags, block, str(root),
                                                  ctypes.byref(startup), ctypes.byref(child))
-        if not created and ctypes.get_last_error() == 1314:
-            # Admin tokens may have impersonation but no assign-primary
-            # right. The profile is already loaded; do not request the
-            # Secondary Logon profile-lifetime job here.
-            print("Using CreateProcessWithTokenW with the already-loaded profile", flush=True)
-            # This API creates a new console by default. DETACHED_PROCESS
-            # cannot be combined with that flag. The caller is outside a
-            # job already; use the documented ordinary console creation.
-            assert not in_job.value, "Native token host must be outside a process job"
-            command = ctypes.create_unicode_buffer(command_text)
-            created = security.CreateProcessWithTokenW(token, 0, launch["python"], command,
-                                                      0x400 | subprocess.CREATE_NEW_CONSOLE, block, str(root),
-                                                      ctypes.byref(startup), ctypes.byref(child))
         checked(created, "Create standard-user process")
         checked(kernel.IsProcessInJob(child.process, None, ctypes.byref(in_job)), "IsProcessInJob(standard user)")
         print(f"Native standard-user process in job: {bool(in_job.value)}", flush=True)
@@ -196,5 +179,62 @@ def main():
     return result
 
 
+def service():
+    """SCM owns the test host, outside GitHub/Secondary Logon process jobs."""
+    if os.name != "nt":
+        raise RuntimeError("The disposable service is Windows-only")
+    api = ctypes.WinDLL("advapi32", use_last_error=True)
+    handler_type = ctypes.WINFUNCTYPE(None, w.DWORD)
+    main_type = ctypes.WINFUNCTYPE(None, w.DWORD, ctypes.POINTER(w.LPWSTR))
+
+    class Status(ctypes.Structure):
+        _fields_ = [("kind", w.DWORD), ("state", w.DWORD), ("controls", w.DWORD),
+                    ("win32_exit", w.DWORD), ("specific_exit", w.DWORD),
+                    ("checkpoint", w.DWORD), ("wait", w.DWORD)]
+
+    class Entry(ctypes.Structure):
+        _fields_ = [("name", w.LPWSTR), ("main", main_type)]
+
+    api.RegisterServiceCtrlHandlerW.argtypes = [w.LPCWSTR, handler_type]
+    api.RegisterServiceCtrlHandlerW.restype = w.HANDLE
+    api.SetServiceStatus.argtypes = [w.HANDLE, ctypes.POINTER(Status)]
+    api.StartServiceCtrlDispatcherW.argtypes = [ctypes.POINTER(Entry)]
+    handle = w.HANDLE()
+    state = Status(kind=0x10, state=2, wait=30_000)
+    name = sys.argv[sys.argv.index("--service") + 1]
+
+    @handler_type
+    def control(code):
+        # The supervisor reaps only fixture-owned processes on failure. Report
+        # a stop and let it finish that cleanup rather than touching other users.
+        if code in (1, 5):
+            state.state = 3
+        api.SetServiceStatus(handle, ctypes.byref(state))
+
+    @main_type
+    def run_service(count, arguments):
+        nonlocal handle
+        handle = api.RegisterServiceCtrlHandlerW(name, control)
+        if not handle:
+            return
+        state.state = 4
+        state.controls = 1
+        state.wait = 0
+        api.SetServiceStatus(handle, ctypes.byref(state))
+        result = main()
+        state.state = 1
+        state.controls = 0
+        state.win32_exit = 1066 if result else 0
+        state.specific_exit = result
+        api.SetServiceStatus(handle, ctypes.byref(state))
+
+    entries = (Entry * 2)(Entry(name, run_service), Entry(None, main_type()))
+    if not api.StartServiceCtrlDispatcherW(entries):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    if "--service" in sys.argv:
+        service()
+    else:
+        sys.exit(main())

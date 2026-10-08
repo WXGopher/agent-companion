@@ -20,6 +20,7 @@ $suffix = [Guid]::NewGuid().ToString('N').Substring(0, 8)
 $name = 'tui-' + $suffix
 $root = Join-Path $env:SystemDrive ('t' + $suffix)
 $brokerPid = $null
+$serviceName = $null
 $created = $null
 $result = 1
 try {
@@ -48,16 +49,16 @@ try {
         path = $env:Path
     }
     [IO.File]::WriteAllText((Join-Path $root 'launch.json'), ($launch | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
-    # WMI places the host outside GitHub's process-tree job. The host loads
-    # the disposable profile and uses the standard user's primary token;
-    # credential-based profile launching would add a Secondary Logon job.
+    # An owned temporary service supplies a host outside GitHub's and
+    # Secondary Logon's jobs, with the OS right to use the standard token.
     $credentialPath = Join-Path $root 'credential.json'
     [IO.File]::WriteAllText($credentialPath, (@{user = "$env:COMPUTERNAME\$name"; password = ([Net.NetworkCredential]::new('', $secret).Password)} | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
     $broker = Join-Path $PSScriptRoot 'test-tui-windows-host.py'
-    $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{CreateFlags = [uint32]0x01000000}
-    $spawn = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine = "`"$($launch.python)`" `"$broker`" `"$root`""; CurrentDirectory = $root; ProcessStartupInformation = $startup}
-    if ($spawn.ReturnValue -ne 0) { throw "Cannot start native acceptance host: $($spawn.ReturnValue)" }
-    $brokerPid = $spawn.ProcessId
+    $serviceName = 'ac-tui-' + $suffix
+    $binary = "`"$($launch.python)`" `"$broker`" `"$root`" --service $serviceName"
+    New-Service -Name $serviceName -BinaryPathName $binary -StartupType Manual -Description 'Disposable native TUI acceptance host' | Out-Null
+    Start-Service -Name $serviceName
+    $brokerPid = (Get-CimInstance Win32_Service -Filter "Name='$serviceName'").ProcessId
     $started = [DateTime]::UtcNow
     $deadline = if ($PreflightOnly) { $started.AddMinutes(1) } else { $started.AddMinutes(25) }
     $nextProgress = $started.AddSeconds(15)
@@ -66,6 +67,8 @@ try {
         if ([DateTime]::UtcNow -gt $nextProgress) {
             Write-Output 'Native acceptance host is running under the disposable standard account.'
             $log = Join-Path $root 'stdout.log'
+            if (Test-Path $log) { Get-Content $log -Tail 5 -ErrorAction SilentlyContinue }
+            $log = Join-Path $root 'acceptance.log'
             if (Test-Path $log) { Get-Content $log -Tail 5 -ErrorAction SilentlyContinue }
             if (-not (Get-Process -Id $brokerPid -ErrorAction SilentlyContinue) -and -not (Test-Path $resultPath)) {
                 throw 'Native acceptance host exited without reporting a result.'
@@ -90,6 +93,10 @@ try {
         if ($process.Name -like 'python*.exe' -and $process.CommandLine.Contains($broker) -and $process.CommandLine.Contains($root)) {
             Stop-Process -Id $brokerPid -Force -ErrorAction SilentlyContinue
         }
+    }
+    if ($serviceName) {
+        Stop-Service -Name $serviceName -ErrorAction SilentlyContinue
+        & sc.exe delete $serviceName | Out-Null
     }
     if ($created) {
         # Reap only processes belonging to the account created by this run.
