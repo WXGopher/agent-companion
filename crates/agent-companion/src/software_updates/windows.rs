@@ -264,37 +264,6 @@ mod tests {
         assert!(error.contains("standalone"));
     }
 
-    /// Read-only acceptance of the production settings snapshot. No login,
-    /// maintenance action, installer, updater or account data is accessed here.
-    #[test]
-    #[ignore = "requires the local signed Codex App and a deployed Dodex installation"]
-    fn live_windows_local_version_snapshot() {
-        let instance = maintenance::verified_instance().unwrap().unwrap();
-        let manifest = instance
-            .codex_home
-            .parent()
-            .unwrap()
-            .join("companion-deployment.json");
-        let original = std::fs::read(&manifest).unwrap();
-        let system = System::new().unwrap();
-        let mut snapshot = crate::software_updates::Snapshot::default();
-        crate::software_updates::execute(&system, None, |change| change(&mut snapshot)).unwrap();
-        assert!(!snapshot.error, "local version comparison failed");
-        for row in &snapshot.rows {
-            eprintln!(
-                "{}: current={}, target={}, message={}",
-                row.name, row.current, row.target, row.message
-            );
-            assert!(!row.error);
-            assert_ne!(row.current, "未安装 / 未接入");
-            assert_ne!(row.target, "缺少本机参考");
-        }
-        if system.bundled_tui.get() {
-            assert!(snapshot.rows[0].message.contains("App 内置 CLI"));
-        }
-        assert_eq!(std::fs::read(&manifest).unwrap(), original);
-    }
-
     #[test]
     fn store_upgrade_is_exact_noninteractive_and_never_forces_or_accepts_agreements() {
         let args = winget_arguments();

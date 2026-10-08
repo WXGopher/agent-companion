@@ -683,7 +683,7 @@ mod tests {
     fn local_tui_reference_uses_verified_standalone_before_signed_desktop_fallback() {
         let standalone = TuiPackage {
             package: PathBuf::from(r"C:\fixture\standalone\release"),
-            version: "0.161.0".into(),
+            version: "1.2.2".into(),
             hash: "verified".into(),
         };
         let reference = tui_reference(Ok(Some(standalone.clone())), || {
@@ -722,7 +722,7 @@ mod tests {
         assert!(layout_needs_sync(&manifest, false, true));
         let desktop = DesktopPackage {
             package: root.join("desktop-packages/release-fixture/runtime"),
-            version: "155.0.8059.27".into(),
+            version: "1.2.3.4".into(),
             archive_hash: "verified".into(),
         };
         set_desktop_package(&mut manifest, desktop.clone());
@@ -730,9 +730,9 @@ mod tests {
         assert!(valid_manifest_layout(root, &manifest));
         assert!(layout_needs_sync(&manifest, false, true));
         let before = serde_json::to_vec(&manifest).unwrap();
-        assert!(bind_bundled_tui(&mut manifest, "0.162.0-alpha.2", "0.161.0").is_err());
+        assert!(bind_bundled_tui(&mut manifest, "1.2.3-alpha.2", "1.2.2").is_err());
         assert_eq!(serde_json::to_vec(&manifest).unwrap(), before);
-        bind_bundled_tui(&mut manifest, "0.162.0-alpha.2", "0.162.0-alpha.2").unwrap();
+        bind_bundled_tui(&mut manifest, "1.2.3-alpha.2", "1.2.3-alpha.2").unwrap();
         assert_eq!(
             manifest.instance.cli_path,
             desktop.package.join("resources/codex.exe")
@@ -749,19 +749,19 @@ mod tests {
             isolated.desktop_user_data
         );
         let bound = serde_json::to_vec(&manifest).unwrap();
-        bind_bundled_tui(&mut manifest, "0.162.0-alpha.2", "0.162.0-alpha.2").unwrap();
+        bind_bundled_tui(&mut manifest, "1.2.3-alpha.2", "1.2.3-alpha.2").unwrap();
         assert_eq!(serde_json::to_vec(&manifest).unwrap(), bound);
     }
 
     #[test]
     fn app_bundles_cannot_downgrade_a_newer_tui_including_prereleases() {
-        require_no_tui_downgrade("0.162.0-alpha.1", "0.162.0-alpha.2").unwrap();
-        require_no_tui_downgrade("0.162.0-alpha.2", "0.162.0-alpha.2").unwrap();
+        require_no_tui_downgrade("1.2.3-alpha.1", "1.2.3-alpha.2").unwrap();
+        require_no_tui_downgrade("1.2.3-alpha.2", "1.2.3-alpha.2").unwrap();
         for (current, target) in [
-            ("0.162.0-alpha.2", "0.162.0-alpha.1"),
-            ("0.162.0", "0.162.0-alpha.2"),
-            ("0.163.0-alpha.1", "0.162.0"),
-            ("unknown", "0.162.0"),
+            ("1.2.3-alpha.2", "1.2.3-alpha.1"),
+            ("1.2.3", "1.2.3-alpha.2"),
+            ("1.3.0-alpha.1", "1.2.3"),
+            ("unknown", "1.2.3"),
         ] {
             assert!(require_no_tui_downgrade(current, target).is_err());
         }

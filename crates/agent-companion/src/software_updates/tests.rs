@@ -215,7 +215,7 @@ fn matching_bundled_alpha_reference_is_visible_and_alignment_is_a_read_only_noop
         ..Fake::default()
     };
     for index in [0, 1] {
-        fake.versions.borrow_mut()[index] = Some(cli("0.162.0-alpha.2"));
+        fake.versions.borrow_mut()[index] = Some(cli("1.2.3-alpha.2"));
     }
     fake.versions.borrow_mut()[3] = Some(app("100"));
     let original = fake.versions.borrow().clone();
@@ -223,8 +223,8 @@ fn matching_bundled_alpha_reference_is_visible_and_alignment_is_a_read_only_noop
         let (snapshot, result) = run(&fake, action);
         result.unwrap();
         for row in &snapshot.rows[..2] {
-            assert_eq!(row.current, "0.162.0-alpha.2");
-            assert_eq!(row.target, "0.162.0-alpha.2");
+            assert_eq!(row.current, "1.2.3-alpha.2");
+            assert_eq!(row.target, "1.2.3-alpha.2");
             assert!(!row.error);
         }
         assert!(snapshot.rows[0].message.contains("App 内置 CLI"));

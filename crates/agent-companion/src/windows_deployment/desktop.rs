@@ -89,6 +89,30 @@ fn shortcut_target(link: &IShellLinkW) -> windows::core::Result<PathBuf> {
     Ok(PathBuf::from(text(&buffer)))
 }
 
+fn same_shortcut_path(left: &Path, right: &Path) -> bool {
+    // The shell expands 8.3 parent names when saving/loading a link. Comparing
+    // only its spelling rejects the same file when TEMP or a user directory
+    // has a short name. Keep this equivalence local to shell-link inspection:
+    // redirects and hard links remain invalid deployment paths.
+    if no_redirects(left).is_err() || no_redirects(right).is_err() {
+        return false;
+    }
+    if launcher::same_path(left, right) {
+        return true;
+    }
+    let resolved = |path: &Path| {
+        path.canonicalize().ok().or_else(|| {
+            // An owned shortcut may outlive its launcher. Resolve its existing
+            // parent so repair still works without accepting unknown parents.
+            Some(path.parent()?.canonicalize().ok()?.join(path.file_name()?))
+        })
+    };
+    match (resolved(left), resolved(right)) {
+        (Some(left), Some(right)) => launcher::same_path(&left, &right),
+        _ => false,
+    }
+}
+
 fn check_shortcut(path: &Path, target: &Path) -> Result<(), String> {
     no_redirects(path)?;
     if !path.exists() {
@@ -102,7 +126,8 @@ fn check_shortcut(path: &Path, target: &Path) -> Result<(), String> {
     };
     let link = load_shortcut(path).map_err(|_| conflict())?;
     let existing = shortcut_target(&link).map_err(|_| conflict())?;
-    if launcher::same_path(&existing, target) {
+    no_redirects(&existing).map_err(|_| conflict())?;
+    if same_shortcut_path(&existing, target) {
         return Ok(());
     }
     // Repair a shortcut to a managed older CLI copy, but never claim another
