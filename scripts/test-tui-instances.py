@@ -32,7 +32,7 @@ def load_contracts():
 
 def run(command, environment, cwd, timeout=180, check=True):
     result = subprocess.run([str(arg) for arg in command], env=environment, cwd=cwd,
-                            capture_output=True, text=True, timeout=timeout)
+                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     if check and result.returncode:
         raise AssertionError(f"{Path(command[0]).name} {command[1:]} failed: "
                              + result.stderr[-5000:] + result.stdout[-2000:])
@@ -262,10 +262,15 @@ class Acceptance:
         failed_environment = dict(self.environment, HTTPS_PROXY="http://127.0.0.1:1",
                                   https_proxy="http://127.0.0.1:1", HTTP_PROXY="http://127.0.0.1:1",
                                   http_proxy="http://127.0.0.1:1")
+        if os.name == "nt":
+            # Windows PowerShell 5 uses its system proxy, not these HTTP_PROXY
+            # variables. Exercise a real bootstrap failure without modifying
+            # the user's proxy or firewall: native update cannot find its shell.
+            failed_environment["PATH"] = str(self.root / "missing-updater-tools")
         failed = run([self.dodex, "update"], failed_environment, self.project, timeout=90, check=False)
         # Some vendor releases report the curl failure but return 0 from their
         # curl|sh bootstrap. The public entry must preserve that native status.
-        assert failed.returncode != 0 or "curl:" in failed.stderr, "The offline updater unexpectedly succeeded"
+        assert failed.returncode != 0 or (os.name != "nt" and "curl:" in failed.stderr), "The unavailable updater unexpectedly succeeded"
         assert self.execute(self.dodex, ["--version"]).stdout == selected_version
         self.execute(self.companion, ["dodex-tui", "--repair"], timeout=900)
         assert tree_hash(self.primary / "packages/standalone/releases") == before_packages
