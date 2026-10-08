@@ -24,6 +24,8 @@
 
 界面保留同一账号最后成功的额度读数，查询失败后以 `*` 标注；尚无读数时显示 `—`。换号或登出会清除旧读数，额度重置时间到达后等待下次查询，不推算剩余额度。Usage 显示最后成功时间、失败原因和历史 Token 统计。详见[用量查询行为](docs/USAGE_QUERIES.md)。
 
+**v0.3.29 Windows 修复**：同一数据库目录的普通路径与 Windows 扩展路径不再被误判为不同来源，恢复受影响的 Codex / Dodex 额度查询；保留原有账号隔离核验，无需因这一问题重新登录。
+
 ### 安装
 
 **Windows x86_64**
@@ -52,7 +54,9 @@ dodex -C C:\projects\demo
 
 **开始菜单打开 App，终端打开 CLI**：部署后，在开始菜单搜索 **Dodex** 打开桌面 App；快捷方式指向 `%LOCALAPPDATA%\AgentCompanion\Dodex\dodex.exe`（GUI 启动器，无控制台窗口）。PATH 命令目录中的另一份 `dodex.exe` 专供 PowerShell、cmd 和 Git Bash，运行 `dodex` 仍会打开第二个 profile 的 Codex CLI。两个入口使用同一份第二实例配置。任务栏或托盘菜单的 **打开 Dodex**、`.\agent-companion.exe dodex` 也可打开桌面版。
 
-已有环境从新版程序运行 `.\agent-companion.exe dodex --deploy` 即可补齐或修复开始菜单入口和 CLI 命令，无需重新登录。两个启动器均安装在固定位置，不依赖下载或构建目录。未安装官方 standalone TUI 时，Dodex 使用已验签的桌面包内置 CLI；不会改动现有 npm Codex 命令。独立 TUI 版本对齐和更新仍需受支持的完整 standalone 包。
+已有环境从新版程序运行 `.\agent-companion.exe dodex --deploy` 即可补齐或修复开始菜单入口和 CLI 命令，无需重新登录。两个启动器均安装在固定位置，不依赖下载或构建目录。未安装官方 standalone TUI 时，Dodex 使用已验签的桌面包内置 CLI；不会改动现有 npm Codex 命令。版本页会标明 App 内置 CLI，并支持对齐这一来源。独立 TUI 的官方稳定版更新仍需受支持的完整 standalone 包。
+
+本轮已完成 Windows 本机部署、启动与双账号额度查询验证；最终任务栏和面板外观仍待目视验收，详见 [Windows 验证记录](docs/WINDOWS_VALIDATION.md)。
 
 命令优先放入当前 PATH 已包含的用户命令目录，现有终端即可发现；Git Bash 如缓存了旧命令，可运行 `hash -r`。若需要新增 PATH 目录，设置会提示完全退出并重开终端。已有无关的同名命令不会被覆盖，设置会指出冲突路径。
 
@@ -97,6 +101,8 @@ Subscription usage reuses the existing ChatGPT login from your local Codex TUI o
 
 The interface retains the last successful quota reading for the same account, marking it with `*` after a failed query and showing `—` before a reading is available. Switching accounts or signing out clears old readings. After a quota reset time, the app waits for the next query instead of estimating the remaining allowance. Usage shows the last success time, failure reason and historical token totals. See [usage query behavior](docs/USAGE_QUERIES.md).
 
+**v0.3.29 Windows fix:** ordinary and extended Windows paths to the same database directory are no longer treated as different sources, restoring affected Codex / Dodex quota queries. Account-isolation checks remain in place; this issue does not require signing in again.
+
 ### Install
 
 **Windows x86_64**
@@ -125,7 +131,9 @@ Regular arguments pass directly to Codex CLI, including `--help` and `--version`
 
 **Start menu opens the app; terminals open the CLI.** After deployment, search for **Dodex** in Start to open the desktop app. Its shortcut targets `%LOCALAPPDATA%\AgentCompanion\Dodex\dodex.exe`, a GUI launcher with no console window. The separate `dodex.exe` in the PATH command directory remains a console launcher: `dodex` in PowerShell, cmd or Git Bash starts Codex CLI with the second profile. Both entry points share that second-instance profile. **打开 Dodex** in the taskbar or tray menu and `.\agent-companion.exe dodex` also open the desktop app.
 
-For an existing environment, run `.\agent-companion.exe dodex --deploy` from the new build to add or repair the Start menu entry and CLI command without signing in again. Both launchers are installed in stable locations and do not depend on the download or build directory. When the official standalone TUI is absent, Dodex uses the verified desktop package's bundled CLI and leaves an existing npm Codex command unchanged. Separate TUI version alignment and updates still require a supported complete standalone package.
+For an existing environment, run `.\agent-companion.exe dodex --deploy` from the new build to add or repair the Start menu entry and CLI command without signing in again. Both launchers are installed in stable locations and do not depend on the download or build directory. When the official standalone TUI is absent, Dodex uses the verified desktop package's bundled CLI and leaves an existing npm Codex command unchanged. The version panel labels the app-bundled CLI and supports alignment from this source. Updating a standalone TUI from the official stable channel still requires a supported complete standalone package.
+
+Local Windows deployment, startup and both accounts' quota queries have been verified for this update. The final taskbar and panel appearance still need a visual check; see the [Windows validation record](docs/WINDOWS_VALIDATION.md).
 
 The command is installed in a supported user command directory already on the current PATH when possible, so existing terminals can find it. Run `hash -r` in Git Bash if it cached an older command. If a new PATH entry is needed, Settings asks you to fully quit and reopen the terminal. Unrelated commands with the same name are preserved, and Settings reports the conflicting path.
 
