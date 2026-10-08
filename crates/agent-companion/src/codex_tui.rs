@@ -222,6 +222,8 @@ impl InstanceDrafts {
 
 pub(crate) struct Editor {
     pub window: ui::CodexTuiWindow,
+    #[cfg(any(target_os = "macos", windows))]
+    release_check: RefCell<Option<crate::settings_update::Controller>>,
     drafts: RefCell<InstanceDrafts>,
     left_rows: Rc<VecModel<ui::StatusComponent>>,
     right_rows: Rc<VecModel<ui::StatusComponent>>,
@@ -252,7 +254,30 @@ pub(crate) struct Editor {
 
 impl Editor {
     pub fn new(path: PathBuf) -> Result<Rc<Self>, slint::PlatformError> {
-        Self::new_inner(path, true)
+        let editor = Self::new_inner(path, true)?;
+        #[cfg(any(target_os = "macos", windows))]
+        editor.bind_release_updates(crate::update_service::UpdateService::new());
+        Ok(editor)
+    }
+
+    /// Windows embeds Settings in the tray process, so both windows share one
+    /// request gate and the same release result.
+    #[cfg(windows)]
+    pub(crate) fn with_release_updates(
+        path: PathBuf,
+        service: crate::update_service::UpdateService,
+    ) -> Result<Rc<Self>, slint::PlatformError> {
+        let editor = Self::new_inner(path, true)?;
+        editor.bind_release_updates(service);
+        Ok(editor)
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
+    fn bind_release_updates(&self, service: crate::update_service::UpdateService) {
+        *self.release_check.borrow_mut() = Some(crate::settings_update::Controller::bind(
+            &self.window,
+            service,
+        ));
     }
 
     /// Native UI verification supplies synthetic configuration and deployment
@@ -341,6 +366,8 @@ impl Editor {
     fn new_inner(path: PathBuf, _live_deployment: bool) -> Result<Rc<Self>, slint::PlatformError> {
         let editor = Rc::new(Self {
             window: ui::CodexTuiWindow::new()?,
+            #[cfg(any(target_os = "macos", windows))]
+            release_check: RefCell::new(None),
             drafts: RefCell::new(InstanceDrafts::new(path)),
             left_rows: Rc::new(VecModel::default()),
             right_rows: Rc::new(VecModel::default()),

@@ -35,6 +35,8 @@ mod out;
 mod profile_validation;
 mod resume_cli;
 #[cfg(any(target_os = "macos", windows))]
+mod settings_update;
+#[cfg(any(target_os = "macos", windows))]
 mod software_updates;
 #[cfg(any(target_os = "macos", windows))]
 mod update_service;

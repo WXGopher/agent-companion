@@ -142,8 +142,8 @@ export component TaskbarBar inherits Window {
     background: transparent;
 
     in property <[UsageChip]> chips;
-    in property <string> usage-tooltip;
-    Tooltip { text: @markdown("\{root.usage-tooltip}"); }
+    // Rust provides a native tooltip: winit renders Slint tooltips inside this
+    // tiny window, which clips them before they can extend over the desktop.
     // Set from the taskbar's own shape, not from a docking constant.
     in property <bool> vertical: true;
     // Gray-to-status-colour blend, 0..1; see `TaskbarView::breathe`.

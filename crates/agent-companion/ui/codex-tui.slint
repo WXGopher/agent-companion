@@ -7,6 +7,7 @@ import { StatusComponent } from "status-component.slint";
 import { ProfileSyncFile } from "profile-sync.slint";
 import { SoftwareVersion } from "software-updates.slint";
 import { DualSettings } from "dual-settings.slint";
+import { UpdateCheck } from "update-check.slint";
 export { SoftwareVersion }
 export { StatusComponent }
 export { ProfileSyncFile }
@@ -54,6 +55,13 @@ export component CodexTuiWindow inherits Window {
 
     // The outcome of the last button press, shown along the bottom.
     in property <string> app-message;
+
+    in property <bool> update-checking;
+    in property <bool> update-failed;
+    in property <bool> update-available;
+    in property <string> update-message;
+    callback check-updates();
+    callback view-release();
 
     callback install();
     callback uninstall();
@@ -124,6 +132,12 @@ export component CodexTuiWindow inherits Window {
     callback restore-defaults();
 
     if root.macos-preferences: MacSettings {
+        update-checking: root.update-checking;
+        update-failed: root.update-failed;
+        update-available: root.update-available;
+        update-message: root.update-message;
+        check-updates => { root.check-updates(); }
+        view-release => { root.view-release(); }
         software-versions: root.software-versions;
         software-busy: root.software-busy;
         software-error: root.software-error;
@@ -193,6 +207,14 @@ export component CodexTuiWindow inherits Window {
             HorizontalLayout {
                 Text { text: root.windows-preferences ? "Settings" : "Codex CLI"; font-size: 24px; font-weight: 700; color: SettingsColors.text; }
                 Text { text: "Agent Companion"; font-size: 12px; color: SettingsColors.secondary; horizontal-alignment: right; vertical-alignment: center; }
+            }
+            if root.windows-preferences: UpdateCheck {
+                checking: root.update-checking;
+                failed: root.update-failed;
+                available: root.update-available;
+                message: root.update-message;
+                check => { root.check-updates(); }
+                view-release => { root.view-release(); }
             }
             if root.windows-preferences: HorizontalLayout {
                 height: 36px;

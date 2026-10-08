@@ -29,6 +29,8 @@ pub mod target;
 pub use readout::prepare as prepare_readout;
 mod preview;
 pub use preview::set_no_activate;
+mod tooltip;
+pub use tooltip::UsageTooltip;
 
 #[cfg(test)]
 mod readout_tests;

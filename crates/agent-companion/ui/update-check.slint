@@ -1,0 +1,43 @@
+import { SettingsButton, SettingsColors } from "settings-common.slint";
+
+// Shared by every Windows/macOS settings page. Feedback stays below its
+// initiating button until another check, so a release link never times out.
+export component UpdateCheck inherits VerticalLayout {
+    in property <bool> checking;
+    in property <bool> failed;
+    in property <bool> available;
+    in property <string> message;
+    callback check();
+    callback view-release();
+
+    spacing: 8px;
+    vertical-stretch: 0;
+    HorizontalLayout {
+        SettingsButton {
+            text: root.checking ? "检查中…" : "检查更新";
+            enabled: !root.checking;
+            clicked => { root.check(); }
+        }
+        Rectangle { horizontal-stretch: 1; }
+    }
+    if root.message != "": Rectangle {
+        background: root.failed ? SettingsColors.error.with-alpha(0.08) : SettingsColors.selected;
+        border-radius: 8px;
+        HorizontalLayout {
+            padding: 10px;
+            spacing: 12px;
+            Text {
+                text: root.message;
+                color: root.failed ? SettingsColors.error : SettingsColors.text;
+                font-size: 12px;
+                wrap: word-wrap;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            if root.available: SettingsButton {
+                text: "查看 GitHub Release";
+                clicked => { root.view-release(); }
+            }
+        }
+    }
+}
