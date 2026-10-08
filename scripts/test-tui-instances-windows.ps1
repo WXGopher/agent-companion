@@ -78,7 +78,8 @@ exit $result
     # Win32_Process.Create supplies a host outside GitHub's restrictive job.
     # The broker immediately switches to the disposable standard account.
     # Production launch flags and the runner's job are never changed.
-    # https://learn.microsoft.com/windows/win32/procthread/job-objects
+    # WMI applies its own quota job unless the startup requests breakaway.
+    # https://learn.microsoft.com/windows/win32/cimwin32prov/create-method-in-class-win32-process
     $credentialPath = Join-Path $root 'credential.json'
     [IO.File]::WriteAllText($credentialPath, (@{user = "$env:COMPUTERNAME\$name"; password = ([Net.NetworkCredential]::new('', $secret).Password)} | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
     $broker = Join-Path $root 'broker.ps1'
@@ -105,7 +106,8 @@ try {
     exit 1
 }
 '@, [Text.UTF8Encoding]::new($false))
-    $spawn = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine = "`"$shell`" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$broker`""; CurrentDirectory = $root}
+    $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{CreateFlags = [uint32]0x01000000}
+    $spawn = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine = "`"$shell`" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$broker`""; CurrentDirectory = $root; ProcessStartupInformation = $startup}
     if ($spawn.ReturnValue -ne 0) { throw "Cannot start native acceptance host: $($spawn.ReturnValue)" }
     $brokerPid = $spawn.ProcessId
     $started = [DateTime]::UtcNow

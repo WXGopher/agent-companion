@@ -368,6 +368,13 @@ def main():
     args = parser.parse_args()
     saved_path = None
     if os.name == "nt":
+        # Native daemon lifecycle needs a host that permits detached children.
+        # Check the disposable host before spending time downloading packages.
+        probe = subprocess.run([sys.executable, "-c", "pass"],
+                               creationflags=subprocess.CREATE_BREAKAWAY_FROM_JOB | subprocess.DETACHED_PROCESS,
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=15)
+        assert probe.returncode == 0, "The Windows native acceptance host cannot launch detached children"
         saved_path = subprocess.check_output(["powershell.exe", "-NoProfile", "-Command",
             "[Environment]::GetEnvironmentVariable('Path','User')"], text=True).rstrip("\r\n")
     try:
