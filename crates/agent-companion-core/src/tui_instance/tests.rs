@@ -52,3 +52,16 @@ fn overlapping_or_redirected_storage_is_rejected_without_rewriting_it() {
         .join("Applications/Dodex.app/Contents/Resources/codex");
     assert!(layout.validate(&registry).is_err());
 }
+
+#[cfg(windows)]
+#[test]
+fn windows_verbatim_paths_and_case_cannot_escape_instance_containment() {
+    assert!(path_within(
+        Path::new(r"\\?\C:\Users\Example\.codex\packages\bin\codex.exe"),
+        Path::new(r"c:\users\example\.codex")
+    ));
+    assert!(!path_within(
+        Path::new(r"C:\Users\Example\.codex-secondary\bin\codex.exe"),
+        Path::new(r"c:\users\example\.codex")
+    ));
+}

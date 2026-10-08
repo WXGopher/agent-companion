@@ -514,6 +514,26 @@ mod tests {
         (root, environment, session)
     }
     #[test]
+    fn explicit_managed_policy_fixture_still_blocks_account_handoff() {
+        let (_root, source, session) =
+            fixture("model='fixture'\ncli_auth_credentials_store='file'\n");
+        let system = source.home.join("fixture-system-policy");
+        fs::create_dir_all(&system).unwrap();
+        fs::write(
+            system.join("requirements.toml"),
+            "approval_policy='never'\n",
+        )
+        .unwrap();
+        let settings = inspect_with_policy(&source, &session, None, &system, &[]).unwrap();
+        assert!(
+            settings
+                .blockers
+                .iter()
+                .any(|message| message.contains("托管策略"))
+        );
+    }
+
+    #[test]
     fn disabled_mcp_relative_command_and_cwd_do_not_block_resume() {
         for syntax in [
             "[mcp_servers.computer-use]\nenabled=false\ncommand='./Missing App/Contents/MacOS/server'\ncwd='.'\n",

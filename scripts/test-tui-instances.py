@@ -55,7 +55,16 @@ class SocketClient:
     def __init__(self, path):
         self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.socket.settimeout(25)
-        self.socket.connect(path)
+        # The native transport supports a socket in a deep canonical home;
+        # Python's sockaddr construction has a shorter absolute-string limit.
+        # Resolve the existing endpoint relative to its directory for this
+        # test client. This does not change any Codex environment or routing.
+        current = Path.cwd()
+        try:
+            os.chdir(Path(path).parent)
+            self.socket.connect(Path(path).name)
+        finally:
+            os.chdir(current)
         nonce = base64.b64encode(os.urandom(16))
         self.socket.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: " + nonce + b"\r\n\r\n")
         header = bytearray()
@@ -239,6 +248,9 @@ class Acceptance:
         assert self.execute(self.codex, ["--version"]).stdout.strip() == primary_version
         assert tree_hash(self.primary / "packages/standalone/releases") == before_packages
         assert not (self.secondary / "auth.json").exists()
+        # A current release can correctly return success from its update cache
+        # while offline. Select the cached older release to require an update.
+        self.install(self.secondary, "0.160.0")
         selected_version = self.execute(self.dodex, ["--version"]).stdout
         failed_environment = dict(self.environment, HTTPS_PROXY="http://127.0.0.1:1",
                                   https_proxy="http://127.0.0.1:1", HTTP_PROXY="http://127.0.0.1:1",
@@ -248,6 +260,7 @@ class Acceptance:
         assert self.execute(self.dodex, ["--version"]).stdout == selected_version
         self.execute(self.companion, ["dodex-tui", "--repair"], timeout=900)
         assert tree_hash(self.primary / "packages/standalone/releases") == before_packages
+        self.execute(self.dodex, ["update"], timeout=900)
         print("Starting two native daemons with two synthetic accounts", flush=True)
         self.configure(self.primary, "source-account")
         self.configure(self.secondary, "selected-account")
