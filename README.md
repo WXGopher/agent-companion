@@ -55,7 +55,7 @@ dodex -C C:\projects\demo
 dodex update
 ```
 
-不要求安装桌面 App。公开命令位于 `%LOCALAPPDATA%\AgentCompanion\bin`；新终端会读取新增的用户 PATH，旧版已登记的 Dodex 命令同时迁移。Dodex 默认账号目录是 `%LOCALAPPDATA%\AgentCompanion\Dodex\codex-home`，已有副账号目录继续原地使用。参数、工作目录、终端交互和退出码由所安装的原生 Codex 处理。`dodex update` 仅更新 Dodex；`dodex app` 明确提示桌面双开已移除。[双开说明](docs/macos-dual-instance.md)
+不要求安装桌面 App。公开命令位于 `%LOCALAPPDATA%\AgentCompanion\bin`；新终端会读取新增的用户 PATH，旧版已登记的 Dodex 命令同时迁移。Dodex 默认账号目录是 `%USERPROFILE%\.dodex`，采用短路径以支持原生后台连接；已有副账号目录继续原地使用。参数、工作目录、终端交互和退出码由所安装的原生 Codex 处理。`dodex update` 仅更新 Dodex；`dodex app` 明确提示桌面双开已移除。[双开说明](docs/macos-dual-instance.md)
 
 **macOS 14+ · Apple Silicon**
 

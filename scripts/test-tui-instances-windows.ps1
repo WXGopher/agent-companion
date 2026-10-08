@@ -50,6 +50,7 @@ if ([Security.Principal.WindowsPrincipal]::new($identity).IsInRole([Security.Pri
 }
 $launch = Get-Content (Join-Path $PSScriptRoot 'launch.json') -Raw | ConvertFrom-Json
 $env:Path = $launch.path
+$env:PYTHONIOENCODING = 'utf-8'
 $env:TEMP = Join-Path $PSScriptRoot 'tmp'
 $env:TMP = $env:TEMP
 New-Item -ItemType Directory -Path $env:TEMP | Out-Null

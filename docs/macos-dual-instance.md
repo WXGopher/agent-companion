@@ -34,7 +34,7 @@ installations and monitoring preferences. It lives under:
 | Platform | Companion records | Default Dodex home | Public entries |
 | --- | --- | --- | --- |
 | macOS | `~/Library/Application Support/AgentCompanion` | `…/AgentCompanion/Dodex/codex-home` | `~/.local/bin/codex`, `~/.local/bin/dodex` |
-| Windows | `%LOCALAPPDATA%\AgentCompanion` | `…\AgentCompanion\Dodex\codex-home` | `…\AgentCompanion\bin\codex.exe`, `dodex.exe` |
+| Windows | `%LOCALAPPDATA%\AgentCompanion` | `%USERPROFILE%\.dodex` | `…\AgentCompanion\bin\codex.exe`, `dodex.exe` |
 
 Existing secondary home, SQLite and log paths are retained during migration,
 including `DodexApp/codex-home` and logs in `DodexApp/desktop-data/logs` on macOS.
@@ -107,6 +107,13 @@ On macOS, after verifying the new TUI and original history, run the repository's
 records original and Trash paths and the original Dock configuration. It never
 deletes `DodexApp`, account databases, session files or logs, and never terminates
 TUI processes. Restore the bundle from the recorded Trash path if necessary.
+
+Windows uses a short default home because native daemon attachment is limited
+to a canonical AF_UNIX address of 108 bytes including its terminator. The
+vendor requires a non-elevated terminal with detached-process support; a long
+legacy home can use the native embedded-server fallback. Migration preserves
+that original home and does not inject a different background mode.
+[Native daemon contract](https://github.com/openai/codex/blob/rust-v0.161.0/codex-rs/app-server-daemon/README.md)
 
 ## Manual configuration and instruction sync
 

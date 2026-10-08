@@ -556,7 +556,13 @@ fn legacy_entry(layout: &Layout, entry: &Path, bytes: &[u8]) -> io::Result<bool>
 /// Old desktop fields are read solely to locate already existing storage and a
 /// complete standalone package. App-bundled CLI paths are never adopted.
 fn migrate_legacy(layout: &Layout) -> io::Result<(Registry, Option<PathBuf>)> {
-    let mut home = layout.support.join("Dodex/codex-home");
+    // Windows AF_UNIX addresses include the canonical home. Keep new homes
+    // short enough for native daemon attachment; legacy storage stays in place.
+    let mut home = if cfg!(windows) {
+        layout.user_home.join(".dodex")
+    } else {
+        layout.support.join("Dodex/codex-home")
+    };
     let mut database = home.join("sqlite");
     let mut logs = home.join("log");
     let mut source = None;

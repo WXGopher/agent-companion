@@ -267,7 +267,7 @@ class Acceptance:
         if os.name == "nt":
             # Windows PowerShell 5 uses its system proxy, not these HTTP_PROXY
             # variables. Exercise a real bootstrap failure without modifying
-            # the user's proxy or firewall: native update cannot find its shell.
+            # the user's proxy or firewall: native update lacks bootstrap tools.
             failed_environment["PATH"] = str(self.root / "missing-updater-tools")
             # A cached package can be selected without invoking extraction.
             # Remove only the unselected latest package in this disposable home.
