@@ -1,5 +1,33 @@
 # Windows validation
 
+## v0.3.30 local verification (2026-10-08)
+
+This revision adds a manual release check to Settings and repairs clipped or stale taskbar quota tooltips. The results below describe separate local validation stages before the release version bump; overlapping test groups are not added together or presented as a unique total for the release tag.
+
+### Automated checks
+
+| Change | Completed checks |
+| --- | --- |
+| Manual release check in Settings | 617 tests passed, with 10 ignored. Coverage includes manual request state, stable-release selection, retry after failure, and the explicit release-link action. |
+| Taskbar tooltip repair | App tests: 129 passed, 7 ignored. The targeted native tooltip group passed 3 tests, and the Windows indicator group passed 9 tests. One normally ignored hidden Slint test was explicitly run and passed. These groups overlap with the app tests. |
+| Static and build checks | Formatting, workspace Clippy with warnings denied, and the Windows release build passed for the local changes. |
+
+The new tests use synthetic release responses, text and quota values, test-owned windows, and synthetic desktop rectangles. They do not depend on a developer's accounts, credentials, installation paths or real quota readings. Rendered screenshots use synthetic fixtures and are not evidence of acceptance on a user's desktop.
+
+Regression coverage includes the following behavior:
+
+- Settings provide a shared **检查更新** button. Its persistent feedback below the button distinguishes checking, a newer stable release, an up-to-date version and failure. Failed checks can be retried.
+- Checking performs no download or installation and does not open a browser. Only the explicit **查看 GitHub Release** action opens the validated release URL; a stale action cannot open a release from an earlier request during a newer check.
+- Windows taskbar quota details use a separate, nonactivating native popup. The text is no longer clipped to the embedded readout's small drawing surface, and tooltip text and fonts remain valid through updates and destruction.
+- Clicking the readout to open the panel immediately hides its tooltip. The tooltip remains suppressed until the pointer leaves the readout; an open panel also suppresses it.
+- Native wrapping and placement were tested at 100%, 125%, 150% and 200% scale, at all four edges and in a narrow synthetic work area. Replacing or destroying the readout invalidates the old tooltip.
+
+### Deployment and manual acceptance
+
+The local development build was installed and Companion restarted after each change. These checks preceded the release version bump and do not validate downloaded release archives. Final user confirmation of the repaired interaction has not been received.
+
+The real Settings update flow, taskbar hover/click behavior, and mixed-DPI or multiple-monitor desktop placement remain manual acceptance scenarios. Synthetic render checks and off-screen native tests do not substitute for those interactions. macOS native CI and release-archive checks are pending at this documentation stage and are recorded separately in the final PR, Release workflow and published release notes.
+
 ## v0.3.29 local verification (2026-10-08)
 
 This record separates automated checks and authorized local deployment from visual desktop acceptance. It covers the Windows dual-instance changes and the subsequent quota-query repair included in v0.3.29.

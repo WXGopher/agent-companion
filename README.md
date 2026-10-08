@@ -25,7 +25,7 @@
 
 界面保留同一账号最后成功的额度读数，查询失败后以 `*` 标注；尚无读数时显示 `—`。换号或登出会清除旧读数，额度重置时间到达后等待下次查询，不推算剩余额度。Usage 显示最后成功时间、失败原因和历史 Token 统计。详见[用量查询行为](docs/USAGE_QUERIES.md)。
 
-**v0.3.29 Windows 修复**：同一数据库目录的普通路径与 Windows 扩展路径不再被误判为不同来源，恢复受影响的 Codex / Dodex 额度查询；保留原有账号隔离核验，无需因这一问题重新登录。
+**v0.3.30 Windows 修复**：任务栏额度悬浮提示使用独立窗口，避免被小尺寸任务栏入口裁切；点击打开面板后立即隐藏，鼠标离开入口前不会再次弹出。提示按显示缩放调整，并保持在屏幕工作区内。详见[版本说明](docs/releases/v0.3.30.md)及 [Windows 验证记录](docs/WINDOWS_VALIDATION.md)。
 
 ### 安装
 
@@ -103,7 +103,7 @@ Subscription usage reuses the existing ChatGPT login from your local Codex TUI o
 
 The interface retains the last successful quota reading for the same account, marking it with `*` after a failed query and showing `—` before a reading is available. Switching accounts or signing out clears old readings. After a quota reset time, the app waits for the next query instead of estimating the remaining allowance. Usage shows the last success time, failure reason and historical token totals. See [usage query behavior](docs/USAGE_QUERIES.md).
 
-**v0.3.29 Windows fix:** ordinary and extended Windows paths to the same database directory are no longer treated as different sources, restoring affected Codex / Dodex quota queries. Account-isolation checks remain in place; this issue does not require signing in again.
+**v0.3.30 Windows fix:** taskbar quota tooltips use a separate window so the small taskbar entry cannot clip them. Opening the panel immediately dismisses the tooltip and prevents it from reappearing until the pointer leaves the entry. Tooltips follow display scaling and stay inside the screen's work area. See the [release notes](docs/releases/v0.3.30.md) and [Windows validation record](docs/WINDOWS_VALIDATION.md).
 
 ### Install
 
