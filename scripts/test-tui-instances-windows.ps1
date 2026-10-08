@@ -65,7 +65,9 @@ try {
 } catch {
     $_ | Out-File -FilePath $log -Encoding utf8 -Append
 } finally {
-    [IO.File]::WriteAllText((Join-Path $PSScriptRoot 'result'), [string]$result)
+    $pending = Join-Path $PSScriptRoot 'result.pending'
+    [IO.File]::WriteAllText($pending, [string]$result)
+    [IO.File]::Move($pending, (Join-Path $PSScriptRoot 'result'))
 }
 exit $result
 '@, [Text.UTF8Encoding]::new($false))
@@ -78,16 +80,31 @@ exit $result
     Register-ScheduledTask -TaskName $taskName -Action $action -Settings $settings -User "$env:COMPUTERNAME\$name" -Password ([Net.NetworkCredential]::new('', $secret).Password) -RunLevel Limited | Out-Null
     $registered = $true
     Start-ScheduledTask -TaskName $taskName
-    $deadline = [DateTime]::UtcNow.AddMinutes(25)
+    $started = [DateTime]::UtcNow
+    $deadline = $started.AddMinutes(25)
+    $nextProgress = $started.AddSeconds(15)
     $resultPath = Join-Path $root 'result'
     while (-not (Test-Path $resultPath)) {
+        if ([DateTime]::UtcNow -gt $nextProgress) {
+            $task = Get-ScheduledTask -TaskName $taskName
+            $info = Get-ScheduledTaskInfo -TaskName $taskName
+            Write-Output "Native acceptance task: $($task.State); Task Scheduler result: $($info.LastTaskResult)"
+            $log = Join-Path $root 'acceptance.log'
+            if (Test-Path $log) { Get-Content $log -Tail 5 -ErrorAction SilentlyContinue }
+            if ($task.State -ne 'Running' -and -not (Test-Path $resultPath)) {
+                throw "Native acceptance host did not remain running; Task Scheduler result: $($info.LastTaskResult)"
+            }
+            $nextProgress = [DateTime]::UtcNow.AddSeconds(30)
+        }
         if ([DateTime]::UtcNow -gt $deadline) {
             $info = Get-ScheduledTaskInfo -TaskName $taskName
             throw "Native acceptance timed out; Task Scheduler result: $($info.LastTaskResult)"
         }
         Start-Sleep -Milliseconds 500
     }
-    $result = [int]([IO.File]::ReadAllText($resultPath))
+    $reported = [IO.File]::ReadAllText($resultPath)
+    if ($reported -notmatch '^-?\d+$') { throw 'Native acceptance did not publish an exit code.' }
+    $result = [int]$reported
 } finally {
     $log = Join-Path $root 'acceptance.log'
     if (Test-Path $log) { Write-Output ([IO.File]::ReadAllText($log)) }
