@@ -117,7 +117,7 @@ fn owned_shortcut(shortcut: &Path, desktop: &Path) -> io::Result<bool> {
     no_redirects(shortcut)?;
     let mut command = powershell_command()?;
     command.args(["-Command", "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $l=(New-Object -ComObject WScript.Shell).CreateShortcut($env:AC_TUI_OLD_LINK); if ([string]::IsNullOrEmpty($l.Arguments)) { [Console]::Out.Write($l.TargetPath) }"])
-        .env("AC_TUI_OLD_LINK", shortcut.to_string_lossy().trim_start_matches(r"\\?\").to_owned());
+        .env("AC_TUI_OLD_LINK", shortcut.to_string_lossy().trim_start_matches(r"\\?\"));
     let bytes = run_bounded(&mut command, Duration::from_secs(30))?;
     let target = PathBuf::from(String::from_utf8(bytes).map_err(io::Error::other)?);
     if !target.is_absolute() {
@@ -155,8 +155,8 @@ mod tests {
         let shortcut = root.join("Dodex.lnk");
         let mut command = powershell_command().unwrap();
         command.args(["-Command", "$ErrorActionPreference='Stop'; $l=(New-Object -ComObject WScript.Shell).CreateShortcut($env:AC_TUI_TEST_LINK); $l.TargetPath=$env:AC_TUI_TEST_DESKTOP; $l.Save()"])
-            .env("AC_TUI_TEST_LINK", shortcut.to_string_lossy().trim_start_matches(r"\\?\").to_owned())
-            .env("AC_TUI_TEST_DESKTOP", desktop.to_string_lossy().trim_start_matches(r"\\?\").to_owned());
+            .env("AC_TUI_TEST_LINK", shortcut.to_string_lossy().trim_start_matches(r"\\?\"))
+            .env("AC_TUI_TEST_DESKTOP", desktop.to_string_lossy().trim_start_matches(r"\\?\"));
         run_bounded(&mut command, Duration::from_secs(30)).unwrap();
         retire_entries(&layout, &desktop, &shortcut).unwrap();
         retire_entries(&layout, &desktop, &shortcut).unwrap();
