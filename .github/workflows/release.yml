@@ -78,6 +78,7 @@ jobs:
           New-Item -ItemType Directory -Force staging/docs | Out-Null
           Copy-Item -LiteralPath docs/RESUME.md -Destination staging/docs/
           Copy-Item -LiteralPath docs/terminal-dependency-licenses.md -Destination staging/docs/
+          Copy-Item -LiteralPath docs/macos-dual-instance.md -Destination staging/docs/
           'panel.png', 'windows-usage.png', 'codex-tui.png', 'windows-dual.png', 'macos-menu-bar.png', 'macos-panel.png', 'macos-panel-light.png', 'macos-settings.png' |
             ForEach-Object { Copy-Item -LiteralPath "docs/$_" -Destination staging/docs/ }
           Compress-Archive -Path staging/* -DestinationPath "dist/agent-companion-v$version-windows-x86_64.zip"

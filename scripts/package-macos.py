@@ -67,8 +67,8 @@ for name in ("README.md", "LICENSE", "THIRD_PARTY_NOTICES.md"):
     shutil.copy2(root / name, contents / "Resources" / name)
 screenshots = contents / "Resources" / "docs"
 screenshots.mkdir()
-shutil.copy2(root / "docs/RESUME.md", screenshots / "RESUME.md")
-shutil.copy2(root / "docs/terminal-dependency-licenses.md", screenshots / "terminal-dependency-licenses.md")
+for name in ("RESUME.md", "terminal-dependency-licenses.md", "macos-dual-instance.md"):
+    shutil.copy2(root / "docs" / name, screenshots / name)
 for name in ("panel.png", "windows-usage.png", "codex-tui.png", "windows-dual.png", "macos-menu-bar.png", "macos-panel.png", "macos-panel-light.png", "macos-settings.png"):
     shutil.copy2(root / "docs" / name, screenshots / name)
 # Rust's linker signs the Mach-O executable ad hoc. Once it is placed in an
