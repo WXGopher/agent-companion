@@ -354,6 +354,13 @@ fn primary_executable() -> Option<PathBuf> {
     crate::tui_deployment::primary_instance()?.runtime().ok()
 }
 
+#[cfg(not(windows))]
+fn user_home() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
 #[cfg(all(target_os = "macos", test))]
 fn primary_macos_executable(
     home: &Path,
@@ -481,7 +488,6 @@ fn is_macos_native(path: &Path) -> bool {
         )
 }
 
-#[cfg(all(target_os = "macos", test))]
 fn is_executable(path: &Path) -> bool {
     #[cfg(unix)]
     {
