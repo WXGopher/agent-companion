@@ -1,12 +1,12 @@
 //! Register a native, self-contained Dodex command. Never edit shell profiles or
 //! execution policy, and never depend on the download/build directory surviving.
-use super::{no_links, no_redirects, read_json};
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use super::{launcher, no_redirects};
+#[cfg(test)]
+use launcher::{MARKER, OWNER, save_ownership};
+use launcher::{conflict, file_hash, ownership, same_path};
 use std::{
     ffi::{OsStr, OsString},
-    fs::{self, File},
-    io::{Read, Seek, SeekFrom, Write},
+    fs,
     os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
 };
@@ -23,22 +23,6 @@ use windows::{
     },
     core::w,
 };
-
-const MARKER: &str = "dodex.agent-companion.json";
-const OWNER: &str = "agent-companion/dodex";
-
-#[derive(Serialize, Deserialize)]
-struct Ownership {
-    schema: u32,
-    owner: String,
-    // During replacement both hashes are accepted, so interruption between the
-    // two atomic writes can be repaired without claiming an unrelated file.
-    hashes: Vec<String>,
-    #[serde(default)]
-    entry_revision: u32,
-    #[serde(default)]
-    update_route: String,
-}
 
 struct Environment {
     local: PathBuf,
@@ -183,7 +167,8 @@ pub(super) fn is_current() -> Result<bool, String> {
     let source = std::env::current_exe().map_err(|_| "无法定位 Companion 程序。")?;
     let mut staged = tempfile::NamedTempFile::new().map_err(|_| "无法验证当前入口修订。")?;
     fs::copy(&source, staged.path()).map_err(|_| "无法验证当前入口修订。")?;
-    make_console_launcher(staged.as_file_mut()).map_err(|_| "无法验证当前入口修订。")?;
+    launcher::set_subsystem(staged.as_file_mut(), launcher::Kind::Console)
+        .map_err(|_| "无法验证当前入口修订。")?;
     let expected = file_hash(staged.path())?;
     for directory in environment
         .entries(&environment.path)
@@ -201,68 +186,6 @@ pub(super) fn is_current() -> Result<bool, String> {
             && file_hash(&entry)? == expected);
     }
     Ok(false)
-}
-
-fn same_path(a: &Path, b: &Path) -> bool {
-    let key = |path: &Path| {
-        path.to_string_lossy()
-            .replace('/', "\\")
-            .trim_start_matches(r"\\?\")
-            .trim_end_matches('\\')
-            .to_lowercase()
-    };
-    key(a) == key(b)
-}
-
-fn conflict(path: &Path) -> String {
-    format!(
-        "发现已有或被修改的 dodex 命令：{}。未覆盖；请先移动或重命名该命令，再重试。",
-        path.display()
-    )
-}
-
-fn ownership(directory: &Path) -> Result<Option<Ownership>, String> {
-    let marker = directory.join(MARKER);
-    no_redirects(&marker)?;
-    if !marker.exists() {
-        return Ok(None);
-    }
-    let owner: Ownership = read_json(&marker).map_err(|_| conflict(&marker))?;
-    if !matches!(owner.schema, 1 | 2)
-        || owner.schema == 2 && (owner.entry_revision != 2 || owner.update_route != "companion")
-        || owner.owner != OWNER
-        || owner.hashes.is_empty()
-        || owner.hashes.len() > 2
-        || owner
-            .hashes
-            .iter()
-            .any(|hash| hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
-    {
-        return Err(conflict(&marker));
-    }
-    Ok(Some(owner))
-}
-
-fn file_hash(path: &Path) -> Result<String, String> {
-    file_hash_with(path, false)
-}
-
-fn file_hash_with(path: &Path, allow_hardlinks: bool) -> Result<String, String> {
-    no_links(path, allow_hardlinks)?;
-    let mut file =
-        File::open(path).map_err(|_| format!("无法读取命令文件：{}。", path.display()))?;
-    let mut digest = Sha256::new();
-    let mut buffer = [0; 64 * 1024];
-    loop {
-        let size = file
-            .read(&mut buffer)
-            .map_err(|_| "无法校验 dodex 命令。")?;
-        if size == 0 {
-            break;
-        }
-        digest.update(&buffer[..size]);
-    }
-    Ok(format!("{:x}", digest.finalize()))
 }
 
 fn command_names(extensions: &OsStr) -> Vec<String> {
@@ -357,134 +280,11 @@ fn register(source: &Path, environment: &Environment) -> Result<Registration, St
     }
     fs::create_dir_all(&directory).map_err(|_| "无法创建 dodex 命令目录。")?;
     check_directory(&directory, &names)?;
-    install_command(source, &directory)?;
+    launcher::install_command(source, &directory, launcher::Kind::Console)?;
     Ok(Registration {
         in_current_path: environment.contains(&environment.path, &directory),
         directory,
     })
-}
-
-fn save_ownership(directory: &Path, hashes: Vec<String>, existing: bool) -> Result<(), String> {
-    let mut stage =
-        tempfile::NamedTempFile::new_in(directory).map_err(|_| "无法保存 dodex 命令登记。")?;
-    serde_json::to_writer(
-        &mut stage,
-        &Ownership {
-            schema: 2,
-            owner: OWNER.into(),
-            hashes,
-            entry_revision: 2,
-            update_route: "companion".into(),
-        },
-    )
-    .map_err(|_| "无法保存 dodex 命令登记。")?;
-    stage.flush().map_err(|_| "无法保存 dodex 命令登记。")?;
-    let target = directory.join(MARKER);
-    let result = if existing {
-        stage.persist(target)
-    } else {
-        stage.persist_noclobber(target)
-    };
-    result.map_err(|_| "无法保存 dodex 命令登记。")?;
-    Ok(())
-}
-
-fn install_command(source: &Path, directory: &Path) -> Result<(), String> {
-    let target = directory.join("dodex.exe");
-    let owner = ownership(directory)?;
-    // Cargo and some package managers hard-link immutable source executables.
-    // Copy their bytes, then require the installed command to be independent.
-    let source_hash = file_hash_with(source, true)?;
-    let previous_hash = if target.exists() {
-        Some(file_hash(&target)?)
-    } else {
-        None
-    };
-    if let Some(hash) = &previous_hash
-        && !owner
-            .as_ref()
-            .is_some_and(|owner| owner.hashes.contains(hash))
-    {
-        return Err(conflict(&target));
-    }
-    let mut stage =
-        tempfile::NamedTempFile::new_in(directory).map_err(|_| "无法写入 dodex 命令。")?;
-    fs::copy(source, stage.path()).map_err(|_| "无法复制 dodex 命令。")?;
-    if file_hash(stage.path())? != source_hash {
-        return Err("Companion 程序在复制时改变，请重试。".into());
-    }
-    make_console_launcher(stage.as_file_mut()).map_err(|_| "无法生成 dodex 控制台命令。")?;
-    let new_hash = file_hash(stage.path())?;
-    if previous_hash.as_ref() == Some(&new_hash) {
-        // The console conversion is idempotent. In particular, dodex --deploy
-        // must not replace its running self or rewrite its ownership marker.
-        if owner.as_ref().is_some_and(|owner| {
-            owner.schema != 2 || owner.entry_revision != 2 || owner.update_route != "companion"
-        }) {
-            save_ownership(directory, vec![new_hash], true)?;
-        }
-        return Ok(());
-    }
-    let mut hashes = vec![new_hash.clone()];
-    if let Some(hash) = &previous_hash {
-        hashes.push(hash.clone());
-    }
-    save_ownership(directory, hashes, owner.is_some())?;
-    let result = if previous_hash.is_some() {
-        stage.persist(&target)
-    } else {
-        stage.persist_noclobber(&target)
-    };
-    result.map_err(|_| "无法更新 dodex 命令；请等待正在执行的 dodex 退出后重试。")?;
-    save_ownership(directory, vec![new_hash], true)
-}
-
-/// The main app is a GUI executable, but shells must wait for its installed
-/// Dodex copy and provide a console. PE32 and PE32+ share these header offsets;
-/// changing only the staged copy keeps deployment self-contained, with no
-/// sibling executable or build-directory dependency. Windows accepts a zero
-/// checksum for ordinary user-mode executables.
-fn make_console_launcher(file: &mut File) -> std::io::Result<()> {
-    let invalid = || std::io::Error::other("invalid Companion PE executable");
-    let mut dos = [0; 64];
-    file.rewind()?;
-    file.read_exact(&mut dos)?;
-    if &dos[..2] != b"MZ" {
-        return Err(invalid());
-    }
-    let pe_offset = u32::from_le_bytes(dos[60..64].try_into().unwrap()) as u64;
-    if pe_offset < dos.len() as u64 {
-        return Err(invalid());
-    }
-    file.seek(SeekFrom::Start(pe_offset))?;
-    let mut pe = [0; 24];
-    file.read_exact(&mut pe)?;
-    let optional_size = u16::from_le_bytes(pe[20..22].try_into().unwrap()) as u64;
-    let characteristics = u16::from_le_bytes(pe[22..24].try_into().unwrap());
-    let optional_offset = pe_offset + pe.len() as u64;
-    if &pe[..4] != b"PE\0\0"
-        || characteristics & 0x0002 == 0 // IMAGE_FILE_EXECUTABLE_IMAGE
-        || characteristics & 0x2000 != 0 // IMAGE_FILE_DLL
-        || optional_size < 70
-        || optional_offset + optional_size > file.metadata()?.len()
-    {
-        return Err(invalid());
-    }
-    let mut optional = [0; 70];
-    file.read_exact(&mut optional)?;
-    let minimum_size = match u16::from_le_bytes(optional[..2].try_into().unwrap()) {
-        0x10b => 96,  // PE32
-        0x20b => 112, // PE32+
-        _ => return Err(invalid()),
-    };
-    let subsystem = u16::from_le_bytes(optional[68..70].try_into().unwrap());
-    if optional_size < minimum_size || !matches!(subsystem, 2 | 3) {
-        return Err(invalid());
-    }
-    file.seek(SeekFrom::Start(optional_offset + 64))?;
-    // CheckSum (u32), then Subsystem = IMAGE_SUBSYSTEM_WINDOWS_CUI (u16).
-    file.write_all(&[0, 0, 0, 0, 3, 0])?;
-    file.flush()
 }
 
 struct UserPath {

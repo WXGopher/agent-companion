@@ -21,6 +21,11 @@ pub(crate) struct TuiPackage {
     pub hash: String,
 }
 
+pub(crate) struct TuiReference {
+    pub executable: PathBuf,
+    pub bundled: bool,
+}
+
 pub(crate) fn lock() -> Result<File, String> {
     let root = current_root()?;
     let support = root.parent().ok_or("维护目录无效。")?;
@@ -64,6 +69,13 @@ pub(super) fn valid_manifest_layout(root: &Path, manifest: &Manifest) -> bool {
                     return false;
                 }
                 expected.cli_path = tui.package.join("bin/codex.exe");
+            } else {
+                let bundled = desktop.package.join("resources/codex.exe");
+                // Early schema-2 manifests kept the schema-1 CLI path until
+                // standalone alignment. Accept them for a safe local migration.
+                if manifest.instance.cli_path == bundled {
+                    expected.cli_path = bundled;
+                }
             }
             manifest.instance == expected
         }
@@ -79,21 +91,32 @@ pub(crate) fn verified_instance() -> Result<Option<InstanceConfig>, String> {
     validate(&root, true).map(|manifest| Some(manifest.instance))
 }
 
-pub(crate) fn needs_sync(app: bool) -> bool {
+pub(crate) fn needs_sync(app: bool, bundled_reference: bool) -> bool {
     let Ok(root) = current_root() else {
         return true;
     };
     let Ok(manifest) = validate(&root, false) else {
         return true;
     };
-    if manifest.schema != 2 {
+    layout_needs_sync(&manifest, app, bundled_reference)
+        || (!app && !shell::is_current().unwrap_or(false))
+}
+
+fn layout_needs_sync(manifest: &Manifest, app: bool, bundled_reference: bool) -> bool {
+    if manifest.schema != 2 || manifest.desktop.is_none() {
         return true;
     }
-    if app {
-        manifest.desktop.is_none()
-    } else {
-        manifest.tui.is_none() || !shell::is_current().unwrap_or(false)
+    if app || manifest.tui.is_some() {
+        return false;
     }
+    !bundled_reference
+        || manifest.instance.cli_path
+            != manifest
+                .desktop
+                .as_ref()
+                .unwrap()
+                .package
+                .join("resources/codex.exe")
 }
 
 pub(crate) fn runtime_version(runtime: &Path) -> Result<String, String> {
@@ -111,12 +134,13 @@ pub(crate) fn official_desktop() -> Result<PathBuf, String> {
 
 pub(crate) fn official_tui() -> Result<TuiPackage, String> {
     let primary = primary_home().map_err(|_| "无法定位主账号目录。")?;
+    no_redirects(&primary.join("packages/standalone"))?;
     // The vendor's current junction is allowed only as a discovery entry. Every
     // byte we copy comes from its resolved, complete release package.
     let package = primary
         .join("packages/standalone/current")
         .canonicalize()
-        .map_err(|_| "未找到官方 standalone TUI；请先安装完整 Codex CLI 包。")?;
+        .map_err(|_| "未找到官方 standalone TUI。TUI 版本维护仅支持完整 standalone 安装；现有 npm 等安装和命令入口未修改。")?;
     let releases = primary
         .join("packages/standalone/releases")
         .canonicalize()
@@ -152,6 +176,67 @@ pub(crate) fn official_tui() -> Result<TuiPackage, String> {
         package,
         version,
     })
+}
+
+pub(crate) fn optional_official_tui() -> Result<Option<TuiPackage>, String> {
+    deployment_tui(
+        &primary_home().map_err(|_| "无法定位主账号目录。")?,
+        official_tui,
+    )
+}
+
+/// Deployment and local version comparison use the same source precedence.
+/// A missing standalone installation permits the signed desktop's bundled CLI;
+/// an invalid standalone installation must never silently change that source.
+pub(crate) fn official_tui_reference() -> Result<TuiReference, String> {
+    tui_reference(optional_official_tui(), official_desktop)
+}
+
+fn tui_reference(
+    standalone: Result<Option<TuiPackage>, String>,
+    desktop: impl FnOnce() -> Result<PathBuf, String>,
+) -> Result<TuiReference, String> {
+    match standalone? {
+        Some(package) => Ok(TuiReference {
+            executable: package.package.join("bin/codex.exe"),
+            bundled: false,
+        }),
+        None => Ok(TuiReference {
+            executable: desktop()?.join("resources/codex.exe"),
+            bundled: true,
+        }),
+    }
+}
+
+pub(crate) fn native_tui_version(path: &Path, home: &Path) -> Result<String, String> {
+    let mut command = Command::new(path);
+    agent_companion_core::process_environment::isolate_command(&mut command);
+    command.env("CODEX_HOME", home).arg("--version");
+    let output = run(&mut command, Duration::from_secs(20))?;
+    let text = String::from_utf8_lossy(&output);
+    let version = text
+        .trim()
+        .strip_prefix("codex-cli ")
+        .ok_or("TUI 版本输出无效。")?;
+    // Local App bundles may legitimately contain an alpha CLI. Only upstream
+    // stable-release metadata, not local version inspection, rejects prereleases.
+    semver::Version::parse(version).map_err(|_| "TUI 版本无效。")?;
+    Ok(version.into())
+}
+
+fn deployment_tui(
+    primary: &Path,
+    discover: impl FnOnce() -> Result<TuiPackage, String>,
+) -> Result<Option<TuiPackage>, String> {
+    let standalone = primary.join("packages/standalone");
+    no_redirects(&standalone)?;
+    match fs::symlink_metadata(&standalone) {
+        // Only an absent installation permits the desktop's bundled CLI. An
+        // existing but incomplete, redirected or invalid package must fail.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Ok(metadata) if metadata.is_dir() => discover().map(Some),
+        _ => Err("无法核验官方 standalone 安装目录；未切换 CLI 来源。".into()),
+    }
 }
 
 fn validate_primary_entry(entry: &Path, expected: &Path) -> Result<(), String> {
@@ -366,19 +451,42 @@ fn align_desktop_under_lock(root: &Path, expected: &str) -> Result<(), String> {
     if runtime_version(&package)? != expected {
         return Err("暂存 App 版本验证失败。".into());
     }
-    manifest.schema = 2;
-    manifest.instance.runtime_app = package.join("ChatGPT.exe");
-    manifest.archive_hash = hash.clone();
-    manifest.desktop = Some(DesktopPackage {
-        package,
-        version: expected.into(),
-        archive_hash: hash,
-    });
+    if manifest.tui.is_none() {
+        // The App and its bundled CLI are one package. A newer desktop build
+        // does not guarantee a newer bundled CLI, so compare before publishing
+        // the App pointer rather than silently undoing the planner's TUI guard.
+        require_no_tui_downgrade(
+            &native_tui_version(&manifest.instance.cli_path, &manifest.instance.codex_home)?,
+            &native_tui_version(
+                &package.join("resources/codex.exe"),
+                &manifest.instance.codex_home,
+            )?,
+        )?;
+    }
+    set_desktop_package(
+        &mut manifest,
+        DesktopPackage {
+            package,
+            version: expected.into(),
+            archive_hash: hash,
+        },
+    );
     require_stopped()?;
     let _ = staged.keep(); // durable before publishing the sole atomic pointer
     write_manifest(root, &original, &manifest)?;
-    validate(root, true)?;
+    let verified = validate(root, true)?;
+    desktop::ensure(&verified.instance)?;
     Ok(())
+}
+
+fn set_desktop_package(manifest: &mut Manifest, desktop: DesktopPackage) {
+    manifest.schema = 2;
+    manifest.instance.runtime_app = desktop.package.join("ChatGPT.exe");
+    if manifest.tui.is_none() {
+        manifest.instance.cli_path = desktop.package.join("resources/codex.exe");
+    }
+    manifest.archive_hash = desktop.archive_hash.clone();
+    manifest.desktop = Some(desktop);
 }
 
 pub(crate) fn align_tui(expected: &str) -> Result<(), String> {
@@ -392,7 +500,9 @@ fn align_tui_under_lock(root: &Path, expected: &str) -> Result<(), String> {
         return Err("请先完成 Dodex App 清单迁移。".into());
     }
     let original = fs::read(root.join(MANIFEST)).map_err(|_| "无法读取部署清单。")?;
-    let source = official_tui()?;
+    let Some(source) = optional_official_tui()? else {
+        return align_bundled_tui_under_lock(root, manifest, &original, expected);
+    };
     if source.version != expected {
         return Err("官方 TUI 在维护期间发生变化，请重试。".into());
     }
@@ -430,20 +540,97 @@ fn align_tui_under_lock(root: &Path, expected: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn require_no_tui_downgrade(current: &str, desired: &str) -> Result<(), String> {
+    let parse =
+        |value: &str| semver::Version::parse(value).map_err(|_| "无法比较 TUI 版本；未替换程序。");
+    if parse(current)? > parse(desired)? {
+        return Err("Dodex TUI 较新；为避免随 App 内置 CLI 一起降级，未替换程序。请保留当前 App，或使用完整 standalone TUI。".into());
+    }
+    Ok(())
+}
+
+fn bind_bundled_tui(
+    manifest: &mut Manifest,
+    expected: &str,
+    bundled_version: &str,
+) -> Result<(), String> {
+    if bundled_version != expected {
+        return Err("Dodex App 内置 CLI 与本机参考不同；请先对齐 App，或使用完整 standalone TUI。未切换 TUI 来源。".into());
+    }
+    let desktop = manifest.desktop.as_ref().ok_or("Dodex App 包记录缺失。")?;
+    manifest.instance.cli_path = desktop.package.join("resources/codex.exe");
+    manifest.tui = None;
+    Ok(())
+}
+
+fn align_bundled_tui_under_lock(
+    root: &Path,
+    mut manifest: Manifest,
+    original: &[u8],
+    expected: &str,
+) -> Result<(), String> {
+    let reference = official_desktop()?.join("resources/codex.exe");
+    if native_tui_version(
+        &reference,
+        &primary_home().map_err(|_| "无法定位主账号目录。")?,
+    )? != expected
+    {
+        return Err("官方 App 内置 CLI 在维护期间发生变化，请重试。".into());
+    }
+    let bundled = manifest
+        .desktop
+        .as_ref()
+        .ok_or("Dodex App 包记录缺失。")?
+        .package
+        .join("resources/codex.exe");
+    let bundled_version = native_tui_version(&bundled, &manifest.instance.codex_home)?;
+    require_no_tui_downgrade(
+        &native_tui_version(&manifest.instance.cli_path, &manifest.instance.codex_home)?,
+        &bundled_version,
+    )?;
+    let changed = manifest.instance.cli_path != bundled || manifest.tui.is_some();
+    bind_bundled_tui(&mut manifest, expected, &bundled_version)?;
+    require_stopped()?;
+    if changed {
+        write_manifest(root, original, &manifest)?;
+    }
+    // Repair the owned console entry even when the native versions already
+    // match. The App package retains every resource beside its bundled CLI.
+    shell::ensure()?;
+    validate(root, true)?;
+    Ok(())
+}
+
 pub(crate) fn initialize_under_deployment_lock() -> Result<InstanceConfig, String> {
     let root = current_root()?;
-    let manifest = validate(&root, true)?;
+    let mut manifest = validate(&root, true)?;
+    // Desktop/profile deployment also supports npm-managed primary commands.
+    // Decide before publishing anything, so unsafe existing standalone state
+    // cannot silently become a bundled fallback or a partially migrated App.
+    let tui = if manifest.tui.is_none() {
+        optional_official_tui()?
+    } else {
+        None
+    };
     if manifest.desktop.is_none() {
         let source = official_desktop()?;
         let version = runtime_version(&source)?;
-        // Validate the complete independent CLI before publishing an App-only
-        // migration; a missing standalone package is a concrete setup error.
-        official_tui()?;
         align_desktop_under_lock(&root, &version)?;
+        manifest = validate(&root, true)?;
     }
-    if validate(&root, false)?.tui.is_none() {
-        let source = official_tui()?;
+    if let Some(source) = tui {
         align_tui_under_lock(&root, &source.version)?;
+    } else if manifest.tui.is_none() {
+        let desktop = manifest.desktop.clone().ok_or("Dodex App 包记录缺失。")?;
+        let bundled = desktop.package.join("resources/codex.exe");
+        if manifest.instance.cli_path != bundled {
+            // Existing schema-2 App-only installs may still reference the old
+            // runtime. Rebind to the already verified active desktop package;
+            // leave both immutable packages and the user's profile untouched.
+            let original = fs::read(root.join(MANIFEST)).map_err(|_| "无法读取部署清单。")?;
+            set_desktop_package(&mut manifest, desktop);
+            write_manifest(&root, &original, &manifest)?;
+        }
     }
     validate(&root, true).map(|manifest| manifest.instance)
 }
@@ -491,8 +678,97 @@ pub(crate) fn run(command: &mut Command, timeout: Duration) -> Result<Vec<u8>, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
-    fn old_manifest_remains_readable_but_new_manifest_cannot_bind_tui_to_desktop() {
+    fn local_tui_reference_uses_verified_standalone_before_signed_desktop_fallback() {
+        let standalone = TuiPackage {
+            package: PathBuf::from(r"C:\fixture\standalone\release"),
+            version: "1.2.2".into(),
+            hash: "verified".into(),
+        };
+        let reference = tui_reference(Ok(Some(standalone.clone())), || {
+            panic!("a standalone reference must not probe the App")
+        })
+        .unwrap();
+        assert!(!reference.bundled);
+        assert_eq!(
+            reference.executable,
+            standalone.package.join("bin/codex.exe")
+        );
+        let desktop = PathBuf::from(r"C:\fixture\official-app");
+        let reference = tui_reference(Ok(None), || Ok(desktop.clone())).unwrap();
+        assert!(reference.bundled);
+        assert_eq!(reference.executable, desktop.join("resources/codex.exe"));
+        assert!(
+            tui_reference(Err("invalid standalone".into()), || {
+                panic!("an invalid standalone must not silently change source")
+            })
+            .is_err()
+        );
+        assert!(tui_reference(Ok(None), || Err("invalid App signature".into())).is_err());
+    }
+
+    #[test]
+    fn bundled_alignment_checks_the_active_app_before_rebinding_and_preserves_the_profile() {
+        let root = Path::new(r"C:\fixture\Dodex");
+        let mut manifest = Manifest {
+            schema: 1,
+            instance: InstanceConfig::at(root),
+            archive_hash: "legacy".into(),
+            desktop: None,
+            tui: None,
+        };
+        let isolated = manifest.instance.clone();
+        assert!(layout_needs_sync(&manifest, false, true));
+        let desktop = DesktopPackage {
+            package: root.join("desktop-packages/release-fixture/runtime"),
+            version: "1.2.3.4".into(),
+            archive_hash: "verified".into(),
+        };
+        set_desktop_package(&mut manifest, desktop.clone());
+        manifest.instance.cli_path = isolated.cli_path;
+        assert!(valid_manifest_layout(root, &manifest));
+        assert!(layout_needs_sync(&manifest, false, true));
+        let before = serde_json::to_vec(&manifest).unwrap();
+        assert!(bind_bundled_tui(&mut manifest, "1.2.3-alpha.2", "1.2.2").is_err());
+        assert_eq!(serde_json::to_vec(&manifest).unwrap(), before);
+        bind_bundled_tui(&mut manifest, "1.2.3-alpha.2", "1.2.3-alpha.2").unwrap();
+        assert_eq!(
+            manifest.instance.cli_path,
+            desktop.package.join("resources/codex.exe")
+        );
+        assert!(valid_manifest_layout(root, &manifest));
+        assert!(!layout_needs_sync(&manifest, false, true));
+        // Installing a standalone primary later still requests the independent
+        // package migration even if its native version happens to match.
+        assert!(layout_needs_sync(&manifest, false, false));
+        assert_eq!(manifest.instance.codex_home, isolated.codex_home);
+        assert_eq!(manifest.instance.database_dir, isolated.database_dir);
+        assert_eq!(
+            manifest.instance.desktop_user_data,
+            isolated.desktop_user_data
+        );
+        let bound = serde_json::to_vec(&manifest).unwrap();
+        bind_bundled_tui(&mut manifest, "1.2.3-alpha.2", "1.2.3-alpha.2").unwrap();
+        assert_eq!(serde_json::to_vec(&manifest).unwrap(), bound);
+    }
+
+    #[test]
+    fn app_bundles_cannot_downgrade_a_newer_tui_including_prereleases() {
+        require_no_tui_downgrade("1.2.3-alpha.1", "1.2.3-alpha.2").unwrap();
+        require_no_tui_downgrade("1.2.3-alpha.2", "1.2.3-alpha.2").unwrap();
+        for (current, target) in [
+            ("1.2.3-alpha.2", "1.2.3-alpha.1"),
+            ("1.2.3", "1.2.3-alpha.2"),
+            ("1.3.0-alpha.1", "1.2.3"),
+            ("unknown", "1.2.3"),
+        ] {
+            assert!(require_no_tui_downgrade(current, target).is_err());
+        }
+    }
+
+    #[test]
+    fn legacy_and_bundled_manifests_remain_readable_without_accepting_arbitrary_cli_paths() {
         let root = Path::new(r"C:\Users\fixture\Dodex");
         let mut manifest = Manifest {
             schema: 1,
@@ -507,11 +783,26 @@ mod tests {
         let package = root.join("desktop-packages/release-fixture/runtime");
         manifest.instance.runtime_app = package.join("ChatGPT.exe");
         manifest.desktop = Some(DesktopPackage {
-            package,
+            package: package.clone(),
             version: "26.9.1".into(),
             archive_hash: "old".into(),
         });
+        // Schema-2 App-only manifests originally retained the schema-1 CLI.
         assert!(valid_manifest_layout(root, &manifest));
+        manifest.instance.cli_path = package.join("resources/codex.exe");
+        assert!(valid_manifest_layout(root, &manifest));
+        let persisted = serde_json::to_vec(&manifest).unwrap();
+        let restored: Manifest = serde_json::from_slice(&persisted).unwrap();
+        assert!(valid_manifest_layout(root, &restored));
+        for invalid in [
+            root.join("desktop-packages/other-release/runtime/resources/codex.exe"),
+            root.join("runtime/bin/codex.exe"),
+            PathBuf::from(r"C:\Users\fixture\AppData\Roaming\npm\codex.cmd"),
+        ] {
+            manifest.instance.cli_path = invalid;
+            assert!(!valid_manifest_layout(root, &manifest));
+        }
+        manifest.instance.cli_path = package.join("resources/codex.exe");
         manifest.tui = Some(TuiPackage {
             package: root.join("runtime"),
             version: "0.160.0".into(),
@@ -522,6 +813,108 @@ mod tests {
         manifest.tui.as_mut().unwrap().package = package.clone();
         manifest.instance.cli_path = package.join("bin/codex.exe");
         assert!(valid_manifest_layout(root, &manifest));
+    }
+
+    #[test]
+    fn desktop_migration_and_updates_follow_bundled_cli_but_preserve_independent_tui() {
+        let root = Path::new(r"C:\Users\fixture\Dodex");
+        let isolated = InstanceConfig::at(root);
+        let mut manifest = Manifest {
+            schema: 1,
+            instance: isolated.clone(),
+            archive_hash: "legacy".into(),
+            desktop: None,
+            tui: None,
+        };
+        let desktop = |release: &str| DesktopPackage {
+            package: root.join("desktop-packages").join(release).join("runtime"),
+            version: "26.10.1".into(),
+            archive_hash: release.into(),
+        };
+        let first = desktop("release-first");
+        set_desktop_package(&mut manifest, first.clone());
+        assert_eq!(manifest.schema, 2);
+        assert_eq!(
+            manifest.instance.runtime_app,
+            first.package.join("ChatGPT.exe")
+        );
+        assert_eq!(
+            manifest.instance.cli_path,
+            first.package.join("resources/codex.exe")
+        );
+        assert!(valid_manifest_layout(root, &manifest));
+        let second = desktop("release-second");
+        set_desktop_package(&mut manifest, second.clone());
+        assert_eq!(manifest.archive_hash, second.archive_hash);
+        assert_eq!(
+            manifest.instance.cli_path,
+            second.package.join("resources/codex.exe")
+        );
+        assert!(valid_manifest_layout(root, &manifest));
+        let tui = TuiPackage {
+            package: root.join("tui-packages/release-independent/package"),
+            version: "0.160.0".into(),
+            hash: "independent".into(),
+        };
+        manifest.instance.cli_path = tui.package.join("bin/codex.exe");
+        manifest.tui = Some(tui.clone());
+        set_desktop_package(&mut manifest, desktop("release-third"));
+        assert_eq!(
+            manifest.instance.cli_path,
+            tui.package.join("bin/codex.exe")
+        );
+        assert!(valid_manifest_layout(root, &manifest));
+        assert_eq!(manifest.instance.codex_home, isolated.codex_home);
+        assert_eq!(manifest.instance.database_dir, isolated.database_dir);
+        assert_eq!(
+            manifest.instance.desktop_user_data,
+            isolated.desktop_user_data
+        );
+    }
+
+    #[test]
+    fn only_an_absent_standalone_installation_allows_bundled_fallback() {
+        let temporary = tempfile::tempdir().unwrap();
+        let primary = temporary.path().join("primary");
+        fs::create_dir_all(&primary).unwrap();
+        assert!(
+            deployment_tui(&primary, || panic!(
+                "absent standalone must not inspect PATH"
+            ))
+            .unwrap()
+            .is_none()
+        );
+        let standalone = primary.join("packages/standalone");
+        fs::create_dir_all(standalone.parent().unwrap()).unwrap();
+        assert!(
+            deployment_tui(&primary, || panic!(
+                "absent standalone must not inspect PATH"
+            ))
+            .unwrap()
+            .is_none()
+        );
+        fs::create_dir(&standalone).unwrap();
+        let invalid = "existing standalone has an invalid package or command entry";
+        assert_eq!(
+            deployment_tui(&primary, || Err(invalid.into())).unwrap_err(),
+            invalid
+        );
+        let package = TuiPackage {
+            package: standalone.join("releases/fixture"),
+            version: "0.160.0".into(),
+            hash: "verified".into(),
+        };
+        let found = deployment_tui(&primary, || Ok(package.clone()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.package, package.package);
+        assert_eq!(found.version, package.version);
+        assert_eq!(found.hash, package.hash);
+        fs::remove_dir(&standalone).unwrap();
+        fs::write(&standalone, b"unexpected file in place of installation").unwrap();
+        assert!(
+            deployment_tui(&primary, || panic!("invalid installation must fail first")).is_err()
+        );
     }
     #[test]
     fn every_package_child_blocks_replacement_without_prefix_collisions() {
@@ -558,18 +951,22 @@ mod tests {
         let package = root.join("desktop-packages/release-fixture/runtime");
         fs::create_dir_all(&package).unwrap();
         fs::write(package.join("ChatGPT.exe"), b"prepared validated desktop").unwrap();
-        manifest.schema = 2;
-        manifest.instance.runtime_app = package.join("ChatGPT.exe");
-        manifest.desktop = Some(DesktopPackage {
-            package: package.clone(),
-            version: "26.9.1".into(),
-            archive_hash: "old".into(),
-        });
+        set_desktop_package(
+            &mut manifest,
+            DesktopPackage {
+                package: package.clone(),
+                version: "26.9.1".into(),
+                archive_hash: "old".into(),
+            },
+        );
         // Crash before the atomic pointer publication leaves the old manifest
         // and the prepared package usable; retry publishes the same package.
         assert_eq!(fs::read(root.join(MANIFEST)).unwrap(), original);
         write_manifest(root, &original, &manifest).unwrap();
         let committed = fs::read(root.join(MANIFEST)).unwrap();
+        let saved: Manifest = serde_json::from_slice(&committed).unwrap();
+        assert!(valid_manifest_layout(root, &saved));
+        assert_eq!(saved.instance.cli_path, package.join("resources/codex.exe"));
         write_manifest(root, &committed, &manifest).unwrap();
         assert_eq!(fs::read(&auth).unwrap(), b"synthetic unchanged credentials");
         assert_eq!(

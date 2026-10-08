@@ -17,6 +17,7 @@ struct Fake {
     updater_cli: Option<Version>,
     newer_release: bool,
     store_app: Option<Version>,
+    bundled_tui: bool,
 }
 fn cli(value: &str) -> Version {
     Version {
@@ -53,10 +54,14 @@ impl Default for Fake {
             updater_cli: None,
             newer_release: false,
             store_app: None,
+            bundled_tui: false,
         }
     }
 }
 impl Operations for Fake {
+    fn local_source_note(&self, target: Target) -> Option<&'static str> {
+        (target == Target::CodexTui && self.bundled_tui).then_some("参考来自 Codex App 内置 CLI。")
+    }
     fn always_update_primary(&self, app: bool) -> bool {
         app && self.store_app.is_some()
     }
@@ -199,6 +204,34 @@ fn opening_settings_automatically_compares_each_local_pair_without_maintenance()
     }
     assert!(fake.calls.borrow().is_empty());
     assert_eq!(*fake.versions.borrow(), original);
+}
+
+#[test]
+fn matching_bundled_alpha_reference_is_visible_and_alignment_is_a_read_only_noop() {
+    let fake = Fake {
+        bundled_tui: true,
+        running: true,
+        unsupported: true,
+        ..Fake::default()
+    };
+    for index in [0, 1] {
+        fake.versions.borrow_mut()[index] = Some(cli("1.2.3-alpha.2"));
+    }
+    fake.versions.borrow_mut()[3] = Some(app("100"));
+    let original = fake.versions.borrow().clone();
+    for action in [None, Some(Action::Align)] {
+        let (snapshot, result) = run(&fake, action);
+        result.unwrap();
+        for row in &snapshot.rows[..2] {
+            assert_eq!(row.current, "1.2.3-alpha.2");
+            assert_eq!(row.target, "1.2.3-alpha.2");
+            assert!(!row.error);
+        }
+        assert!(snapshot.rows[0].message.contains("App 内置 CLI"));
+        assert!(!snapshot.error);
+        assert!(fake.calls.borrow().is_empty());
+        assert_eq!(*fake.versions.borrow(), original);
+    }
 }
 
 #[test]

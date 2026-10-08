@@ -15,7 +15,7 @@ export struct SessionRow {
     detail: string,
     // "running" | "waitingForApproval" | "waitingForAnswer" | "completed" | "failed" | "stopped"
     phase: string,
-    // "claude" | "codex"
+    // "claude" | "codex" | "dodex"
     source: string,
     // Whether a click on this row can reach the terminal that owns the
     // session. Rows without a known terminal draw no affordance and eat no
@@ -33,7 +33,7 @@ export struct SessionRow {
 // Rust builds these; see `app::usage_sections`.
 export struct UsageRow {
     heading: bool,
-    // "claude" | "codex" on a heading; "" on a window row.
+    // "claude" | "codex" | "dodex" on a heading; "" on a window row.
     agent: string,
     // The agent's name on a heading, the window's name on a window row.
     label: string,
@@ -48,13 +48,13 @@ export struct UsageRow {
 }
 
 // One instance's number in the taskbar readout: a task-status dot and the
-// percentage left of its tightest rate-limit window. C/D labels identify the
-// Codex instance independently of its current task state.
+// percentage left (weekly for Codex / Dodex). The UI derives C/D labels from
+// the identity independently of the current task state or allowance value.
 export struct UsageChip {
-    // "claude" | "codex", or "" for the placeholder shown when nothing has
+    // "claude" | "codex" | "dodex", or "" for the placeholder shown when nothing has
     // reported anything yet.
     agent: string,
-    // "92%", or "--".
+    // "92%", "92%*", "…" while loading, or a dash. No identity prefix.
     value: string,
     // "good" | "warn" | "low", or "" for the placeholder.
     tier: string,

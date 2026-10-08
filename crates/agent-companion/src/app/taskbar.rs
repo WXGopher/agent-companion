@@ -2,8 +2,9 @@
 //!
 //! A vertical taskbar has a long empty stretch between the last running app and
 //! the notification area, and a horizontal one has the same stretch on its
-//! right. Agent Companion parks a two-chip readout there — `● 92%` for Claude, `● 15%` for
-//! Codex — with each leading mark showing task state, so the number a user
+//! right. Agent Companion parks a compact readout there — `● 92%` for Claude,
+//! `● C 15%` for Codex and `● D 61%` for Dodex — with each leading mark showing
+//! that instance's task state, so the number a user
 //! actually checks is on screen without a
 //! floating window in the way of anything.
 //!
@@ -76,8 +77,8 @@ const BLOCK_GAP: f32 = 4.0;
 /// The agent dot, and the gap between it and its number.
 const DOT: f32 = 7.0;
 const DOT_GAP: f32 = 4.0;
-/// Room for the widest number the readout ever shows.
-const VALUE_WIDTH: f32 = 42.0;
+/// Room for an instance label and the widest value, including `D 100%*`.
+const VALUE_WIDTH: f32 = 48.0;
 /// The gap between two chips side by side on a horizontal taskbar.
 const CHIP_SPACING: f32 = 10.0;
 
@@ -133,13 +134,57 @@ impl Along {
     }
 }
 
-/// One agent's block in the readout: its quota on the first line, and — while
+/// The display identity is separate from the hook protocol: Codex and Dodex
+/// both speak Codex hooks, but their accounts and task tables are independent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChipSource {
+    Claude,
+    Codex,
+    Dodex,
+}
+
+impl ChipSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Dodex => "dodex",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Claude => "Claude",
+            Self::Codex => "Codex",
+            Self::Dodex => "Dodex",
+        }
+    }
+
+    pub fn compact_label(self) -> &'static str {
+        match self {
+            Self::Claude => "",
+            Self::Codex => "C",
+            Self::Dodex => "D",
+        }
+    }
+}
+
+impl From<HookSource> for ChipSource {
+    fn from(source: HookSource) -> Self {
+        match source {
+            HookSource::Claude => Self::Claude,
+            HookSource::Codex => Self::Codex,
+        }
+    }
+}
+
+/// One instance's block in the readout: its quota on the first line, and — while
 /// it has live sessions — a task line on a second, one segment per state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Chip {
     /// `None` for the placeholder shown when no agent has reported anything.
-    pub agent: Option<HookSource>,
-    /// `92%`, or `--` for the placeholder.
+    pub agent: Option<ChipSource>,
+    /// `92%`, `92%*` after a failed query, `…` while initially loading, or a dash.
     pub value: String,
     /// `""` | `"good"` | `"warn"` | `"low"`; see [`crate::usage_cache::left_tier`].
     pub tier: &'static str,
@@ -177,7 +222,7 @@ pub fn chips(usage: &UsageSnapshot, lines: &[AgentLine], good_at: i64, warn_at: 
                 return None;
             }
             Some(Chip {
-                agent: Some(line.agent),
+                agent: Some(line.agent.into()),
                 value: window
                     .as_ref()
                     .map(|window| format!("{}%", window.left))
@@ -452,7 +497,7 @@ impl TaskbarView {
             .map(|chip| super::ui::UsageChip {
                 agent: chip
                     .agent
-                    .map(HookSource::as_str)
+                    .map(ChipSource::as_str)
                     .unwrap_or_default()
                     .into(),
                 value: chip.value.clone().into(),
@@ -798,9 +843,9 @@ mod tests {
     fn each_agent_shows_its_tightest_window() {
         let both = chips(&usage(Some(31.0), Some(85.0)), &resting(), GOOD, WARN);
         assert_eq!(both.len(), 2);
-        assert_eq!(both[0].agent, Some(HookSource::Claude));
+        assert_eq!(both[0].agent, Some(ChipSource::Claude));
         assert_eq!((both[0].value.as_str(), both[0].tier), ("69%", "good"));
-        assert_eq!(both[1].agent, Some(HookSource::Codex));
+        assert_eq!(both[1].agent, Some(ChipSource::Codex));
         assert_eq!((both[1].value.as_str(), both[1].tier), ("15%", "low"));
 
         // The middle band, and the boundary that decides it.
@@ -815,7 +860,7 @@ mod tests {
     fn an_agent_with_no_reading_takes_no_room_at_all() {
         let one = chips(&usage(None, Some(7.0)), &resting(), GOOD, WARN);
         assert_eq!(one.len(), 1);
-        assert_eq!(one[0].agent, Some(HookSource::Codex));
+        assert_eq!(one[0].agent, Some(ChipSource::Codex));
         assert_eq!(one[0].value, "93%");
 
         // And a readout with nothing to say says so rather than vanishing.
@@ -836,7 +881,7 @@ mod tests {
 
         let unread = chips(&UsageSnapshot::default(), &lines(1, 0), GOOD, WARN);
         assert_eq!(unread.len(), 1);
-        assert_eq!(unread[0].agent, Some(HookSource::Claude));
+        assert_eq!(unread[0].agent, Some(ChipSource::Claude));
         assert_eq!(
             (unread[0].value.as_str(), unread[0].tasks.running),
             ("--", 1)
@@ -867,7 +912,7 @@ mod tests {
         only_claude[1].show = false;
         let shown = chips(&usage(Some(31.0), Some(85.0)), &only_claude, GOOD, WARN);
         assert_eq!(shown.len(), 1);
-        assert_eq!(shown[0].agent, Some(HookSource::Claude));
+        assert_eq!(shown[0].agent, Some(ChipSource::Claude));
 
         let mut none = lines(0, 0);
         none[0].show = false;

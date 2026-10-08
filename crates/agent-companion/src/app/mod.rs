@@ -1070,28 +1070,19 @@ impl App {
             .get()
             .map(|taskbar| taskbar::Along::of(taskbar.rect))
             .unwrap_or(taskbar::Along::Vertical);
-        let (lines, good_at, warn_at) = {
+        let (claude, good_at, warn_at) = {
             let config = self.config.borrow();
-            let lines = [
-                taskbar::AgentLine {
-                    agent: HookSource::Claude,
-                    show: config.taskbar.claude
-                        && self.display.borrow().visible(HookSource::Claude),
-                    tasks: self.agent_tasks(HookSource::Claude),
-                    outcomes: self.agent_outcomes(HookSource::Claude),
-                },
-                taskbar::AgentLine {
-                    agent: HookSource::Codex,
-                    show: config.taskbar.codex && self.display.borrow().visible(HookSource::Codex),
-                    tasks: self.agent_tasks(HookSource::Codex),
-                    outcomes: self.agent_outcomes(HookSource::Codex),
-                },
-            ];
+            let claude = taskbar::AgentLine {
+                agent: HookSource::Claude,
+                show: config.taskbar.claude && self.display.borrow().visible(HookSource::Claude),
+                tasks: self.agent_tasks(HookSource::Claude),
+                outcomes: self.agent_outcomes(HookSource::Claude),
+            };
             let (good_at, warn_at) = config.taskbar.thresholds();
-            (lines, good_at, warn_at)
+            (claude, good_at, warn_at)
         };
-        let mut chips = taskbar::chips(&self.usage.borrow(), &lines[..1], good_at, warn_at);
-        self.append_instance_chips(&mut chips, lines[1], good_at, warn_at);
+        let mut chips = taskbar::chips(&self.usage.borrow(), &[claude], good_at, warn_at);
+        self.append_instance_chips(&mut chips, good_at, warn_at);
         self.bar.set_chips(&chips, along);
         self.bar.set_usage_tooltip(&self.instance_quota_tooltip());
     }

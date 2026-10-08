@@ -218,6 +218,11 @@ impl Default for Snapshot {
 }
 
 trait Operations {
+    /// Explain a local fallback without claiming an independently installed or
+    /// independently updateable primary TUI. This never performs discovery.
+    fn local_source_note(&self, _target: Target) -> Option<&'static str> {
+        None
+    }
     /// Called only by explicit maintenance, with the process lock held.
     fn recover(&self) -> Result<(), String> {
         Ok(())
@@ -388,8 +393,12 @@ fn execute(
             row.message = error.unwrap_or_default();
         }));
     }
+    report(Box::new(|state| describe_local_sources(ops, state)));
     let Some(action) = action else {
-        report(Box::new(|state| describe_local_versions(&installed, state)));
+        report(Box::new(|state| {
+            describe_local_versions(&installed, state);
+            describe_local_sources(ops, state);
+        }));
         return Ok(());
     };
     if let Some(error) = inspection_error {
@@ -594,6 +603,7 @@ fn execute(
             }
         }));
     }
+    report(Box::new(|state| describe_local_sources(ops, state)));
     result.map_err(|error| {
         format!("操作未全部完成：{error} 已完成的更新会保留；关闭相关程序后可重试。")
     })?;
@@ -610,6 +620,17 @@ fn execute(
         };
     }));
     Ok(())
+}
+
+fn describe_local_sources(ops: &dyn Operations, state: &mut Snapshot) {
+    for target in Target::ALL {
+        if let Some(note) = ops.local_source_note(target) {
+            let row = &mut state.rows[target.index()];
+            if !row.error {
+                row.message = format!("{note} {}", row.message);
+            }
+        }
+    }
 }
 
 /// Initial inspection and refresh compare only the versions already observed.

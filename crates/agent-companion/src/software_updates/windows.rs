@@ -16,30 +16,22 @@ const STORE_PRODUCT: &str = "9PLM9XGG6VKS";
 
 pub(super) struct System {
     store_verified: Cell<bool>,
+    bundled_tui: Cell<bool>,
 }
 impl System {
     pub fn new() -> Result<Self, String> {
         deployment::primary_home().map_err(|_| "无法定位 Windows 用户目录。")?;
         Ok(Self {
             store_verified: Cell::new(false),
+            bundled_tui: Cell::new(false),
         })
     }
     pub fn lock(&self) -> Result<File, String> {
         maintenance::lock()
     }
     fn cli_version(&self, path: &Path, home: &Path) -> Result<Version, String> {
-        let mut command = Command::new(path);
-        agent_companion_core::process_environment::isolate_command(&mut command);
-        command.env("CODEX_HOME", home).arg("--version");
-        let output = maintenance::run(&mut command, Duration::from_secs(20))?;
-        let text = String::from_utf8_lossy(&output);
-        let version = text
-            .trim()
-            .strip_prefix("codex-cli ")
-            .ok_or("TUI 版本输出无效。")?;
-        semver::Version::parse(version).map_err(|_| "TUI 版本无效。")?;
         Ok(Version {
-            version: version.into(),
+            version: maintenance::native_tui_version(path, home)?,
             build: None,
         })
     }
@@ -53,6 +45,10 @@ impl System {
 }
 
 impl Operations for System {
+    fn local_source_note(&self, target: Target) -> Option<&'static str> {
+        (target == Target::CodexTui && self.bundled_tui.get())
+            .then_some("参考来自 Codex App 内置 CLI；未安装 standalone TUI，npm 命令不参与此对齐。")
+    }
     fn always_update_primary(&self, app: bool) -> bool {
         app
     }
@@ -77,12 +73,16 @@ impl Operations for System {
                 .app_version(&maintenance::official_desktop()?)
                 .map(Some),
             Target::CodexTui => {
-                let package = maintenance::official_tui()?;
+                self.bundled_tui.set(false);
+                let reference = maintenance::official_tui_reference()?;
                 self.cli_version(
-                    &package.package.join("bin/codex.exe"),
+                    &reference.executable,
                     &deployment::primary_home().map_err(|_| "无法定位主账号目录。")?,
                 )
-                .map(Some)
+                .map(|version| {
+                    self.bundled_tui.set(reference.bundled);
+                    Some(version)
+                })
             }
             Target::DodexApp | Target::DodexTui => {
                 let Some(instance) = maintenance::verified_instance()? else {
@@ -116,6 +116,7 @@ impl Operations for System {
                 length: 0,
             });
         }
+        require_standalone_update(maintenance::optional_official_tui()?.is_none())?;
         let agent = ureq::Agent::config_builder()
             .https_only(true)
             .timeout_global(Some(Duration::from_secs(30)))
@@ -142,7 +143,7 @@ impl Operations for System {
     fn preflight(&self, cli: bool, app: bool) -> Result<(), String> {
         maintenance::preflight()?;
         if cli {
-            maintenance::official_tui()?;
+            maintenance::official_tui_reference()?;
         }
         if app {
             maintenance::official_desktop()?;
@@ -150,10 +151,10 @@ impl Operations for System {
         Ok(())
     }
     fn cli_needs_sync(&self) -> bool {
-        maintenance::needs_sync(false)
+        maintenance::needs_sync(false, self.bundled_tui.get())
     }
     fn app_needs_sync(&self) -> bool {
-        maintenance::needs_sync(true)
+        maintenance::needs_sync(true, self.bundled_tui.get())
     }
     fn require_stopped(&self) -> Result<(), String> {
         maintenance::require_stopped()
@@ -198,6 +199,14 @@ impl Operations for System {
         } else {
             maintenance::align_tui(&expected.version)
         }
+    }
+}
+
+fn require_standalone_update(bundled: bool) -> Result<(), String> {
+    if bundled {
+        Err("当前 TUI 参考来自 Codex App 内置 CLI；请更新 Codex App 后点击「对齐版本」。独立 TUI 的官方稳定版更新需要完整 standalone 安装；现有 npm 命令未修改。".into())
+    } else {
+        Ok(())
     }
 }
 
@@ -246,6 +255,15 @@ fn parse_cli_release(bytes: &[u8]) -> Result<Release, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundled_reference_does_not_claim_independent_standalone_updates() {
+        require_standalone_update(false).unwrap();
+        let error = require_standalone_update(true).unwrap_err();
+        assert!(error.contains("App 内置 CLI"));
+        assert!(error.contains("standalone"));
+    }
+
     #[test]
     fn store_upgrade_is_exact_noninteractive_and_never_forces_or_accepts_agreements() {
         let args = winget_arguments();
