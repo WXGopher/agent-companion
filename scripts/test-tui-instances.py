@@ -149,7 +149,9 @@ class Acceptance:
         self.support = (self.home / "Library/Application Support/AgentCompanion"
                         if sys.platform == "darwin" else self.home / "local/AgentCompanion")
         self.environment = {name: os.environ[name] for name in (
-            "PATH", "SystemRoot", "WINDIR", "OS", "TEMP", "TMP", "LANG") if name in os.environ}
+            "PATH", "SystemRoot", "WINDIR", "OS", "PATHEXT", "ComSpec", "SystemDrive",
+            "ProgramData", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432",
+            "TEMP", "TMP", "LANG") if name in os.environ}
         self.environment.update(HOME=str(self.home), USERPROFILE=str(self.home),
                                 LOCALAPPDATA=str(self.home / "local"),
                                 APPDATA=str(self.home / "roaming"),
@@ -164,6 +166,7 @@ class Acceptance:
         self.clients = []
         self.sockets = {}
         self.stderr = tempfile.TemporaryFile(mode="w+")
+        print("Installing the native primary TUI " + primary_release, flush=True)
         self.install(self.primary, primary_release)
         self.environment["PATH"] = str(self.primary / "native-bin") + os.pathsep + self.environment["PATH"]
 
