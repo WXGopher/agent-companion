@@ -5,13 +5,36 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_run:
+        description: Optional successful Release run for direct native candidate acceptance
+        type: string
+        default: ''
+      platform:
+        description: Platform for direct candidate acceptance
+        type: choice
+        options: [both, windows, macos]
+        default: both
+
+permissions:
+  contents: read
+  actions: read
+  attestations: read
 
 env:
   CARGO_TERM_COLOR: always
   AGENT_COMPANION_RELEASE_BUILD: "1"
 
 jobs:
+  native-candidate:
+    if: inputs.release_run != ''
+    uses: ./.github/workflows/native-tui-acceptance.yml
+    with:
+      release_run: ${{ inputs.release_run }}
+      platform: ${{ inputs.platform }}
+
   native-menu-bar:
+    if: inputs.release_run == ''
     name: Native macOS menu bar
     runs-on: macos-14
     steps:
@@ -31,6 +54,7 @@ jobs:
           retention-days: 7
 
   build:
+    if: inputs.release_run == ''
     name: Build & test (${{ matrix.target }})
     strategy:
       fail-fast: false

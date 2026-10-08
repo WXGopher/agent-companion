@@ -1,6 +1,14 @@
 name: Native TUI release acceptance
 
 on:
+  workflow_call:
+    inputs:
+      release_run:
+        type: string
+        required: true
+      platform:
+        type: string
+        default: both
   workflow_dispatch:
     inputs:
       release_run:
