@@ -306,6 +306,49 @@ fn terminal_arguments_identity_stdin_cwd_exit_and_dynamic_versions_are_native() 
     assert_eq!(fs::read(layout.record()).unwrap(), record_before);
 }
 
+#[test]
+fn primary_help_does_not_invoke_its_package_manager() {
+    let (_temporary, layout, mut registry) = fixture();
+    let primary = registry.primary.as_mut().unwrap();
+    let manager = primary.cli_path.with_file_name(if cfg!(windows) {
+        "package-manager.exe"
+    } else {
+        "package-manager"
+    });
+    fs::copy(&primary.cli_path, &manager).unwrap();
+    primary.channel = Channel::Homebrew;
+    primary.updater = Some(manager);
+    let entry = primary.command_path.clone();
+    fs::write(layout.record(), serde_json::to_vec(&registry).unwrap()).unwrap();
+    let before = fs::read(layout.record()).unwrap();
+    for arguments in [
+        vec!["help", "update"],
+        vec!["update", "--help"],
+        vec!["update", "-h"],
+        vec!["update", "-hc", "model='fixture'"],
+        vec!["update", "--unknown"],
+        vec!["update", "unexpected-value"],
+    ] {
+        let output = launch(&layout, &entry).args(&arguments).output().unwrap();
+        assert!(output.status.success());
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains(&format!("args={arguments:?}")), "{text}");
+        assert!(
+            !text.contains("package-manager"),
+            "Help invoked the updater: {text}"
+        );
+    }
+    let output = launch(&layout, &entry).arg("update").output().unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        text.contains("args=[\"upgrade\", \"--cask\", \"codex\"]"),
+        "{text}"
+    );
+    assert!(text.contains("package-manager"), "{text}");
+    assert_eq!(fs::read(layout.record()).unwrap(), before);
+}
+
 #[cfg(unix)]
 #[test]
 fn exec_keeps_pid_and_native_signal_exit() {

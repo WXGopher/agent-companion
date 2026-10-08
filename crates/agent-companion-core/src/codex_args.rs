@@ -164,7 +164,7 @@ pub fn config_overrides(args: &[OsString]) -> Vec<String> {
 
 /// Inspect only the root command. Unknown option arity and option values stay
 /// with the native parser; prompts containing "app"/"update" are never routed.
-fn root_command(args: &[OsString]) -> Option<&str> {
+fn root_command(args: &[OsString], expand_help: bool) -> Option<&str> {
     let mut index = 0;
     while index < args.len() {
         let token = args[index].to_str()?;
@@ -181,7 +181,7 @@ fn root_command(args: &[OsString]) -> Option<&str> {
             }
             index = end;
         } else {
-            return if token == "help" {
+            return if token == "help" && expand_help {
                 args.get(index + 1)?.to_str()
             } else {
                 Some(token)
@@ -192,10 +192,43 @@ fn root_command(args: &[OsString]) -> Option<&str> {
 }
 
 pub fn is_app_command(args: &[OsString]) -> bool {
-    root_command(args) == Some("app")
+    root_command(args, true) == Some("app")
 }
 pub fn is_update_command(args: &[OsString]) -> bool {
-    root_command(args) == Some("update") && !args.iter().any(|arg| arg == "--help" || arg == "-h")
+    if root_command(args, false) != Some("update") {
+        return false;
+    }
+    let mut index = 0;
+    let mut command = false;
+    while index < args.len() {
+        if args[index] == "--" {
+            return command && index + 1 == args.len();
+        }
+        if args[index]
+            .to_str()
+            .is_some_and(|value| value.starts_with('-'))
+        {
+            let Some((end, options)) = option(args, index) else {
+                // Leave unknown/invalid arguments to the native parser. A
+                // package-manager update must not run on a help/error path.
+                return false;
+            };
+            if options.iter().any(|(key, _)| {
+                *key == "--help"
+                    || *key == "--version"
+                    || (command && !matches!(key.as_str(), "--config" | "--enable" | "--disable"))
+            }) {
+                return false;
+            }
+            index = end;
+        } else if !command && args[index] == "update" {
+            command = true;
+            index += 1;
+        } else {
+            return false;
+        }
+    }
+    command
 }
 
 #[cfg(test)]
@@ -227,7 +260,19 @@ mod tests {
         assert!(is_update_command(&args(&["update"])));
         assert!(is_update_command(&args(&["-C", "/work", "update"])));
         assert!(!is_update_command(&args(&["update", "--help"])));
+        assert!(!is_update_command(&args(&["help", "update"])));
+        assert!(!is_update_command(&args(&[
+            "-C", "/work", "help", "update"
+        ])));
         assert!(!is_update_command(&args(&["exec", "update"])));
+        assert!(!is_update_command(&args(&[
+            "update",
+            "-hc",
+            "model='fixture'"
+        ])));
+        assert!(!is_update_command(&args(&["update", "--unknown"])));
+        assert!(!is_update_command(&args(&["update", "unexpected-value"])));
+        assert!(is_update_command(&args(&["update", "-c", "model='-h'"])));
     }
     #[test]
     fn config_scanner_stops_at_separator_and_consumes_attached_or_separate_values() {
