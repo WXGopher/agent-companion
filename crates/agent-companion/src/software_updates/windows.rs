@@ -121,7 +121,7 @@ impl Operations for System {
             .https_only(true)
             .timeout_global(Some(Duration::from_secs(30)))
             .max_redirects(0)
-            .user_agent(concat!("agent-companion/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("agent-companion/", env!("AGENT_COMPANION_VERSION")))
             .build()
             .new_agent();
         let mut response = agent

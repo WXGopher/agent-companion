@@ -78,7 +78,10 @@ fn native_dashboard_layouts() {
         .env("AGENT_COMPANION_TEST_SNAPSHOT", snapshot)
         .env("AGENT_COMPANION_TEST_USAGE_SNAPSHOT", usage_snapshot)
         .env("AGENT_COMPANION_TEST_UPDATE_SNAPSHOT", update_snapshot)
-        .env("AGENT_COMPANION_TEST_VERSION", env!("CARGO_PKG_VERSION"))
+        .env(
+            "AGENT_COMPANION_TEST_VERSION",
+            env!("AGENT_COMPANION_VERSION"),
+        )
         .current_dir(root)
         .output()
         .expect("could not run native macOS layout checks");

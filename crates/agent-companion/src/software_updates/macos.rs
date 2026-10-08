@@ -983,7 +983,7 @@ fn network(timeout: Duration, redirects: u32) -> ureq::Agent {
         .https_only(true)
         .timeout_global(Some(timeout))
         .max_redirects(redirects)
-        .user_agent(concat!("agent-companion/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("agent-companion/", env!("AGENT_COMPANION_VERSION")))
         .build()
         .new_agent()
 }

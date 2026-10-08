@@ -1,5 +1,7 @@
 # Release process
 
+Local builds default to version `100.0` in the app and `acomp`, including `cargo build --release`. They never check for Companion releases or display cached update notices. To build a distributable using the workspace version and enable release checks, set `AGENT_COMPANION_RELEASE_BUILD=1` for the build and packaging commands. CI and Release workflows set this explicitly. The workspace version remains the published release version.
+
 1. Set the workspace version in `Cargo.toml` / `Cargo.lock`, update the bilingual README and add `docs/releases/v<version>.md`. Record completed and unverified manual scenarios in the platform documentation.
 2. Require successful Windows MSVC and macOS arm64 CI on the final PR revision. Merge it, then tag the merged revision as `v<version>`; never overwrite a published tag.
 3. The Release workflow checks the tag against the workspace version, builds, runs Clippy and tests, packages both platforms, creates provenance attestations and uploads a **draft** release. Native macOS layout/bridge tests run in this workflow too.

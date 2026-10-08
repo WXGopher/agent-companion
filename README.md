@@ -6,6 +6,8 @@
 
 在 Windows 任务栏或 macOS 菜单栏查看 Codex 的任务状态与订阅用量。
 
+Windows 只保留任务栏 C / D 读数入口；点击打开面板，右键可打开设置、Dodex 或退出。本地编译默认显示版本 `100.0`，关闭 Companion 更新检查和新版提示，详见[构建说明](docs/RELEASING.md)。
+
 ### 主要功能
 
 - **会话接力 CLI**：`acomp resume` 按当前目录搜索 Codex / Dodex 原会话，保留历史和设置，并选择本次使用的额度账号。通过 `agent-companion install-cli` 安装命令；macOS 需要受支持的原生 CLI 与登录方式，Windows 暂不支持恢复启动。详见[接力用法与兼容性](docs/RESUME.md)。
@@ -41,7 +43,7 @@
 
 随后在 Codex 中用 `/hooks` 审阅并信任配置，再开启新会话。如需提问卡片及精确终端跳转，使用同目录的 `agent-companion-codex.exe` 启动 Codex。
 
-**Windows 双开**：右键任务栏读数或托盘图标 → **Settings… → Codex 双开 → 安装并配置 Dodex**。一次完成独立环境、`dodex` 命令和 Companion 接入；监控开关与手动配置同步收在“高级设置”。需要本机已安装且签名有效的官方 Microsoft Store Codex / ChatGPT 应用。启用时先检查已有环境，缺少时自动部署，并配置 shell 的 `dodex` 命令；重复操作会校验环境、补齐命令，不覆盖已有账号和个人配置。在 PowerShell、cmd 或 Git Bash 中运行 `dodex`，会在当前终端和工作目录打开使用第二份配置的 Codex CLI；首次使用时自行登录第二个账号：
+**Windows 双开**：右键任务栏读数 → **Settings… → Codex 双开 → 安装并配置 Dodex**。一次完成独立环境、`dodex` 命令和 Companion 接入；监控开关与手动配置同步收在“高级设置”。需要本机已安装且签名有效的官方 Microsoft Store Codex / ChatGPT 应用。启用时先检查已有环境，缺少时自动部署，并配置 shell 的 `dodex` 命令；重复操作会校验环境、补齐命令，不覆盖已有账号和个人配置。在 PowerShell、cmd 或 Git Bash 中运行 `dodex`，会在当前终端和工作目录打开使用第二份配置的 Codex CLI；首次使用时自行登录第二个账号：
 
 ```powershell
 dodex
@@ -53,7 +55,7 @@ dodex -C C:\projects\demo
 
 普通参数直接传给 Codex CLI，`--help` 和 `--version` 也由 Codex 处理；`dodex app [PATH]` 打开隔离桌面，`dodex update` 进入统一维护流程。以 `--check` 或 `--deploy` 开头时进入环境管理：`dodex --check` 只检查官方运行程序；`dodex --deploy` 部署或校验环境并修复 shell 支持。升级旧版命令时，从新版程序运行 `.\agent-companion.exe dodex --deploy`。独立环境位于 `%LOCALAPPDATA%\AgentCompanion\Dodex`，已有账号、会话和个人配置继续使用。
 
-**开始菜单打开 App，终端打开 CLI**：部署后，在开始菜单搜索 **Dodex** 打开桌面 App；快捷方式指向 `%LOCALAPPDATA%\AgentCompanion\Dodex\dodex.exe`（GUI 启动器，无控制台窗口）。PATH 命令目录中的另一份 `dodex.exe` 专供 PowerShell、cmd 和 Git Bash，运行 `dodex` 仍会打开第二个 profile 的 Codex CLI。两个入口使用同一份第二实例配置。任务栏或托盘菜单的 **打开 Dodex**、`.\agent-companion.exe dodex` 也可打开桌面版。
+**开始菜单打开 App，终端打开 CLI**：部署后，在开始菜单搜索 **Dodex** 打开桌面 App；快捷方式指向 `%LOCALAPPDATA%\AgentCompanion\Dodex\dodex.exe`（GUI 启动器，无控制台窗口）。PATH 命令目录中的另一份 `dodex.exe` 专供 PowerShell、cmd 和 Git Bash，运行 `dodex` 仍会打开第二个 profile 的 Codex CLI。两个入口使用同一份第二实例配置。任务栏右键菜单的 **打开 Dodex**、`.\agent-companion.exe dodex` 也可打开桌面版。
 
 已有环境从新版程序运行 `.\agent-companion.exe dodex --deploy` 即可补齐或修复开始菜单入口和 CLI 命令，无需重新登录。两个启动器均安装在固定位置，不依赖下载或构建目录。未安装官方 standalone TUI 时，Dodex 使用已验签的桌面包内置 CLI；不会改动现有 npm Codex 命令。版本页会标明 App 内置 CLI，并支持对齐这一来源。独立 TUI 的官方稳定版更新仍需受支持的完整 standalone 包。
 
@@ -83,6 +85,8 @@ macOS 从菜单栏打开任务／用量面板，设置位于面板底部；重�
 ## English
 
 See Codex tasks and subscription usage in the Windows taskbar or macOS menu bar.
+
+Windows uses only the C / D taskbar readout: click for the panel, or right-click for Settings, Dodex and Quit. Local builds show version `100.0` and disable Companion release checks and update notices. See [build instructions](docs/RELEASING.md).
 
 ### Features
 
@@ -119,7 +123,7 @@ The interface retains the last successful quota reading for the same account, ma
 
 Use `/hooks` in Codex to review and trust the configuration, then start a new session. For question cards and precise terminal navigation, launch Codex through `agent-companion-codex.exe` in the same folder.
 
-**Windows second instance**: right-click the taskbar readout or tray icon → **Settings… → Codex 双开 → 安装并配置 Dodex**. One action prepares the independent environment, `dodex` command and Companion monitoring. The monitoring switch and manual file synchronization are under advanced settings. Requires the locally installed, validly signed official Microsoft Store Codex / ChatGPT app. Enabling checks an existing environment, deploys one if missing, and registers the `dodex` shell command. Repeating this validates the deployment and repairs shell support without overwriting existing account data or personal settings. In PowerShell, cmd or Git Bash, `dodex` opens Codex CLI in the current terminal and working directory using the second profile. Sign in with a second account on first use:
+**Windows second instance**: right-click the taskbar readout → **Settings… → Codex 双开 → 安装并配置 Dodex**. One action prepares the independent environment, `dodex` command and Companion monitoring. The monitoring switch and manual file synchronization are under advanced settings. Requires the locally installed, validly signed official Microsoft Store Codex / ChatGPT app. Enabling checks an existing environment, deploys one if missing, and registers the `dodex` shell command. Repeating this validates the deployment and repairs shell support without overwriting existing account data or personal settings. In PowerShell, cmd or Git Bash, `dodex` opens Codex CLI in the current terminal and working directory using the second profile. Sign in with a second account on first use:
 
 ```powershell
 dodex
@@ -131,7 +135,7 @@ dodex -C C:\projects\demo
 
 Regular arguments pass directly to Codex CLI, including `--help` and `--version`. `dodex app [PATH]` opens the isolated desktop; `dodex update` enters paired maintenance. A leading `--check` or `--deploy` selects deployment management: `dodex --check` checks the official runtime; `dodex --deploy` deploys or validates the environment and repairs shell support. To upgrade an older command, run `.\agent-companion.exe dodex --deploy` from the new release. The isolated environment lives under `%LOCALAPPDATA%\AgentCompanion\Dodex`; existing account data, sessions and personal settings stay in use.
 
-**Start menu opens the app; terminals open the CLI.** After deployment, search for **Dodex** in Start to open the desktop app. Its shortcut targets `%LOCALAPPDATA%\AgentCompanion\Dodex\dodex.exe`, a GUI launcher with no console window. The separate `dodex.exe` in the PATH command directory remains a console launcher: `dodex` in PowerShell, cmd or Git Bash starts Codex CLI with the second profile. Both entry points share that second-instance profile. **打开 Dodex** in the taskbar or tray menu and `.\agent-companion.exe dodex` also open the desktop app.
+**Start menu opens the app; terminals open the CLI.** After deployment, search for **Dodex** in Start to open the desktop app. Its shortcut targets `%LOCALAPPDATA%\AgentCompanion\Dodex\dodex.exe`, a GUI launcher with no console window. The separate `dodex.exe` in the PATH command directory remains a console launcher: `dodex` in PowerShell, cmd or Git Bash starts Codex CLI with the second profile. Both entry points share that second-instance profile. **打开 Dodex** in the taskbar context menu and `.\agent-companion.exe dodex` also open the desktop app.
 
 For an existing environment, run `.\agent-companion.exe dodex --deploy` from the new build to add or repair the Start menu entry and CLI command without signing in again. Both launchers are installed in stable locations and do not depend on the download or build directory. When the official standalone TUI is absent, Dodex uses the verified desktop package's bundled CLI and leaves an existing npm Codex command unchanged. The version panel labels the app-bundled CLI and supports alignment from this source. Updating a standalone TUI from the official stable channel still requires a supported complete standalone package.
 

@@ -64,8 +64,7 @@ impl InstanceReadout {
 }
 
 fn quota_tooltip(readouts: &[InstanceReadout], now: u64, offset: i64) -> String {
-    // Put both account values before the longer reset/error descriptions so
-    // the native tray's limited tooltip cannot truncate Dodex's allowance.
+    // Put both account values before the longer reset/error descriptions.
     let summary = readouts
         .iter()
         .map(|readout| {

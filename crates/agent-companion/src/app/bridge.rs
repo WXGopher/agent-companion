@@ -102,7 +102,7 @@ impl Handler for Forwarder {
     fn on_envelope(&self, envelope: Envelope, connection: ConnectionHandle) {
         // A newer Agent Companion is starting and wants this pipe. There is only ever one
         // Agent Companion on a machine — see [`crate::single`] — so this one goes, and it
-        // goes the same way the tray's Quit takes it: through the event loop, so
+        // goes the same way the readout menu's Quit takes it: through the event loop, so
         // the windows come down in order.
         if let Envelope::Event {
             event: agent_companion_core::protocol::Event::Shutdown,

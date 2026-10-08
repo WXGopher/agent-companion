@@ -260,7 +260,7 @@ impl Editor {
         Ok(editor)
     }
 
-    /// Windows embeds Settings in the tray process, so both windows share one
+    /// Windows embeds Settings in the companion process, so both windows share one
     /// request gate and the same release result.
     #[cfg(windows)]
     pub(crate) fn with_release_updates(

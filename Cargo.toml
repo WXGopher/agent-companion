@@ -29,7 +29,6 @@ tokio = { version = "1", features = [
     "sync",
     "time",
 ] }
-tray-icon = "0.24"
 windows = { version = "0.61", features = [
     "Data_Xml_Dom",
     "Foundation",

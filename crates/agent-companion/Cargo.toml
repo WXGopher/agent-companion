@@ -45,7 +45,6 @@ toml_edit = "0.25.13"
 agent-companion-core = { workspace = true, features = ["server"] }
 futures-util = { version = "0.3", features = ["sink"] }
 tokio-tungstenite = "0.28"
-tray-icon.workspace = true
 windows.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]

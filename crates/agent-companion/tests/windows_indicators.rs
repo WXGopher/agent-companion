@@ -8,9 +8,6 @@ use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferTyp
 use slint::platform::{Platform, WindowAdapter};
 use slint::{ComponentHandle, ModelRc, Rgb8Pixel, VecModel};
 
-#[path = "../src/app/icon.rs"]
-mod icon;
-
 slint::slint! {
     import { TaskbarBar } from "../ui/taskbar.slint";
     import { SessionBlock } from "../ui/common.slint";

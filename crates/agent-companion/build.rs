@@ -1,5 +1,18 @@
 //! Compile only the UI used by the target platform.
 fn main() {
+    println!("cargo:rerun-if-env-changed=AGENT_COMPANION_RELEASE_BUILD");
+    println!("cargo:rustc-check-cfg=cfg(companion_local_build)");
+    let release = std::env::var("AGENT_COMPANION_RELEASE_BUILD").as_deref() == Ok("1");
+    let package_version = std::env::var("CARGO_PKG_VERSION").unwrap();
+    let (version, semver_version) = if release {
+        (package_version.as_str(), package_version.as_str())
+    } else {
+        println!("cargo:rustc-cfg=companion_local_build");
+        ("100.0", "100.0.0")
+    };
+    println!("cargo:rustc-env=AGENT_COMPANION_VERSION={version}");
+    println!("cargo:rustc-env=AGENT_COMPANION_SEMVER_VERSION={semver_version}");
+
     let entry = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         "ui/agent-companion.slint"
     } else {

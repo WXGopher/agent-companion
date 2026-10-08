@@ -2,6 +2,7 @@
 """Package an existing arm64 executable; no Developer ID signing or notarization."""
 import argparse
 import hashlib
+import os
 import plistlib
 import shutil
 import subprocess
@@ -15,7 +16,11 @@ parser.add_argument("--cli-binary", type=Path, help="acomp console binary; defau
 parser.add_argument("--output", type=Path, default=Path("dist"))
 args = parser.parse_args()
 root = Path(__file__).resolve().parent.parent
-version = tomllib.loads((root / "Cargo.toml").read_text())["workspace"]["package"]["version"]
+version = (
+    tomllib.loads((root / "Cargo.toml").read_text())["workspace"]["package"]["version"]
+    if os.environ.get("AGENT_COMPANION_RELEASE_BUILD") == "1"
+    else "100.0"
+)
 cli_binary = args.cli_binary or args.binary.with_name("acomp")
 for binary in (args.binary, cli_binary):
     arches = subprocess.check_output(["lipo", "-archs", str(binary)], text=True).strip()

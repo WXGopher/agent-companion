@@ -28,6 +28,7 @@ fn service(
             counted.fetch_add(1, Ordering::SeqCst);
             fetch()
         }),
+        true,
     );
     (service, calls)
 }
@@ -38,6 +39,37 @@ fn wait_idle(service: &UpdateService) {
         assert!(Instant::now() < deadline, "Release worker did not complete");
         std::thread::sleep(Duration::from_millis(1));
     }
+}
+
+#[test]
+fn local_builds_skip_all_checks_and_ignore_newer_cached_releases() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("updates.json");
+    save_cache(
+        &path,
+        &Cache {
+            last_attempt_at: Some(0),
+            latest_tag: Some("v101.0.0".into()),
+        },
+    )
+    .unwrap();
+    let original = fs::read(&path).unwrap();
+    for _ in 0..2 {
+        let local = UpdateService::create(
+            Some(path.clone()),
+            "100.0.0",
+            Box::new(|| panic!("Local builds must never contact the release service")),
+            false,
+        );
+        for now in [0, CHECK_INTERVAL_SECS, CHECK_INTERVAL_SECS * 2] {
+            local.panel_open(now);
+            local.check_now(now);
+            assert_eq!(local.snapshot(), UpdateSnapshot::default());
+            assert_eq!(local.manual_snapshot(), ManualCheck::Disabled);
+            assert!(!local.inner.state().in_flight);
+        }
+    }
+    assert_eq!(fs::read(path).unwrap(), original);
 }
 
 #[test]

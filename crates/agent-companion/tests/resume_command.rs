@@ -110,7 +110,7 @@ fn both_entries_offer_resume_help_and_version() {
         assert!(version.status.success());
         assert_eq!(
             String::from_utf8(version.stdout).unwrap().trim(),
-            format!("{name} {}", env!("CARGO_PKG_VERSION"))
+            format!("{name} {}", env!("AGENT_COMPANION_VERSION"))
         );
         let help = Command::new(binary)
             .args(["resume", "--help"])

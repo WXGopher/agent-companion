@@ -1,5 +1,6 @@
 //! Read-only release awareness. Panel opens are throttled to daily checks;
 //! explicit settings checks bypass that throttle. Snapshot reads never fetch.
+//! Local builds skip release checks and never advertise cached updates.
 use std::{
     fs,
     io::{self, Read, Write},
@@ -36,6 +37,7 @@ pub struct UpdateSnapshot {
 pub enum ManualCheck {
     #[default]
     Idle,
+    Disabled,
     Checking,
     UpToDate,
     Available(UpdateSnapshot),
@@ -62,6 +64,7 @@ struct Inner {
     state: Mutex<State>,
     path: Option<PathBuf>,
     current_version: Version,
+    checks_enabled: bool,
     fetch: Box<Fetch>,
 }
 
@@ -88,21 +91,36 @@ impl UpdateService {
         let path = agent_companion_core::usage_service::settings_path()
             .ok()
             .map(|path| path.with_file_name("updates.json"));
-        Self::create(path, env!("CARGO_PKG_VERSION"), Box::new(fetch_latest))
+        Self::create(
+            path,
+            env!("AGENT_COMPANION_SEMVER_VERSION"),
+            Box::new(fetch_latest),
+            !cfg!(companion_local_build),
+        )
     }
 
-    fn create(path: Option<PathBuf>, current_version: &str, fetch: Box<Fetch>) -> Self {
+    fn create(
+        path: Option<PathBuf>,
+        current_version: &str,
+        fetch: Box<Fetch>,
+        checks_enabled: bool,
+    ) -> Self {
         let cache = path.as_deref().map(load_cache).unwrap_or_default();
         Self {
             inner: Arc::new(Inner {
                 state: Mutex::new(State {
                     cache,
                     in_flight: false,
-                    manual: ManualCheck::Idle,
+                    manual: if checks_enabled {
+                        ManualCheck::Idle
+                    } else {
+                        ManualCheck::Disabled
+                    },
                 }),
                 path,
                 current_version: Version::parse(current_version)
-                    .expect("Cargo package versions are semantic versions"),
+                    .expect("Build versions are semantic versions"),
+                checks_enabled,
                 fetch,
             }),
         }
@@ -125,6 +143,9 @@ impl UpdateService {
     }
 
     fn start_check(&self, now: u64, manual: bool) {
+        if !self.inner.checks_enabled {
+            return;
+        }
         let attempt = {
             let mut state = self.inner.state();
             if manual {
@@ -192,6 +213,9 @@ impl UpdateService {
     /// A cached release stops being advertised after the app is upgraded to it.
     /// Background completions become visible here without reopening the panel.
     pub fn snapshot(&self) -> UpdateSnapshot {
+        if !self.inner.checks_enabled {
+            return UpdateSnapshot::default();
+        }
         let tag = self.inner.state().cache.latest_tag.clone();
         update_snapshot(tag, &self.inner.current_version)
     }
@@ -201,7 +225,7 @@ impl UpdateService {
         current_version: &str,
         fetch: impl Fn() -> io::Result<Vec<u8>> + Send + Sync + 'static,
     ) -> Self {
-        Self::create(None, current_version, Box::new(fetch))
+        Self::create(None, current_version, Box::new(fetch), true)
     }
 }
 
@@ -223,7 +247,7 @@ fn request_config() -> ureq::config::Config {
         .timeout_global(Some(REQUEST_TIMEOUT))
         .https_only(true)
         .max_redirects(0)
-        .user_agent(concat!("agent-companion/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("agent-companion/", env!("AGENT_COMPANION_VERSION")))
         .build()
 }
 

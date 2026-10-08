@@ -67,7 +67,7 @@ use crate::out::errln;
 
 /// Codex task and usage companion, with a native CLI status bar editor.
 #[derive(Debug, Parser)]
-#[command(name = "agent-companion", version, about, long_about = None)]
+#[command(name = "agent-companion", version = env!("AGENT_COMPANION_VERSION"), about, long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -161,7 +161,7 @@ struct DodexManagementCli {
 #[derive(Debug, Parser)]
 #[command(
     name = "dodex",
-    version,
+    version = env!("AGENT_COMPANION_VERSION"),
     about = "Open the isolated Dodex desktop app."
 )]
 struct DodexDesktopCli {

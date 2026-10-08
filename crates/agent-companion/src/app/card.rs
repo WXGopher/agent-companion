@@ -178,7 +178,7 @@ impl Card {
 ///
 /// Deliberately not the transcript title — a card appears the instant the agent
 /// asks, which is exactly when reading a multi-megabyte transcript would be felt
-/// as a stutter. The tray panel, which is opened rather than thrown at the user,
+/// as a stutter. The task panel, which is opened rather than thrown at the user,
 /// is where the richer titles go.
 fn title_for(payload: &HookPayload) -> String {
     let name = payload

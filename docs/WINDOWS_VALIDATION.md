@@ -1,5 +1,15 @@
 # Windows validation
 
+## Local v100.0 verification (2026-10-08)
+
+Windows now uses the taskbar readout without a separate notification-area icon. Its status animation runs independently; the existing panel, quota tooltip and context-menu actions remain available. Local builds default to `100.0`, including optimized builds, and skip automatic/manual Companion release checks and cached update notices. Explicit release builds retain the workspace version and release checks.
+
+- Workspace formatting, Clippy with warnings denied, and the optimized Windows build passed.
+- `cargo test --workspace --locked --offline -- --test-threads=1` passed: 608 executions passed and 10 remained ignored. This count includes shared modules exercised by multiple test binaries. The local-build regression checks repeated panel/manual requests, restart behavior and a cached release above `100.0`, without contacting the release service or rewriting the cache.
+- Both app and `acomp` reported `100.0` in default debug and optimized builds. An explicitly opted-in release build reported the workspace version for both entries; default debug binaries were restored afterward.
+- The existing installed binaries were backed up, all four Companion executables were replaced, and their SHA-256 hashes matched the optimized build. The old app exited through its normal pipe shutdown request and the installed app restarted successfully. Installed app and CLI version outputs were `100.0`.
+- Native window inspection confirmed that the restarted process owned a visible readout embedded in `Shell_TrayWnd`. This verifies window presence and attachment; the final appearance and interactive menu behavior were not visually inspected on the user's desktop.
+
 ## v0.3.30 local verification (2026-10-08)
 
 This revision adds a manual release check to Settings and repairs clipped or stale taskbar quota tooltips. The results below describe separate local validation stages before the release version bump; overlapping test groups are not added together or presented as a unique total for the release tag.

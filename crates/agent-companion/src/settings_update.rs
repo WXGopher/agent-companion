@@ -80,6 +80,10 @@ fn render(window: &CodexTuiWindow, snapshot: &ManualCheck, open_failed: bool) {
     } else {
         match snapshot {
             ManualCheck::Idle => String::new(),
+            ManualCheck::Disabled => format!(
+                "本地版本 v{}，已关闭更新检查。",
+                env!("AGENT_COMPANION_VERSION")
+            ),
             ManualCheck::Checking => "正在检查 GitHub 最新版本…".into(),
             ManualCheck::UpToDate => "当前已是最新版本。".into(),
             ManualCheck::Available(update) => format!(
