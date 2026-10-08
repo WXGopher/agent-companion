@@ -133,8 +133,9 @@ impl Layout {
         let primary_home = self.user_home.join(".codex");
         for path in [&second.codex_home, &second.database_dir, &second.log_dir] {
             no_redirects(path)?;
-            if !path.starts_with(&self.user_home)
-                || path == &self.user_home
+            if ![&self.user_home, &self.support]
+                .iter()
+                .any(|root| path_within(path, root) && !path_within(root, path))
                 || overlaps(path, &primary_home)
                 || overlaps(
                     path,

@@ -59,8 +59,13 @@ exit $LASTEXITCODE
 '@, [Text.UTF8Encoding]::new($false))
     $credential = [PSCredential]::new("$env:COMPUTERNAME\$name", $secret)
     $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $child = Start-Process -FilePath $shell -Credential $credential -LoadUserProfile -WorkingDirectory $root -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', "`"$bootstrap`"") -RedirectStandardOutput (Join-Path $root 'stdout.log') -RedirectStandardError (Join-Path $root 'stderr.log') -Wait -PassThru
+    # Start-Process -Wait creates a job that forbids native daemon breakaway.
+    # Wait on this process handle only; the fixture owns daemon cleanup.
+    $child = Start-Process -FilePath $shell -Credential $credential -LoadUserProfile -WorkingDirectory $root -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', "`"$bootstrap`"") -RedirectStandardOutput (Join-Path $root 'stdout.log') -RedirectStandardError (Join-Path $root 'stderr.log') -PassThru
+    $null = $child.Handle
+    $child.WaitForExit()
     $result = $child.ExitCode
+    if ($null -eq $result) { throw 'The native acceptance process did not report an exit code.' }
     foreach ($log in @('stdout.log', 'stderr.log')) {
         Write-Output ([IO.File]::ReadAllText((Join-Path $root $log)))
     }

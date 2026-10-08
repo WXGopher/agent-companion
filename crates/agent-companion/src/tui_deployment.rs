@@ -628,8 +628,8 @@ fn migrate_legacy(layout: &Layout) -> io::Result<(Registry, Option<PathBuf>)> {
     #[cfg(windows)]
     let _ = entry;
     if let Some(package) = &source {
-        let allowed = package.starts_with(layout.support.join("Tui/packages"))
-            || package.starts_with(layout.support.join("Dodex/tui-packages"));
+        let allowed = tui_instance::path_within(package, &layout.support.join("Tui/packages"))
+            || tui_instance::path_within(package, &layout.support.join("Dodex/tui-packages"));
         if !allowed {
             return Err(io::Error::other(
                 "Legacy standalone package is outside the managed install directory",

@@ -53,6 +53,20 @@ fn overlapping_or_redirected_storage_is_rejected_without_rewriting_it() {
     assert!(layout.validate(&registry).is_err());
 }
 
+#[test]
+fn redirected_local_appdata_keeps_owned_legacy_storage_without_accepting_other_roots() {
+    let (temporary, mut layout, mut registry) = fixture();
+    // Windows can place LOCALAPPDATA on another drive outside USERPROFILE.
+    layout.support = temporary.path().canonicalize().unwrap().join("local-data");
+    let home = layout.support.join("Dodex/codex-home");
+    registry.dodex = layout.secondary(home.clone(), home.join("sqlite"), home.join("logs"));
+    layout.validate(&registry).unwrap();
+    registry.dodex.database_dir = temporary.path().canonicalize().unwrap().join("foreign");
+    assert!(layout.validate(&registry).is_err());
+    registry.dodex.database_dir = layout.user_home.join(".codex/sqlite");
+    assert!(layout.validate(&registry).is_err());
+}
+
 #[cfg(windows)]
 #[test]
 fn windows_verbatim_paths_and_case_cannot_escape_instance_containment() {
@@ -69,4 +83,16 @@ fn windows_verbatim_paths_and_case_cannot_escape_instance_containment() {
     no_redirects(&verbatim).unwrap();
     let regular = PathBuf::from(verbatim.to_string_lossy().trim_start_matches(r"\\?\"));
     no_redirects(&regular).unwrap();
+    let (_temporary, mut layout, mut registry) = fixture();
+    layout.user_home = PathBuf::from(
+        layout
+            .user_home
+            .to_string_lossy()
+            .trim_start_matches(r"\\?\"),
+    );
+    layout.support = layout.user_home.join("support");
+    registry.dodex.command_path = layout.public_bin().join("dodex.exe");
+    layout.validate(&registry).unwrap();
+    registry.dodex.database_dir = layout.user_home.join(".codex/sqlite");
+    assert!(layout.validate(&registry).is_err());
 }
