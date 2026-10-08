@@ -218,6 +218,11 @@ pub fn no_redirects(path: &Path) -> io::Result<()> {
     let mut current = PathBuf::new();
     for part in path.components() {
         current.push(part);
+        // A drive prefix alone (especially \\?\C:) is not a filesystem
+        // endpoint. Inspect it only after RootDir completes the drive root.
+        if matches!(part, Component::Prefix(_)) {
+            continue;
+        }
         match fs::symlink_metadata(&current) {
             Ok(metadata) if redirected(&metadata) => {
                 return Err(io::Error::other("Instance storage contains a redirect"));

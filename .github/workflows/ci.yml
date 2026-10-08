@@ -53,6 +53,8 @@ jobs:
           targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: Format
         run: cargo fmt --all --check
@@ -67,7 +69,19 @@ jobs:
         run: cargo clippy ${{ matrix.packages }} --all-targets --target ${{ matrix.target }} --locked -- -D warnings
 
       - name: Test
+        env:
+          AGENT_COMPANION_RENDER_DIR: target/tui-ui-renders
         run: cargo test ${{ matrix.packages }} --target ${{ matrix.target }} --locked
+
+      - name: Preserve native TUI settings and navigation renders
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}-tui-ui-renders
+          path: target/tui-ui-renders/
+          if-no-files-found: ignore
+          compression-level: 9
+          retention-days: 7
 
       - name: Common backend and migration tests
         run: cargo test -p agent-companion-core --features server --target ${{ matrix.target }} --locked

@@ -69,7 +69,10 @@ class SocketClient:
         self.socket.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: " + nonce + b"\r\n\r\n")
         header = bytearray()
         while not header.endswith(b"\r\n\r\n"):
-            header.extend(self.socket.recv(1))
+            part = self.socket.recv(1)
+            if not part:
+                raise AssertionError("Native daemon closed its WebSocket handshake")
+            header.extend(part)
         assert header.startswith(b"HTTP/1.1 101"), header
         self.call(1, "initialize", {"clientInfo": {"name": "acomp_native_instances", "version": "1"},
                                    "capabilities": {"experimentalApi": True}})

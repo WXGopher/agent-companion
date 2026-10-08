@@ -436,6 +436,52 @@ fn codex_tui_editor_renders_and_applies_only_explicit_actions(
         config::read(&secondary).unwrap().visible_items(),
         vec!["model", "git-branch"]
     );
+    editor.window.set_dual_tui_installed(true);
+    editor.window.set_dual_tui_available(true);
+    editor.window.set_dual_tui_configured(true);
+    editor.window.set_dual_deployed(true);
+    editor.window.set_dual_enabled(true);
+    editor.window.set_dual_command_path(
+        "C:\\Users\\Example User\\AppData\\Local\\AgentCompanion\\bin\\dodex.exe".into(),
+    );
+    editor.window.set_dual_package_path(
+        "C:\\Users\\Example User\\AppData\\Local\\AgentCompanion\\Dodex\\codex-home\\packages\\standalone\\releases\\0.159.3".into(),
+    );
+    editor
+        .window
+        .set_software_versions(ModelRc::new(VecModel::from(vec![
+            super::ui::SoftwareVersion {
+                name: "Codex TUI".into(),
+                current: "0.160.1".into(),
+                target: "npm".into(),
+                ..Default::default()
+            },
+            super::ui::SoftwareVersion {
+                name: "Dodex TUI".into(),
+                current: "0.159.3".into(),
+                target: "官方 standalone".into(),
+                ..Default::default()
+            },
+        ])));
+    let installs = Rc::new(std::cell::Cell::new(0));
+    editor.window.on_deploy_dual({
+        let calls = installs.clone();
+        move || calls.set(calls.get() + 1)
+    });
+    let opens = Rc::new(std::cell::Cell::new(0));
+    editor.window.on_open_dual({
+        let calls = opens.clone();
+        move || calls.set(calls.get() + 1)
+    });
+    let updates = Rc::new(RefCell::new(Vec::<String>::new()));
+    editor.window.on_maintain_software({
+        let calls = updates.clone();
+        move |action| calls.borrow_mut().push(action.to_string())
+    });
+    editor
+        .window
+        .global::<super::ui::Palette>()
+        .set_color_scheme(slint::language::ColorScheme::Light);
     for scale in [1.0, 1.5, 2.0] {
         window.dispatch_event(WindowEvent::ScaleFactorChanged {
             scale_factor: scale,
@@ -448,11 +494,53 @@ fn codex_tui_editor_renders_and_applies_only_explicit_actions(
         draw(&window, &format!("windows-dual-editor-{scale}"));
         editor
             .window
-            .set_dual_message("环境已就绪。打开 Dodex 后，请使用第二个账号登录。dodex 命令目录：C:\\Users\\Example User\\AppData\\Local\\AgentCompanion\\bin。已加入用户 PATH；请完全退出并重开终端后运行 dodex，旧终端不会自动更新 PATH。".into());
-        editor.window.set_dual_deployed(true);
+            .set_dual_message("安装与配置已完成。打开终端后，请自行登录第二个账号。".into());
         editor.window.set_settings_page(3);
+        editor.window.set_dual_scroll_y(0.0);
+        editor.window.set_dual_advanced_open(false);
         draw(&window, &format!("windows-dual-settings-{scale}"));
+        click_control(
+            &window,
+            "修复独立 Dodex TUI 安装与终端入口",
+            AccessibleRole::Button,
+        );
+        click_control(&window, "在终端中打开 Dodex TUI", AccessibleRole::Button);
+        click_control(
+            &window,
+            "仅更新 Codex TUI，保留 Dodex 版本",
+            AccessibleRole::Button,
+        );
+        click_control(
+            &window,
+            "仅更新 Dodex TUI，保留 Codex 版本",
+            AccessibleRole::Button,
+        );
+        editor.window.set_software_busy(true);
+        draw(&window, "windows-dual-settings-busy");
+        click_control(
+            &window,
+            "仅更新 Codex TUI，保留 Dodex 版本",
+            AccessibleRole::Button,
+        );
+        click_control(
+            &window,
+            "仅更新 Dodex TUI，保留 Codex 版本",
+            AccessibleRole::Button,
+        );
+        click_control(
+            &window,
+            "修复独立 Dodex TUI 安装与终端入口",
+            AccessibleRole::Button,
+        );
+        click_control(&window, "在终端中打开 Dodex TUI", AccessibleRole::Button);
+        editor.window.set_software_busy(false);
     }
+    assert_eq!(installs.get(), 3);
+    assert_eq!(opens.get(), 3);
+    assert_eq!(
+        *updates.borrow(),
+        ["update-codex", "update-dodex"].repeat(3)
+    );
     editor.window.hide().unwrap();
 }
 

@@ -64,4 +64,9 @@ fn windows_verbatim_paths_and_case_cannot_escape_instance_containment() {
         Path::new(r"C:\Users\Example\.codex-secondary\bin\codex.exe"),
         Path::new(r"c:\users\example\.codex")
     ));
+    let temporary = tempfile::tempdir().unwrap();
+    let verbatim = temporary.path().canonicalize().unwrap();
+    no_redirects(&verbatim).unwrap();
+    let regular = PathBuf::from(verbatim.to_string_lossy().trim_start_matches(r"\\?\"));
+    no_redirects(&regular).unwrap();
 }

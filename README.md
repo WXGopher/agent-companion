@@ -144,7 +144,7 @@ On macOS, open tasks and usage from the menu bar, with Settings in the popup foo
 
 <p align="center"><img src="docs/codex-tui.png" width="760" alt="Windows 分区设置与状态栏预览 / Settings and status bar preview"></p>
 
-<p align="center"><img src="docs/windows-dual.png" width="760" alt="Windows Dodex 部署与启动 / Dodex deployment and launch"></p>
+<p align="center"><img src="docs/windows-dual.png" width="760" alt="Windows TUI 双开与独立更新 / Independent TUI installation and updates"></p>
 
 </details>
 
@@ -159,7 +159,7 @@ On macOS, open tasks and usage from the menu bar, with Settings in the popup foo
 <details>
 <summary>设置 / Settings</summary>
 
-<p align="center"><img src="docs/macos-settings.png" width="760" alt="macOS 设置与状态栏预览 / Settings and status bar preview"></p>
+<p align="center"><img src="docs/macos-settings.png" width="760" alt="macOS TUI 双开设置 / Independent TUI settings"></p>
 
 </details>
 
