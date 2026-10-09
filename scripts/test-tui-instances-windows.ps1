@@ -1,5 +1,20 @@
 param([Parameter(Mandatory)][string]$Companion, [switch]$PreflightOnly)
 
+function Remove-OwnedFixtureDirectory([string]$Path, [bool]$Owned) {
+    if (-not $Owned) { return }
+    $expected = [IO.Path]::GetFullPath($Path)
+    $directory = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if (-not $directory) { return }
+    if (-not $directory.PSIsContainer -or
+        $directory.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint) -or
+        -not [string]::Equals($directory.FullName, $expected, [StringComparison]::OrdinalIgnoreCase) -or
+        $directory.Name -notmatch '^t[0-9a-f]{8}$') {
+        Write-Warning 'Refusing to remove a redirected or unexpected fixture directory.'
+        return
+    }
+    Remove-Item -LiteralPath $directory.FullName -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 # GitHub's Windows runner is elevated. Native Codex correctly refuses to start
 # a shared daemon with that token, so use a disposable standard account on the
 # disposable CI VM. Never create an account on a developer's computer.
@@ -18,9 +33,11 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 
 $suffix = [Guid]::NewGuid().ToString('N').Substring(0, 8)
 $name = 'tui-' + $suffix
-$root = Join-Path $env:SystemDrive ('t' + $suffix)
+$root = [IO.Path]::GetFullPath((Join-Path $env:SystemDrive ('t' + $suffix)))
+$rootCreated = $false
 $brokerPid = $null
 $serviceName = $null
+$serviceCreated = $false
 $created = $null
 $result = 1
 try {
@@ -28,6 +45,7 @@ try {
     $created = New-LocalUser -Name $name -Password $secret -Description 'Disposable native TUI CI fixture'
     Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $created
     New-Item -ItemType Directory -Path $root | Out-Null
+    $rootCreated = $true
     $sid = '*' + $created.SID.Value
     & icacls.exe $root /inheritance:r /grant:r "${sid}:(OI)(CI)F" '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' /Q | Out-Null
     if ($LASTEXITCODE) { throw 'Cannot prepare the disposable fixture directory.' }
@@ -57,6 +75,7 @@ try {
     $serviceName = 'ac-tui-' + $suffix
     $binary = "`"$($launch.python)`" `"$broker`" `"$root`" --service $serviceName"
     New-Service -Name $serviceName -BinaryPathName $binary -StartupType Manual -Description 'Disposable native TUI acceptance host' | Out-Null
+    $serviceCreated = $true
     Start-Service -Name $serviceName
     $brokerPid = (Get-CimInstance Win32_Service -Filter "Name='$serviceName'").ProcessId
     $started = [DateTime]::UtcNow
@@ -102,7 +121,7 @@ try {
             Stop-Process -Id $brokerPid -Force -ErrorAction SilentlyContinue
         }
     }
-    if ($serviceName) {
+    if ($serviceCreated) {
         Stop-Service -Name $serviceName -ErrorAction SilentlyContinue
         & sc.exe delete $serviceName | Out-Null
     }
@@ -117,6 +136,6 @@ try {
         Remove-LocalUser -SID $created.SID -ErrorAction SilentlyContinue
         Get-CimInstance Win32_UserProfile -Filter "SID='$($created.SID.Value)'" | Remove-CimInstance -ErrorAction SilentlyContinue
     }
-    if (Test-Path $root) { Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue }
+    Remove-OwnedFixtureDirectory -Path $root -Owned $rootCreated
 }
 exit $result

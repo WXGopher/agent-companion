@@ -1,6 +1,10 @@
 //! Remove only hash-owned legacy desktop entry points after TUI publication.
 //! Account storage and running processes are never removed or terminated.
 use super::*;
+use windows::Win32::{
+    System::Com::CoTaskMemFree,
+    UI::Shell::{FOLDERID_Programs, KF_FLAG_DEFAULT, SHGetKnownFolderPath},
+};
 
 #[derive(Serialize, Deserialize)]
 struct Entry {
@@ -30,10 +34,13 @@ pub(super) fn retire(layout: &Layout, record: &Registry) -> io::Result<()> {
         .parent()
         .ok_or_else(|| io::Error::other("Invalid legacy desktop root"))?;
     let desktop = root.join("dodex.exe");
-    let shortcut = PathBuf::from(
-        std::env::var_os("APPDATA").ok_or_else(|| io::Error::other("APPDATA is unavailable"))?,
-    )
-    .join("Microsoft/Windows/Start Menu/Programs/Dodex.lnk");
+    // Match the native known folder used by the old desktop installer; the
+    // Programs folder may have been redirected independently of APPDATA.
+    let programs = unsafe { SHGetKnownFolderPath(&FOLDERID_Programs, KF_FLAG_DEFAULT, None) }
+        .map_err(io::Error::other)?;
+    let path = unsafe { programs.to_string() };
+    unsafe { CoTaskMemFree(Some(programs.0.cast())) };
+    let shortcut = PathBuf::from(path.map_err(io::Error::other)?).join("Dodex.lnk");
     retire_entries(layout, &desktop, &shortcut)
 }
 

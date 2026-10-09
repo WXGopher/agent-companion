@@ -1,6 +1,6 @@
 """Retirement selects one owned bundle and keeps unrelated Dock entries."""
 import importlib.util
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import tempfile
 import unittest
 
@@ -12,14 +12,15 @@ spec.loader.exec_module(retirement)
 
 class RetirementSafety(unittest.TestCase):
     def test_dock_filter_removes_only_the_exact_managed_app(self):
-        root = Path("/Users/example")
+        # Dock stores macOS file URLs even when this contract runs on Windows.
+        root = PurePosixPath("/Users/example")
         app = root / "Applications/Dodex.app"
         tile = lambda url: {"tile-data": {"file-data": {"_CFURLString": url}}}
         preferences = {"persistent-apps": [
             tile(app.as_uri()), tile("file:///Applications/Codex.app/"),
             tile((root / "Applications/Unrelated Dodex.app").as_uri()),
         ], "autohide": True}
-        updated = retirement.filtered_dock(preferences, app)
+        updated = retirement.filtered_dock(preferences, Path(app).resolve())
         self.assertEqual(updated["persistent-apps"], preferences["persistent-apps"][1:])
         self.assertTrue(updated["autohide"])
         self.assertEqual(len(preferences["persistent-apps"]), 3)

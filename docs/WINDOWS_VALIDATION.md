@@ -8,6 +8,30 @@ daemon state and update prefixes. Existing secondary profiles stay in place;
 the primary retains its installation channel. The earlier records below describe
 historical desktop implementations and are not current installation guidance.
 
+### Final Windows source checks
+
+The completion changes pass workspace formatting, Clippy for all targets with
+warnings denied, and the core build without default features. The final local
+workspace run passes 580 test executions with 10 explicitly ignored; the separate
+`server` core run passes 258 with 2 ignored. These suites overlap and are not
+added together as unique cases. The Python contract run passes its two portable
+retirement cases; 15 native opt-in cases remain skipped on this host.
+
+The completion regressions cover npm command precedence and native resume,
+owned PATH aliases across repeated repairs, the native Programs known folder,
+and unchanged configuration bytes for equivalent Windows storage paths. Named
+profile files and trusted project config layers cannot redirect Dodex storage
+or credentials; safe native model and MCP settings remain available. Raw parent
+path segments, redirected directories and different storage remain rejected.
+
+Synthetic Settings renders were inspected at the end of this run: the TUI setup
+page has separate Codex and Dodex version/update rows and terminal actions, with
+no duplicated desktop App control. Final PR CI, release packaging, exact-archive
+acceptance and local deployment results are recorded in the published release
+notes; the candidate runs below are evidence from earlier branch revisions.
+
+### Earlier candidate checks
+
 Native Windows MSVC tests cover command/environment isolation, dynamically
 selected versions, stdin and working directories, child exit codes, Ctrl+C and
 Ctrl+Break, concurrent maintenance, interrupted publication, repeated repair,

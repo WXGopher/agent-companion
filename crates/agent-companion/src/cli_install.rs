@@ -49,7 +49,7 @@ struct Ownership {
 }
 
 pub fn run() -> io::Result<()> {
-    let home = crate::resume_cli::user_home()?;
+    let home = agent_companion_core::tui_instance::Layout::current()?.user_home;
     let executable = std::env::current_exe()?.canonicalize()?;
     let source_dir = executable
         .parent()
@@ -207,6 +207,23 @@ fn read_ownership(marker: &Path) -> io::Result<Ownership> {
         ));
     }
     Ok(ownership)
+}
+
+pub(crate) fn command_is_owned(path: &Path) -> bool {
+    let Some(directory) = path.parent() else {
+        return false;
+    };
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    read_ownership(&directory.join(MARKER)).is_ok_and(|ownership| {
+        fingerprint(path).is_ok_and(|actual| {
+            ownership
+                .entries
+                .get(name)
+                .is_some_and(|known| known.contains(&actual))
+        })
+    })
 }
 
 fn write_ownership(marker: &Path, ownership: &Ownership) -> io::Result<()> {

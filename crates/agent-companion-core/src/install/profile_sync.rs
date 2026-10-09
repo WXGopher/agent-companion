@@ -146,13 +146,66 @@ pub fn validate_isolated_config(bytes: &[u8], paths: &IsolationPaths) -> io::Res
     validate_isolated_document(&document, paths, false)
 }
 
+/// Check one owned setting without rewriting its spelling. Existing directories
+/// may use native aliases, but relative paths and redirects never establish an
+/// isolation binding. Missing directories must already name the same path.
+pub fn isolation_setting_matches(key: &str, value: Option<&str>, paths: &IsolationPaths) -> bool {
+    let Some(value) = value else {
+        return false;
+    };
+    let expected = match key {
+        "cli_auth_credentials_store" => return value == "file",
+        "sqlite_home" => &paths.sqlite_home,
+        "log_dir" => &paths.log_dir,
+        _ => return false,
+    };
+    let actual = Path::new(value);
+    if validate_path(actual).is_err() || validate_path(expected).is_err() {
+        return false;
+    }
+    for path in [actual, expected.as_path()] {
+        match fs::metadata(path) {
+            Ok(metadata) if !metadata.is_dir() => return false,
+            Err(error) if error.kind() != io::ErrorKind::NotFound => return false,
+            _ => (),
+        }
+    }
+    match (actual.canonicalize(), expected.canonicalize()) {
+        (Ok(actual), Ok(expected)) => actual == expected,
+        (Err(actual_error), Err(expected_error))
+            if actual_error.kind() == io::ErrorKind::NotFound
+                && expected_error.kind() == io::ErrorKind::NotFound =>
+        {
+            #[cfg(windows)]
+            {
+                let spelling = |path: &Path| {
+                    path.to_str().map(|path| {
+                        let path = path.replace('/', "\\");
+                        let path = path.strip_prefix(r"\\?\").unwrap_or(&path);
+                        let path = path
+                            .strip_prefix(r"UNC\")
+                            .map_or_else(|| path.to_owned(), |rest| format!(r"\\{rest}"));
+                        path.trim_end_matches('\\').to_owned()
+                    })
+                };
+                spelling(actual).is_some_and(|actual| Some(actual) == spelling(expected))
+            }
+            #[cfg(not(windows))]
+            {
+                actual == expected
+            }
+        }
+        _ => false,
+    }
+}
+
 fn validate_isolated_document(
     document: &DocumentMut,
     paths: &IsolationPaths,
     runtime_defaults: bool,
 ) -> io::Result<()> {
     fn check(key: &str, value: Option<&str>, paths: &IsolationPaths) -> io::Result<()> {
-        if is_isolation(key) && value != Some(isolation_value(key, paths).as_str()) {
+        if is_isolation(key) && !isolation_setting_matches(key, value, paths) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
@@ -213,7 +266,7 @@ pub fn validate_isolated_profile_with_runtime_defaults(
     validate_profile(home, paths, Some(&system_config_path()?))
 }
 
-fn system_config_path() -> io::Result<PathBuf> {
+pub(crate) fn system_config_path() -> io::Result<PathBuf> {
     #[cfg(windows)]
     let root = {
         use std::{ffi::OsString, os::windows::ffi::OsStringExt};
@@ -379,7 +432,7 @@ fn matches_secondary_isolation(document: &DocumentMut, paths: &IsolationPaths) -
     fn item_matches(item: &Item, paths: &IsolationPaths) -> bool {
         if let Some(table) = item.as_table_like() {
             table.iter().all(|(key, child)| {
-                (!is_isolation(key) || child.as_str() == Some(isolation_value(key, paths).as_str()))
+                (!is_isolation(key) || isolation_setting_matches(key, child.as_str(), paths))
                     && item_matches(child, paths)
             })
         } else if let Some(tables) = item.as_array_of_tables() {
@@ -394,7 +447,7 @@ fn matches_secondary_isolation(document: &DocumentMut, paths: &IsolationPaths) -
     fn value_matches(value: &Value, paths: &IsolationPaths) -> bool {
         if let Some(table) = value.as_inline_table() {
             table.iter().all(|(key, child)| {
-                (!is_isolation(key) || child.as_str() == Some(isolation_value(key, paths).as_str()))
+                (!is_isolation(key) || isolation_setting_matches(key, child.as_str(), paths))
                     && value_matches(child, paths)
             })
         } else {
@@ -403,9 +456,10 @@ fn matches_secondary_isolation(document: &DocumentMut, paths: &IsolationPaths) -
                 .is_none_or(|array| array.iter().all(|child| value_matches(child, paths)))
         }
     }
-    ISOLATION_KEYS.iter().all(|key| {
-        document.get(key).and_then(Item::as_str) == Some(isolation_value(key, paths).as_str())
-    }) && item_matches(document.as_item(), paths)
+    ISOLATION_KEYS
+        .iter()
+        .all(|key| isolation_setting_matches(key, document.get(key).and_then(Item::as_str), paths))
+        && item_matches(document.as_item(), paths)
 }
 
 fn is_isolation(key: &str) -> bool {
@@ -652,6 +706,14 @@ fn validate_path(path: &Path) -> io::Result<()> {
         || path
             .components()
             .any(|component| matches!(component, Component::ParentDir))
+        // Verbatim Windows paths do not parse '/' as a separator, although
+        // alias comparison and native config path handling can normalize it.
+        // Reject raw parent segments before either interpretation is applied.
+        || cfg!(windows)
+            && path
+                .to_string_lossy()
+                .split(['/', '\\'])
+                .any(|component| component == "..")
     {
         return Err(invalid(
             "Profile paths must be absolute and cannot contain parent components.",

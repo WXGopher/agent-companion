@@ -1,6 +1,9 @@
 //! Option-aware dispatch for isolated native Codex command entries. Prompts and
 //! option values are never inspected as management commands or config options.
-use std::ffi::OsString;
+use std::{
+    ffi::OsString,
+    path::{Path, PathBuf},
+};
 
 fn value_option(name: &str) -> bool {
     matches!(
@@ -138,7 +141,64 @@ fn option(args: &[OsString], index: usize) -> Option<(usize, Options)> {
 }
 
 pub fn config_overrides(args: &[OsString]) -> Vec<String> {
+    option_values(args, "--config").0
+}
+
+/// Named profile files are additional config layers in current native Codex.
+/// Help/version paths never load them; leave those paths with the native parser.
+pub fn named_profiles(args: &[OsString]) -> Vec<String> {
+    let (mut profiles, help) = option_values(args, "--profile");
+    if help || root_command(args, false) == Some("help") || ignores_user_config(args) {
+        Vec::new()
+    } else {
+        // Native runtime subcommands override the root's shared --profile.
+        profiles.pop().into_iter().collect()
+    }
+}
+
+pub fn ignores_user_config(args: &[OsString]) -> bool {
+    !option_values(args, "--ignore-user-config").0.is_empty()
+}
+
+/// Return the effective initial project directory only for runtime commands.
+/// Management/help paths do not load a thread's project configuration.
+pub fn project_directory(args: &[OsString], cwd: &Path) -> Option<PathBuf> {
+    let (mut directories, help) = option_values(args, "--cd");
+    if help
+        || matches!(
+            root_command(args, false),
+            Some(
+                "help"
+                    | "update"
+                    | "completion"
+                    | "app"
+                    | "login"
+                    | "logout"
+                    | "mcp"
+                    | "plugin"
+                    | "app-server"
+                    | "remote-control"
+                    | "features"
+                    | "doctor"
+                    | "migrate-rollouts"
+                    | "cloud"
+                    | "exec-server"
+            )
+        )
+    {
+        None
+    } else {
+        Some(
+            directories
+                .pop()
+                .map_or_else(|| cwd.to_owned(), |path| cwd.join(path)),
+        )
+    }
+}
+
+fn option_values(args: &[OsString], name: &str) -> (Vec<String>, bool) {
     let mut result = Vec::new();
+    let mut help = false;
     let mut index = 0;
     while index < args.len() {
         if args[index] == "--" {
@@ -149,17 +209,21 @@ pub fn config_overrides(args: &[OsString]) -> Vec<String> {
             .is_some_and(|value| value.starts_with('-'))
             && let Some((end, options)) = option(args, index)
         {
+            help |= options
+                .iter()
+                .any(|(key, _)| matches!(key.as_str(), "--help" | "--version"));
             result.extend(
                 options
                     .into_iter()
-                    .filter_map(|(key, value)| (key == "--config").then_some(value).flatten()),
+                    .filter(|(key, _)| key == name)
+                    .map(|(_, value)| value.unwrap_or_default()),
             );
             index = end;
         } else {
             index += 1;
         }
     }
-    result
+    (result, help)
 }
 
 /// Inspect only the root command. Unknown option arity and option values stay
@@ -298,5 +362,56 @@ mod tests {
             ])),
             ["sqlite_home='/bad'", "profiles.work.log_dir='/bad'"]
         );
+    }
+
+    #[test]
+    fn named_profile_scanner_preserves_native_help_values_and_separator() {
+        for values in [
+            &["--profile", "work", "resume", "id"][..],
+            &["resume", "id", "--profile=work"],
+            &["exec", "-pwork", "prompt"],
+            &["exec", "-p", "work", "--", "-pother"],
+            &["--profile", "root", "exec", "--profile", "work", "prompt"],
+        ] {
+            assert_eq!(named_profiles(&args(values)), ["work"], "{values:?}");
+        }
+        for values in [
+            &["--profile", "work", "--help"][..],
+            &["--profile", "work", "help", "resume"],
+            &["--profile", "work", "--version"],
+            &["--model", "-pwork"],
+            &["exec", "--", "-pwork"],
+        ] {
+            assert!(named_profiles(&args(values)).is_empty(), "{values:?}");
+        }
+    }
+
+    #[test]
+    fn project_directory_follows_native_cd_without_consuming_option_values() {
+        let cwd = Path::new("fixture");
+        for values in [
+            &["-C", "project", "resume", "id"][..],
+            &["resume", "id", "--cd=project"],
+            &["-C", "root", "exec", "-Cproject", "prompt"],
+        ] {
+            assert_eq!(
+                project_directory(&args(values), cwd),
+                Some(cwd.join("project"))
+            );
+        }
+        for values in [
+            &["--model", "-Cproject", "prompt"][..],
+            &["exec", "--", "-Cproject"],
+        ] {
+            assert_eq!(project_directory(&args(values), cwd), Some(cwd.to_owned()));
+        }
+        for values in [
+            &["--help"][..],
+            &["--version"],
+            &["update"],
+            &["help", "resume"],
+        ] {
+            assert_eq!(project_directory(&args(values), cwd), None);
+        }
     }
 }

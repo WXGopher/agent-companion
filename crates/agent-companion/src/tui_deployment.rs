@@ -301,18 +301,13 @@ fn configure_profile(instance: &InstanceConfig) -> io::Result<()> {
         ),
         ("log_dir", instance.log_dir.to_string_lossy().into_owned()),
     ] {
-        if document
-            .get(key)
-            .is_some_and(|item| item.as_str() != Some(value.as_str()))
-        {
-            return Err(io::Error::other(format!(
-                "Dodex 隔离设置 {key} 与原目录不一致；未覆盖配置。"
-            )));
-        }
         if !document.contains_key(key) {
             document[key] = toml_edit::value(value);
         }
     }
+    // Preserve existing spelling and let the shared isolation validator check
+    // path identity (including equivalent absolute Windows path spellings).
+    // Nothing is written until every existing setting has passed validation.
     profile_sync::validate_isolated_config(
         document.to_string().as_bytes(),
         &IsolationPaths {
@@ -386,9 +381,32 @@ fn publish_commands(layout: &Layout, record: &Registry) -> io::Result<()> {
             "打包的 dodex 终端程序缺失，请重新安装 Companion。",
         ));
     }
-    publish_commands_from(layout, record, &fs::read(source)?)
+    #[cfg(windows)]
+    let aliases = windows_alias_directories(layout);
+    #[cfg(not(windows))]
+    let aliases = Vec::new();
+    publish_commands_from(layout, record, &fs::read(source)?, &aliases)
 }
-fn publish_commands_from(layout: &Layout, record: &Registry, bytes: &[u8]) -> io::Result<()> {
+#[cfg(windows)]
+fn windows_alias_directories(layout: &Layout) -> Vec<PathBuf> {
+    let mut directories = vec![
+        layout.user_home.join(".local/bin"),
+        layout.user_home.join(".cargo/bin"),
+    ];
+    if let Some(roaming) = std::env::var_os("APPDATA") {
+        directories.push(PathBuf::from(roaming).join("npm"));
+    }
+    if let Some(local) = layout.support.parent() {
+        directories.push(local.join("Microsoft/WindowsApps"));
+    }
+    directories
+}
+fn publish_commands_from(
+    layout: &Layout,
+    record: &Registry,
+    bytes: &[u8],
+    alias_directories: &[PathBuf],
+) -> io::Result<()> {
     let path = layout.support.join(OWNER);
     let mut owner: Ownership = if path.is_file() {
         serde_json::from_slice(&read_limited(&path, 64 * 1024)?)?
@@ -410,21 +428,21 @@ fn publish_commands_from(layout: &Layout, record: &Registry, bytes: &[u8]) -> io
     // Older Windows releases could register the console alias in a different
     // existing PATH directory. Upgrade only hash-verified owned entries so an
     // earlier alias cannot keep routing to the removed desktop executable.
-    #[cfg(windows)]
-    for directory in [
-        layout.user_home.join(".local/bin"),
-        layout.user_home.join(".cargo/bin"),
-    ]
-    .into_iter()
-    .chain(std::env::var_os("APPDATA").map(|p| PathBuf::from(p).join("npm")))
-    {
+    for directory in alias_directories {
         let entry = directory.join("dodex.exe");
-        if entry.is_file() && legacy_entry(layout, &entry, &fs::read(&entry)?)? {
+        if !entry.is_file() {
+            continue;
+        }
+        let existing = fs::read(&entry)?;
+        if owner
+            .hashes
+            .get(&entry)
+            .is_some_and(|hashes| hashes.contains(&digest(&existing)))
+            || legacy_entry(layout, &entry, &existing)?
+        {
             entries.push(entry);
         }
     }
-    #[cfg(not(windows))]
-    let _ = &mut entries;
     let desired = digest(bytes);
     for entry in &entries {
         if vendor_entry_link(entry, record) {
@@ -439,6 +457,7 @@ fn publish_commands_from(layout: &Layout, record: &Registry, bytes: &[u8]) -> io
                 .get(entry)
                 .is_some_and(|hashes| hashes.contains(&digest(&existing)))
                 && digest(&existing) != desired
+                && !crate::cli_install::command_is_owned(entry)
                 && !legacy_entry(layout, entry, &existing)?
             {
                 return Err(io::Error::other(
@@ -600,7 +619,10 @@ fn migrate_legacy(layout: &Layout) -> io::Result<(Registry, Option<PathBuf>)> {
         .public_bin()
         .join(if cfg!(windows) { "dodex.exe" } else { "dodex" });
     #[cfg(not(windows))]
-    if entry.is_file() && !packaged_entry_matches(&entry)? {
+    if entry.is_file()
+        && !packaged_entry_matches(&entry)?
+        && !crate::cli_install::command_is_owned(&entry)
+    {
         let bytes = read_limited(&entry, 128 * 1024)?;
         if !legacy_entry(layout, &entry, &bytes)? {
             return Err(io::Error::other(
@@ -656,16 +678,20 @@ fn json_path(value: &serde_json::Value, key: &str) -> io::Result<PathBuf> {
 }
 
 pub fn discover_primary(layout: &Layout) -> io::Result<Option<InstanceConfig>> {
+    discover_primary_in(layout, &std::env::var_os("PATH").unwrap_or_default())
+}
+
+fn discover_primary_in(
+    layout: &Layout,
+    path: &std::ffi::OsStr,
+) -> io::Result<Option<InstanceConfig>> {
     let home = layout.user_home.join(".codex");
-    let mut candidates: Vec<PathBuf> =
-        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-            .map(|path| path.join(executable_name()))
-            .collect();
-    #[cfg(windows)]
-    candidates.extend(
-        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-            .map(|path| path.join("codex.cmd")),
-    );
+    let mut candidates = Vec::new();
+    for directory in std::env::split_paths(path) {
+        candidates.push(directory.join(executable_name()));
+        #[cfg(windows)]
+        candidates.push(directory.join("codex.cmd"));
+    }
     #[cfg(target_os = "macos")]
     candidates.extend([
         PathBuf::from("/opt/homebrew/bin/codex"),
@@ -693,7 +719,7 @@ pub fn discover_primary(layout: &Layout) -> io::Result<Option<InstanceConfig>> {
         }
         let (channel, updater) = if npm.is_some() {
             let name = if cfg!(windows) { "npm.cmd" } else { "npm" };
-            let updater = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            let updater = std::env::split_paths(path)
                 .map(|directory| directory.join(name))
                 .find(|path| path.is_file());
             (Channel::Npm, updater)

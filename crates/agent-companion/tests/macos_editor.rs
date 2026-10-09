@@ -2,6 +2,10 @@
 //! not exercise AppKit initialization performed by the separate editor process.
 #[cfg(target_os = "macos")]
 #[allow(dead_code, unused_imports)]
+#[path = "../src/cli_install.rs"]
+mod cli_install;
+#[cfg(target_os = "macos")]
+#[allow(dead_code, unused_imports)]
 #[path = "../src/codex_tui.rs"]
 mod codex_tui;
 #[cfg(target_os = "macos")]

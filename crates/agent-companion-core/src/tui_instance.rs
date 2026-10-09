@@ -2,6 +2,7 @@
 //! The vendor owns `packages/standalone/current` and all daemon/update state.
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeMap,
     ffi::OsString,
     fs::{self, File, OpenOptions},
     io::{self, Read},
@@ -348,16 +349,35 @@ impl InstanceConfig {
         }
         #[cfg(feature = "config-edit")]
         if self.id == "dodex" {
+            let paths = crate::install::profile_sync::IsolationPaths {
+                sqlite_home: self.database_dir.clone(),
+                log_dir: self.log_dir.clone(),
+            };
             crate::install::profile_sync::validate_isolated_overrides(
                 &crate::codex_args::config_overrides(arguments),
             )?;
-            crate::install::profile_sync::validate_isolated_profile(
-                &self.codex_home,
-                &crate::install::profile_sync::IsolationPaths {
-                    sqlite_home: self.database_dir.clone(),
-                    log_dir: self.log_dir.clone(),
-                },
-            )?;
+            crate::install::profile_sync::validate_isolated_profile(&self.codex_home, &paths)?;
+            let profiles = self.validate_named_profiles(arguments, &paths)?;
+            if let Some(directory) =
+                crate::codex_args::project_directory(arguments, &std::env::current_dir()?)
+            {
+                let system = crate::install::profile_sync::system_config_path()?;
+                let system_layer = read_configuration(&system)?;
+                #[cfg(unix)]
+                let managed = read_configuration(&system.with_file_name("managed_config.toml"))?;
+                // Current native Windows uses ProgramData config/requirements;
+                // it does not load a legacy managed_config.toml config layer.
+                #[cfg(not(unix))]
+                let managed: Option<toml_edit::DocumentMut> = None;
+                self.validate_project_layers(
+                    arguments,
+                    &directory,
+                    &profiles,
+                    system_layer.as_ref(),
+                    managed.as_ref(),
+                    &paths,
+                )?;
+            }
         }
         let mut command = Command::new(self.runtime()?);
         self.environment(&mut command);
@@ -377,6 +397,269 @@ impl InstanceConfig {
         }
         Ok(command)
     }
+
+    fn validate_named_profiles(
+        &self,
+        arguments: &[OsString],
+        paths: &crate::install::profile_sync::IsolationPaths,
+    ) -> io::Result<Vec<toml_edit::DocumentMut>> {
+        let mut layers = Vec::new();
+        for profile in crate::codex_args::named_profiles(arguments) {
+            let path = self.codex_home.join(format!("{profile}.config.toml"));
+            let Some(document) = read_configuration(&path)? else {
+                // The native parser owns missing/unknown profile diagnostics.
+                continue;
+            };
+            self.validate_overlay(&document, paths)?;
+            layers.push(document);
+        }
+        Ok(layers)
+    }
+
+    fn validate_overlay(
+        &self,
+        document: &toml_edit::DocumentMut,
+        paths: &crate::install::profile_sync::IsolationPaths,
+    ) -> io::Result<()> {
+        // Only these top-level fields define the binding. Preserve all other
+        // policy/MCP settings and native handling of unsupported project keys.
+        let mut isolation = toml_edit::DocumentMut::new();
+        for (key, value) in [
+            ("cli_auth_credentials_store", "file".to_owned()),
+            (
+                "sqlite_home",
+                self.database_dir.to_string_lossy().into_owned(),
+            ),
+            ("log_dir", self.log_dir.to_string_lossy().into_owned()),
+        ] {
+            isolation[key] = document
+                .get(key)
+                .cloned()
+                .unwrap_or_else(|| toml_edit::value(value));
+        }
+        crate::install::profile_sync::validate_isolated_config(
+            isolation.to_string().as_bytes(),
+            paths,
+        )
+    }
+
+    fn validate_project_layers(
+        &self,
+        arguments: &[OsString],
+        directory: &Path,
+        profiles: &[toml_edit::DocumentMut],
+        system: Option<&toml_edit::DocumentMut>,
+        managed: Option<&toml_edit::DocumentMut>,
+        paths: &crate::install::profile_sync::IsolationPaths,
+    ) -> io::Result<()> {
+        if !directory.is_dir() {
+            // Keep native errors for a missing or invalid --cd directory.
+            return Ok(());
+        }
+        // Native discovers layers from the requested path. Canonicalization is
+        // for trust lookup only; resolving it here loses the original trust key.
+        let mut normalized = PathBuf::new();
+        for component in directory.components() {
+            match component {
+                Component::CurDir => (),
+                Component::ParentDir => {
+                    normalized.pop();
+                }
+                _ => normalized.push(component),
+            }
+        }
+        let directory = normalized;
+        let mut discovery = ProjectDiscovery::default();
+        let mut effective = toml_edit::DocumentMut::new();
+        if let Some(system) = system {
+            discovery.apply(system);
+            copy_isolation(system, &mut effective);
+        }
+        if !crate::codex_args::ignores_user_config(arguments) {
+            let base = read_configuration(&self.codex_home.join("config.toml"))?;
+            for layer in base.as_ref().into_iter().chain(profiles) {
+                discovery.apply(layer);
+                copy_isolation(layer, &mut effective);
+            }
+        }
+        for raw in crate::codex_args::config_overrides(arguments) {
+            let parsed = raw.parse::<toml_edit::DocumentMut>().or_else(|_| {
+                let (key, value) = raw.split_once('=').unwrap_or((&raw, ""));
+                format!("{key}={}", toml_edit::Value::from(value)).parse()
+            });
+            if let Ok(layer) = parsed {
+                discovery.apply(&layer);
+            }
+        }
+        if let Some(managed) = managed {
+            discovery.apply(managed);
+        }
+        let project_root = directory
+            .ancestors()
+            .find(|ancestor| {
+                discovery.markers.iter().any(|marker| {
+                    let path = ancestor.join(marker);
+                    path.exists()
+                        && (marker != ".git" || !path.is_dir() || path.join("HEAD").exists())
+                })
+            })
+            .unwrap_or(&directory);
+        let repository = repository_trust_root(&directory);
+        let mut directories = Vec::new();
+        for ancestor in directory.ancestors() {
+            directories.push(ancestor);
+            if ancestor == project_root {
+                break;
+            }
+        }
+        for ancestor in directories.into_iter().rev() {
+            let trusted = discovery
+                .trust(ancestor)
+                .or_else(|| discovery.trust(project_root))
+                .or_else(|| repository.as_deref().and_then(|root| discovery.trust(root)))
+                == Some(true);
+            let folder = ancestor.join(".codex");
+            let own_home = folder
+                .canonicalize()
+                .ok()
+                .zip(self.codex_home.canonicalize().ok())
+                .is_some_and(|(left, right)| left == right);
+            if trusted
+                && !own_home
+                && let Some(layer) = read_configuration(&folder.join("config.toml"))?
+            {
+                copy_isolation(&layer, &mut effective);
+            }
+        }
+        if let Some(managed) = managed {
+            copy_isolation(managed, &mut effective);
+        }
+        self.validate_overlay(&effective, paths)
+    }
+}
+
+fn copy_isolation(source: &toml_edit::DocumentMut, destination: &mut toml_edit::DocumentMut) {
+    for key in ["cli_auth_credentials_store", "sqlite_home", "log_dir"] {
+        if let Some(value) = source.get(key) {
+            destination[key] = value.clone();
+        }
+    }
+}
+
+fn read_configuration(path: &Path) -> io::Result<Option<toml_edit::DocumentMut>> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mut text = String::new();
+    file.take(1024 * 1024 + 1).read_to_string(&mut text)?;
+    if text.len() > 1024 * 1024 {
+        return Err(io::Error::other("TUI configuration layer is too large"));
+    }
+    text.parse().map(Some).map_err(|_| {
+        // TOML errors can quote unrelated private values.
+        io::Error::other("TUI configuration layer contains invalid TOML")
+    })
+}
+
+struct ProjectDiscovery {
+    markers: Vec<String>,
+    projects: BTreeMap<String, bool>,
+}
+impl Default for ProjectDiscovery {
+    fn default() -> Self {
+        Self {
+            markers: vec![".git".into()],
+            projects: BTreeMap::new(),
+        }
+    }
+}
+impl ProjectDiscovery {
+    fn apply(&mut self, layer: &toml_edit::DocumentMut) {
+        if let Some(markers) = layer
+            .get("project_root_markers")
+            .and_then(toml_edit::Item::as_array)
+            && let Some(markers) = markers
+                .iter()
+                .map(|value| value.as_str().map(str::to_owned))
+                .collect::<Option<Vec<_>>>()
+        {
+            self.markers = markers;
+        }
+        if let Some(projects) = layer
+            .get("projects")
+            .and_then(toml_edit::Item::as_table_like)
+        {
+            for (directory, project) in projects.iter() {
+                if let Some(trust) = project.get("trust_level").and_then(toml_edit::Item::as_str) {
+                    match trust {
+                        "trusted" | "untrusted" => {
+                            self.projects
+                                .insert(directory.to_owned(), trust == "trusted");
+                        }
+                        _ => (),
+                    }
+                }
+            }
+        }
+    }
+
+    fn trust(&self, directory: &Path) -> Option<bool> {
+        let canonical = directory
+            .canonicalize()
+            .unwrap_or_else(|_| directory.to_owned());
+        #[cfg(windows)]
+        let canonical = {
+            // Native dunce::canonicalize uses the regular DOS/UNC spelling.
+            let text = canonical.to_string_lossy();
+            if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+                PathBuf::from(format!(r"\\{rest}"))
+            } else {
+                PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text))
+            }
+        };
+        for path in [&canonical, directory] {
+            let key = path.to_string_lossy().into_owned();
+            #[cfg(windows)]
+            let key = key.to_ascii_lowercase();
+            if let Some(trusted) = self.projects.get(&key) {
+                return Some(*trusted);
+            }
+            #[cfg(windows)]
+            if let Some((_, trusted)) = self
+                .projects
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case(&key))
+            {
+                return Some(*trusted);
+            }
+        }
+        None
+    }
+}
+
+fn repository_trust_root(directory: &Path) -> Option<PathBuf> {
+    for ancestor in directory.ancestors() {
+        let git = ancestor.join(".git");
+        if git.is_dir() && git.join("HEAD").exists() {
+            return Some(ancestor.to_owned());
+        }
+        if git.is_file() {
+            let pointer = fs::read_to_string(git).ok()?;
+            let git = ancestor.join(pointer.trim().strip_prefix("gitdir: ")?);
+            if let Ok(common) = fs::read_to_string(git.join("commondir")) {
+                return git
+                    .join(common.trim())
+                    .canonicalize()
+                    .ok()?
+                    .parent()
+                    .map(Path::to_owned);
+            }
+            return Some(ancestor.to_owned());
+        }
+    }
+    None
 }
 
 pub fn is_native(path: &Path) -> bool {
