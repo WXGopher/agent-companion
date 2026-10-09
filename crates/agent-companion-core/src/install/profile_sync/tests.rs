@@ -26,11 +26,17 @@ fn launch_guard_rejects_redirected_credentials_without_reading_their_contents() 
 
 #[test]
 fn launch_validation_checks_defaults_and_profiles_but_not_mcp_parameters() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().canonicalize().unwrap();
     let paths = IsolationPaths {
-        sqlite_home: "/synthetic/sqlite".into(),
-        log_dir: "/synthetic/logs".into(),
+        sqlite_home: root.join("sqlite"),
+        log_dir: root.join("logs"),
     };
-    let base = "cli_auth_credentials_store='file'\nsqlite_home='/synthetic/sqlite'\nlog_dir='/synthetic/logs'\n";
+    let mut document = DocumentMut::new();
+    for key in ISOLATION_KEYS {
+        document[key] = toml_edit::value(isolation_value(key, &paths));
+    }
+    let base = document.to_string();
     for extra in [
         "[profiles.work]\nmodel='example'\n",
         "[mcp_servers.helper.env]\nlog_dir='/service/logs'\nsqlite_home='/service/db'\n",
@@ -58,6 +64,152 @@ fn launch_validation_checks_defaults_and_profiles_but_not_mcp_parameters() {
                 .contains(key)
         );
     }
+}
+
+#[test]
+fn storage_binding_rejects_relative_different_and_unresolved_aliases() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().canonicalize().unwrap();
+    let paths = IsolationPaths {
+        sqlite_home: root.join("sqlite"),
+        log_dir: root.join("logs"),
+    };
+    assert!(isolation_setting_matches(
+        "log_dir",
+        paths.log_dir.to_str(),
+        &paths
+    ));
+    // PathBuf::join on a verbatim Windows root normalizes '..' away. Preserve
+    // the actual raw configuration value so this test exercises the guard.
+    let separator = std::path::MAIN_SEPARATOR;
+    let parent = PathBuf::from(format!(
+        "{}{separator}absent{separator}..{separator}logs",
+        root.display()
+    ));
+    assert!(parent.components().any(|part| part == Component::ParentDir));
+    for (case, value) in [
+        ("relative", PathBuf::from("logs")),
+        ("different", root.join("other-logs")),
+        ("raw parent", parent),
+    ] {
+        assert!(
+            !isolation_setting_matches("log_dir", value.to_str(), &paths),
+            "{case}: actual={value:?}, expected={:?}, components={:?}",
+            paths.log_dir,
+            value.components().collect::<Vec<_>>()
+        );
+    }
+    fs::write(&paths.log_dir, "not a directory").unwrap();
+    assert!(!isolation_setting_matches(
+        "log_dir",
+        paths.log_dir.to_str(),
+        &paths
+    ));
+}
+
+#[cfg(windows)]
+#[test]
+fn storage_binding_rejects_raw_mixed_separator_parent_segments() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().canonicalize().unwrap();
+    let paths = IsolationPaths {
+        sqlite_home: root.join("sqlite"),
+        log_dir: root.join("logs"),
+    };
+    for suffix in ["/absent/../logs", r"\absent/..\logs", r"/absent\../logs"] {
+        let raw = PathBuf::from(format!("{}{suffix}", root.display()));
+        assert!(
+            validate_path(&raw).is_err(),
+            "raw parent value must be rejected: {raw:?}, components={:?}",
+            raw.components().collect::<Vec<_>>()
+        );
+        assert!(!isolation_setting_matches("log_dir", raw.to_str(), &paths));
+        let invalid_binding = IsolationPaths {
+            log_dir: raw.clone(),
+            ..paths.clone()
+        };
+        assert!(
+            !isolation_setting_matches("log_dir", raw.to_str(), &invalid_binding),
+            "matching malformed values cannot establish a binding: {raw:?}"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn storage_binding_accepts_existing_native_windows_aliases_without_rewriting() {
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetShortPathNameW(long: *const u16, short: *mut u16, length: u32) -> u32;
+    }
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().canonicalize().unwrap();
+    let paths = IsolationPaths {
+        sqlite_home: root.join("SQLite Storage"),
+        log_dir: root.join("Native Log Storage"),
+    };
+    fs::create_dir_all(&paths.sqlite_home).unwrap();
+    fs::create_dir_all(&paths.log_dir).unwrap();
+    let normal = paths
+        .log_dir
+        .to_string_lossy()
+        .trim_start_matches(r"\\?\")
+        .to_owned();
+    let mut aliases = vec![
+        normal.replace('\\', "/"),
+        normal.to_uppercase(),
+        format!(r"\\?\{}", normal.to_uppercase()),
+    ];
+    let long: Vec<u16> = normal.encode_utf16().chain(Some(0)).collect();
+    let mut short = vec![0u16; 32768];
+    let length =
+        unsafe { GetShortPathNameW(long.as_ptr(), short.as_mut_ptr(), short.len() as u32) };
+    if length > 0 && (length as usize) < short.len() {
+        aliases.push(
+            OsString::from_wide(&short[..length as usize])
+                .into_string()
+                .unwrap(),
+        );
+    }
+    for alias in aliases {
+        let mut document = DocumentMut::new();
+        document["cli_auth_credentials_store"] = toml_edit::value("file");
+        document["sqlite_home"] = toml_edit::value(paths.sqlite_home.to_string_lossy().as_ref());
+        document["log_dir"] = toml_edit::value(alias);
+        let original = document.to_string();
+        validate_isolated_config(original.as_bytes(), &paths).unwrap();
+        assert!(matches_secondary_isolation(&document, &paths));
+        assert_eq!(document.to_string(), original);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn storage_binding_rejects_symlink_aliases_even_when_they_resolve_to_the_assigned_directory() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().canonicalize().unwrap();
+    let paths = IsolationPaths {
+        sqlite_home: root.join("sqlite"),
+        log_dir: root.join("logs"),
+    };
+    fs::create_dir(&paths.log_dir).unwrap();
+    let alias = root.join("alias");
+    std::os::unix::fs::symlink(&paths.log_dir, &alias).unwrap();
+    assert!(!isolation_setting_matches(
+        "log_dir",
+        alias.to_str(),
+        &paths
+    ));
+    let redirected = IsolationPaths {
+        log_dir: alias,
+        ..paths
+    };
+    assert!(!isolation_setting_matches(
+        "log_dir",
+        redirected.log_dir.to_str(),
+        &redirected
+    ));
 }
 
 #[test]

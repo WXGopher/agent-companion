@@ -25,20 +25,16 @@ enum PrimaryCodexAppTests {
             }
         }
         func find() -> URL? { PrimaryCodexApp.find(systemApplications: system, userApplications: user) }
-        func fallback() -> URL? {
-            PrimaryCodexApp.findCLIExecutable(home: home, searchPath: "", systemApplications: system, systemCLIPaths: [])
-        }
         for binary in [false, true] {
             for app in candidates {
                 try create(app, binary: binary)
                 precondition(find()?.path == app.path, "Every fixed location must support XML and binary plist identities")
-                precondition(fallback()?.path == app.appendingPathComponent("Contents/Resources/codex").path)
                 try fm.removeItem(at: app)
             }
         }
         // A genuine ChatGPT product at this filename must never pass as Codex.
         try create(candidates[2], identity: "different.application")
-        precondition(find() == nil && fallback() == nil)
+        precondition(find() == nil)
         try create(candidates[3], binary: true)
         precondition(find()?.path == candidates[3].path, "An invalid earlier identity must not hide a later valid installation")
         try create(candidates[1])
@@ -46,8 +42,6 @@ enum PrimaryCodexAppTests {
         try create(candidates[0])
         precondition(find()?.path == candidates[0].path)
         try fm.removeItem(at: candidates[0].appendingPathComponent("Contents/Resources/codex"))
-        precondition(fallback()?.path == candidates[1].appendingPathComponent("Contents/Resources/codex").path,
-                     "The CLI fallback must skip a valid desktop whose bundled CLI is missing")
         try fm.removeItem(at: candidates[0].appendingPathComponent("Contents/MacOS/ChatGPT"))
         precondition(find()?.path == candidates[1].path, "An incomplete candidate must be skipped")
         try fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: candidates[1].appendingPathComponent("Contents/MacOS/ChatGPT").path)
@@ -56,15 +50,15 @@ enum PrimaryCodexAppTests {
 
         let hidden = system.appendingPathComponent(".Dodex/Dodex.app")
         try create(hidden)
-        precondition(find() == nil && fallback() == nil, "Dodex must not be discovered by its shared vendor identity")
+        precondition(find() == nil, "Dodex must not be discovered by its shared vendor identity")
         try fm.createSymbolicLink(at: candidates[0], withDestinationURL: hidden)
-        precondition(find() == nil && fallback() == nil, "An application alias must not turn Dodex into primary")
+        precondition(find() == nil, "An application alias must not turn Dodex into primary")
         try fm.removeItem(at: candidates[0])
         try create(candidates[2])
         let cli = candidates[2].appendingPathComponent("Contents/Resources/codex")
         try fm.removeItem(at: cli)
         try fm.createSymbolicLink(at: cli, withDestinationURL: hidden.appendingPathComponent("Contents/Resources/codex"))
-        precondition(find()?.path == candidates[2].path && fallback() == nil, "A redirected bundled CLI must not be selected")
+        precondition(find()?.path == candidates[2].path, "A redirected bundled CLI must not be selected")
         let desktop = candidates[2].appendingPathComponent("Contents/MacOS/ChatGPT")
         try fm.removeItem(at: desktop)
         try fm.createSymbolicLink(at: desktop, withDestinationURL: hidden.appendingPathComponent("Contents/MacOS/ChatGPT"))

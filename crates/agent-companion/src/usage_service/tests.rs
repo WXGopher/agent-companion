@@ -218,7 +218,7 @@ fn discovery_accepts_existing_native_tui_without_an_updater_package_manifest() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn discovery_rejects_unknown_wrappers_and_falls_back_to_the_existing_codex_app() {
+fn discovery_rejects_unknown_wrappers_and_does_not_use_an_app_bundled_cli() {
     use std::os::unix::fs::PermissionsExt;
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().canonicalize().unwrap();
@@ -246,7 +246,7 @@ fn discovery_rejects_unknown_wrappers_and_falls_back_to_the_existing_codex_app()
     }
     assert_eq!(
         primary_macos_executable(&root, [entry], &system, &user),
-        Some(app.join("Contents/Resources/codex")),
+        None,
     );
 }
 

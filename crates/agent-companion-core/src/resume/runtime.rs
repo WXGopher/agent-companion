@@ -18,10 +18,10 @@ use super::{
 const MANIFEST: &str = "acomp-resume.json";
 const SCHEMA: u32 = 1;
 // Audited tag: openai/codex rust-v0.159.3 (file auth save, native writer
-// namespace, source SQLite, explicit-ID TUI resume, embedded --no-daemon).
+// namespace, source SQLite, explicit-ID TUI resume, native daemon isolation).
 // Re-run scripts/tests/test_resume_native.py before changing this allowlist.
 // Windows has link implementations, but remains gated until native acceptance.
-const VERSION: &str = "0.159.3";
+const VERSIONS: &[&str] = &["0.159.3", "0.160.1"];
 // config/read materializes this built-in value even when no source layer sets
 // an endpoint. Only this exact default was observed for the pinned runtime.
 const NATIVE_CHATGPT_BASE_URL: &str = "https://chatgpt.com/backend-api/";
@@ -109,8 +109,8 @@ pub fn inspect(
     }
     let native_version = runtime_version(&source.executable);
     match &native_version {
-        Ok(version) if version == VERSION => {}
-        Ok(_) => blockers.push(format!("此 Codex 运行版本未验证；首版仅支持 {VERSION}。")),
+        Ok(version) if VERSIONS.contains(&version.as_str()) => {}
+        Ok(_) => blockers.push("此 Codex 运行版本未验证；当前支持 0.159.3 / 0.160.1。".into()),
         Err(reason) => blockers.push(reason.clone()),
     }
     if !cfg!(any(target_os = "macos", windows)) && !cfg!(test) {
@@ -167,7 +167,7 @@ pub fn inspect(
         display_path(&source.home.join("thread-writer-locks")),
     ));
     details.push(("认证验证".into(), "启动前由原生 account/read 确认加载的工作区账号；无法确认则不启动会话。此检查不等同于实际扣费验收。".into()));
-    details.push(("运行覆盖".into(), "CODEX_HOME=受管理目录；sqlite_home=原数据库；file 认证；--no-daemon；明确 session ID 和本次显示模型；保留安全策略。".into()));
+    details.push(("运行覆盖".into(), "CODEX_HOME=受管理目录；sqlite_home=原数据库；file 认证；原生后台机制；明确 session ID 和本次显示模型；保留安全策略。".into()));
     let provenance = Provenance {
         rows: vec![
             (
@@ -419,7 +419,9 @@ impl PreparedResume {
         let mut command = Command::new(&self.manifest.source.executable);
         command.current_dir(&self.manifest.session.cwd);
         isolated_environment(&mut command, &self.home());
-        command.env("CODEX_SQLITE_HOME", &self.database_home);
+        command
+            .env("CODEX_SQLITE_HOME", &self.database_home)
+            .env("CODEX_INSTALL_DIR", self.home().join("native-bin"));
         for value in [
             format!(
                 "sqlite_home={}",
@@ -438,7 +440,7 @@ impl PreparedResume {
             command.args(["app-server", "--listen", "stdio://", "--strict-config"]);
         } else {
             command
-                .args(["--no-daemon", "--strict-config", "resume"])
+                .args(["--strict-config", "resume"])
                 .arg(&self.manifest.session.id);
         }
         command
@@ -560,7 +562,7 @@ impl PreparedResume {
         if discovery::writer_busy(&self.manifest.source.home, &self.manifest.session.id)? {
             return Err("原会话已被其他客户端打开，请先退出。".into());
         }
-        if runtime_version(&self.manifest.source.executable)? != VERSION {
+        if !VERSIONS.contains(&runtime_version(&self.manifest.source.executable)?.as_str()) {
             return Err("运行程序已升级，请重新检查兼容性。".into());
         }
         let mut command = self.command(false);
@@ -655,7 +657,7 @@ fn validate_endpoints(config: &Value, effective: bool) -> Result<(), String> {
 }
 impl Drop for PreparedResume {
     fn drop(&mut self) {
-        if !self.keep {
+        if !self.keep && stop_managed_daemon(&self.manifest, &self.directory) {
             // Windows must close handles before unlinking their files.
             self.run_lock.take();
             let _ = remove_managed(&self.directory);
@@ -740,10 +742,10 @@ fn masked_id(value: &str) -> String {
 /// Check a candidate native executable against the same resume compatibility
 /// gate used by inspection and launch. This never relaxes the supported version.
 pub fn verify_runtime(executable: &Path) -> Result<(), String> {
-    if runtime_version(executable)? == VERSION {
+    if VERSIONS.contains(&runtime_version(executable)?.as_str()) {
         Ok(())
     } else {
-        Err(format!("此 Codex 运行版本未验证；首版仅支持 {VERSION}。"))
+        Err("此 Codex 运行版本未验证；当前支持 0.159.3 / 0.160.1。".into())
     }
 }
 
@@ -802,7 +804,13 @@ fn isolated_environment(command: &mut Command, home: &Path) {
 fn isolated_entry(name: &str) -> bool {
     matches!(
         name,
-        "auth.json" | "app-server-daemon" | "app-server-control" | "ipc" | "node_repl"
+        "auth.json"
+            | "app-server-daemon"
+            | "app-server-control"
+            | "ipc"
+            | "node_repl"
+            | "packages"
+            | "native-bin"
     )
 }
 fn toml_string(value: &str) -> String {
@@ -922,11 +930,51 @@ pub fn cleanup_stale(managed_root: &Path) -> Result<usize, String> {
             continue;
         }
         drop(lock);
+        if !stop_managed_daemon(&manifest, &path) {
+            continue;
+        }
         remove_managed(&path)?;
         cleaned += 1;
     }
     Ok(cleaned)
 }
+// A relay has its own temporary native daemon. Never stop a source/account
+// daemon and never unlink a live managed daemon's home during recovery.
+fn stop_managed_daemon(manifest: &Manifest, directory: &Path) -> bool {
+    let home = directory.join("home");
+    if !home.join("app-server-daemon").exists() {
+        return true;
+    }
+    if discovery::writer_busy(&manifest.source.home, &manifest.session.id) != Ok(false) {
+        return false;
+    }
+    let mut command = Command::new(&manifest.source.executable);
+    isolated_environment(&mut command, &home);
+    command
+        .env("CODEX_INSTALL_DIR", home.join("native-bin"))
+        .args(["app-server", "daemon", "stop"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let Ok(mut child) = command.spawn() else {
+        return false;
+    };
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if start.elapsed() < Duration::from_secs(10) => {
+                std::thread::sleep(Duration::from_millis(100))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
+}
+
 fn remove_managed(path: &Path) -> Result<(), String> {
     verify_managed_ancestors(path)?;
     let home = path.join("home");
@@ -1446,7 +1494,7 @@ mod tests {
             .get_args()
             .map(|value| value.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
-        assert!(args.contains(&"--no-daemon".to_owned()));
+        assert!(!args.contains(&"--no-daemon".to_owned()));
         assert_eq!(&args[args.len() - 2..], ["resume", ID]);
         assert!(!args.iter().any(|argument| argument.contains("--last")
             || argument.contains("dangerously")

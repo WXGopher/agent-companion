@@ -1,2 +1,0 @@
-    Path("/Applications/Codex B Runtime.app"),
-    Path("/Applications/Codex B.app"),

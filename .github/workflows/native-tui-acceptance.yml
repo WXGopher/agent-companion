@@ -1,0 +1,83 @@
+name: Native TUI release acceptance
+
+on:
+  workflow_call:
+    inputs:
+      release_run:
+        type: string
+        required: true
+      platform:
+        type: string
+        default: both
+  workflow_dispatch:
+    inputs:
+      release_run:
+        description: Successful Release workflow run containing the candidate archives
+        required: true
+      platform:
+        description: Native platform to verify
+        type: choice
+        options: [both, windows, macos]
+        default: both
+
+permissions:
+  contents: read
+  actions: read
+  attestations: read
+
+jobs:
+  accept:
+    name: Native TUI acceptance (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+            artifact: windows-x86_64
+          - os: macos-14
+            platform: macos
+            artifact: macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Download candidate archive
+        if: inputs.platform == 'both' || inputs.platform == matrix.platform
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.release_run }}
+          name: ${{ matrix.artifact }}
+          path: candidate
+      - name: Verify candidate provenance and unchanged product source
+        if: inputs.platform == 'both' || inputs.platform == matrix.platform
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN: ${{ inputs.release_run }}
+        run: |
+          python3 - <<'PY'
+          import hashlib,json,subprocess,zipfile
+          from pathlib import Path
+          run=json.loads(subprocess.check_output(['gh','run','view',__import__('os').environ['CANDIDATE_RUN'],'--json','headSha,conclusion,workflowName'],text=True))
+          assert run['conclusion']=='success' and run['workflowName']=='Release'
+          sha=run['headSha']
+          subprocess.run(['git','diff','--exit-code',sha,'HEAD','--','Cargo.toml','Cargo.lock','build.rs','crates','native','assets'],check=True)
+          archive=next(Path('candidate').glob('*.zip'))
+          checksums=next(Path('candidate').glob('SHA256SUMS-*')).read_text(encoding='utf-8-sig').split()
+          assert archive.name==checksums[1] and hashlib.sha256(archive.read_bytes()).hexdigest()==checksums[0]
+          subprocess.run(['gh','attestation','verify',str(archive),'--repo','${{ github.repository }}','--signer-workflow','${{ github.repository }}/.github/workflows/release.yml','--source-digest',sha,'--deny-self-hosted-runners'],check=True)
+          with zipfile.ZipFile(archive) as package:package.extractall('verified')
+          if __import__('os').name!='nt':
+              for name in ['agent-companion','acomp','dodex']:
+                  (Path('verified/Agent Companion.app/Contents/MacOS')/name).chmod(0o755)
+          print('PASS: candidate checksum, provenance and unchanged product source')
+          PY
+      - name: Real macOS native TUI acceptance
+        if: matrix.platform == 'macos' && (inputs.platform == 'both' || inputs.platform == matrix.platform)
+        run: python3 scripts/test-tui-instances.py --companion 'verified/Agent Companion.app/Contents/MacOS/acomp'
+      - name: Real Windows native TUI acceptance
+        if: matrix.platform == 'windows' && (inputs.platform == 'both' || inputs.platform == matrix.platform)
+        run: ./scripts/test-tui-instances-windows.ps1 -Companion verified/acomp.exe

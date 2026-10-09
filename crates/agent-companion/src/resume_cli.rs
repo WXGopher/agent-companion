@@ -320,10 +320,6 @@ fn child_exit_code(status: std::process::ExitStatus) -> i32 {
     }
 }
 
-pub(crate) fn user_home() -> io::Result<std::path::PathBuf> {
-    discovery::user_home()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

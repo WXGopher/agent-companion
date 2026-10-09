@@ -1,2 +1,0 @@
-    Path("/Applications/.Dodex/Dodex.app"),
-    Path("/Applications/Dodex.app"),

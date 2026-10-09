@@ -1,3 +1,0 @@
-            yield
-        finally:
-            os.close(fd)

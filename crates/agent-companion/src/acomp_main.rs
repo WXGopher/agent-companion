@@ -1,9 +1,9 @@
 //! A console-subsystem entry point. Windows shells must wait while a resume
 //! picker or native Codex process owns the terminal.
 mod cli_install;
-#[cfg(target_os = "macos")]
-mod managed_tui;
 mod resume_cli;
+#[allow(dead_code)]
+mod tui_deployment;
 
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
@@ -23,8 +23,15 @@ struct Cli {
 enum Command {
     /// Continue an original session, preserving its history and local settings.
     Resume(resume_cli::Args),
-    /// Install user-level acomp and agent-companion terminal commands.
+    /// Install user-level acomp, agent-companion, and dodex terminal commands.
     InstallCli,
+    /// Install or repair the independent Dodex TUI.
+    DodexTui {
+        #[arg(long, conflicts_with = "repair")]
+        install: bool,
+        #[arg(long)]
+        repair: bool,
+    },
 }
 
 fn main() -> std::process::ExitCode {
@@ -43,6 +50,19 @@ fn main() -> std::process::ExitCode {
     let result = match cli.command {
         Command::Resume(args) => resume_cli::run(&args),
         Command::InstallCli => cli_install::run().map(|()| 0),
+        Command::DodexTui { install, repair } => {
+            let status = if install || repair {
+                tui_deployment::install_and_configure()
+            } else {
+                Ok(tui_deployment::status())
+            };
+            status
+                .map(|status| {
+                    println!("{}", status.message);
+                    0
+                })
+                .map_err(std::io::Error::other)
+        }
     };
     match result {
         Ok(code) => std::process::exit(code),

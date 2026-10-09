@@ -5,10 +5,12 @@ import { ProfileSyncFile, ProfileSyncSettings } from "profile-sync.slint";
 import { SoftwareVersion, SoftwareUpdates } from "software-updates.slint";
 
 export component DualSettings inherits Rectangle {
-    in property <bool> app-installed;
-    in property <string> app-path;
-    in property <string> app-version;
+    in property <bool> tui-installed;
+    in property <string> command-path;
+    in property <string> package-path;
     in property <string> profile-home;
+    in property <string> database-dir;
+    in property <string> log-dir;
     in property <bool> tui-available;
     in property <bool> tui-configured;
     in property <bool> monitored;
@@ -52,7 +54,7 @@ export component DualSettings inherits Rectangle {
             spacing: 16px;
             alignment: start;
             DualSetup {
-                app-installed: root.app-installed;
+                tui-installed: root.tui-installed;
                 tui-available: root.tui-configured;
                 monitored: root.monitored;
                 busy: root.busy && !root.sync-busy;
@@ -65,7 +67,7 @@ export component DualSettings inherits Rectangle {
             }
             SoftwareUpdates {
                 versions: root.versions;
-                available: root.app-installed && root.tui-configured;
+                available: root.tui-configured;
                 busy: root.software-busy;
                 blocked: root.busy || root.sync-busy;
                 error: root.software-error;
@@ -98,8 +100,10 @@ export component DualSettings inherits Rectangle {
                             }
                         }
                         Text { text: "安装时自动启用。关闭后停止 Companion 监控，Dodex 的登录、配置和会话仍保留。"; font-size: 12px; color: SettingsColors.secondary; wrap: word-wrap; }
-                        if root.app-path != "": Text { text: "App：" + root.app-path; font-size: 12px; color: SettingsColors.secondary; wrap: word-wrap; }
-                        if root.app-version != "": Text { text: "Dodex App 版本：" + root.app-version; font-size: 12px; color: SettingsColors.secondary; wrap: word-wrap; }
+                        if root.command-path != "": Text { text: "命令：" + root.command-path; font-size: 12px; color: SettingsColors.secondary; wrap: word-wrap; }
+                        if root.package-path != "": Text { text: "程序包：" + root.package-path; font-size: 12px; color: SettingsColors.secondary; wrap: word-wrap; }
+                        if root.database-dir != "": Text { text: "数据库：" + root.database-dir; font-size: 12px; color: SettingsColors.secondary; wrap: word-wrap; }
+                        if root.log-dir != "": Text { text: "日志：" + root.log-dir; font-size: 12px; color: SettingsColors.secondary; wrap: word-wrap; }
                         if root.profile-home != "": Rectangle {
                             height: 32px;
                             border-radius: 7px;
@@ -133,23 +137,6 @@ export component DualSettings inherits Rectangle {
                     sync(file, to-secondary) => { root.sync-profile(file, to-secondary); }
                     open-file(file, secondary, edit) => { root.open-sync-file(file, secondary, edit); }
                     refresh => { root.refresh-sync(); }
-                }
-                SettingsCard {
-                    vertical-stretch: 0;
-                    VerticalLayout {
-                        padding: 18px;
-                        spacing: 10px;
-                        Text { text: "更新主程序"; font-size: 13px; font-weight: 600; color: SettingsColors.text; }
-                        Text { text: "联网更新 Codex 至官方稳定版，再分别对齐 Dodex App 和 TUI。更新前请退出需要替换的应用与终端会话。"; font-size: 12px; color: SettingsColors.secondary; wrap: word-wrap; }
-                        HorizontalLayout {
-                            SettingsButton {
-                                text: "全部更新到最新";
-                                enabled: !root.busy && !root.software-busy && !root.sync-busy;
-                                clicked => { root.maintain("update-all"); }
-                            }
-                            Rectangle { horizontal-stretch: 1; }
-                        }
-                    }
                 }
             }
         }

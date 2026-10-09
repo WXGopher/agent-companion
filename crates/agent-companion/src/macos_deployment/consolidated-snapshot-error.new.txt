@@ -1,1 +1,0 @@
-            raise ManagerError("Snapshot schema or paths do not match canonical Dodex. Legacy snapshots are preserved but cannot restore the old manager and launcher into this layout.")

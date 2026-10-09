@@ -36,7 +36,7 @@ import zlib
 NATIVE = os.environ.get("ACOMP_TEST_CODEX_BINARY")
 LEGACY_NATIVE = os.environ.get("ACOMP_TEST_LEGACY_CODEX_BINARY")
 ACOMP = os.environ.get("ACOMP_TEST_ACOMP_BINARY")
-VERSION = "codex-cli 0.159.3"
+VERSION = "codex-cli " + os.environ.get("ACOMP_TEST_CODEX_VERSION", "0.159.3")
 
 
 def verify_native_executable(value, variable):
@@ -957,6 +957,10 @@ class NativeResumeContracts(unittest.TestCase):
         self.source.mkdir(parents=True)
         self.write_auth(self.source, "source-account")
         self.write_config(self.source)
+        self.selected = user / ".codex-secondary"
+        self.selected.mkdir()
+        self.write_auth(self.selected, "selected-account")
+        self.write_config(self.selected)
         # App-server sessions are native interactive history. Exec sessions
         # deliberately do not appear in the production session picker.
         app = AppServer(self, self.source)
@@ -971,16 +975,28 @@ class NativeResumeContracts(unittest.TestCase):
             self.assertEqual(completed["turn"]["status"], "completed")
         finally:
             app.close()
-        native_entry = self.source / "packages/standalone/current/bin/codex"
-        native_entry.parent.mkdir(parents=True)
-        native_entry.symlink_to(NATIVE)
         support = user / "Library/Application Support/AgentCompanion"
         support.mkdir(parents=True)
-        (support / "dual-instance.json").write_text(json.dumps({
-            "schema": 1, "enabled": False,
-            "instance": {"codex_home": str(self.selected), "database_dir": str(self.selected),
-                         "cli_path": NATIVE},
+        # Bind the exact native under test instead of resolving the real user's
+        # PATH. A disabled secondary still supplies the selected quota account.
+        record = support / "tui-instances.json"
+        record.write_text(json.dumps({
+            "schema": 2, "dodex_enabled": False,
+            "primary": {
+                "id": "codex", "label": "Codex", "channel": "native",
+                "codex_home": str(self.source), "database_dir": str(self.source),
+                "log_dir": str(self.source / "log"), "install_dir": str(Path(NATIVE).parent),
+                "cli_path": NATIVE, "command_path": str(user / ".local/bin/codex"),
+            },
+            "dodex": {
+                "id": "dodex", "label": "Dodex", "channel": "standalone",
+                "codex_home": str(self.selected), "database_dir": str(self.selected),
+                "log_dir": str(self.selected / "log"), "install_dir": str(self.selected / "native-bin"),
+                "cli_path": str(self.selected / "packages/standalone/current/bin/codex"),
+                "command_path": str(user / ".local/bin/dodex"),
+            },
         }))
+        registry_before = record.read_bytes()
         # Both source and quota config are ordinary production-compatible
         # configs. There is no custom endpoint, provider, or test-only bypass.
         plain_config = ('model="gpt-5.2"\ncli_auth_credentials_store="file"\n'
@@ -1038,6 +1054,7 @@ class NativeResumeContracts(unittest.TestCase):
         self.assertFalse(list((support / "Resume").glob("run-*")))
         self.assertEqual((self.source / "auth.json").read_bytes(), source_auth)
         self.assertEqual((self.selected / "auth.json").read_bytes(), selected_auth)
+        self.assertEqual(record.read_bytes(), registry_before)
         self.assertEqual({path: path.read_bytes() for path in (self.source / "sessions").rglob("*.jsonl")}, rollouts)
         self.assertEqual(history_db.read_bytes(), history_before)
         self.assertEqual(len(self.server.model_requests()), 1, "preflight must not start a model turn")

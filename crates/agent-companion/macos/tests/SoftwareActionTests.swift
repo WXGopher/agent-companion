@@ -21,19 +21,19 @@ import AppKit
         listenForAgentCompanionSoftwareUpdates()
         listenForAgentCompanionSoftwareUpdates()
         center.postNotificationName(SoftwareAction.notification, object: "\(pid)-other-editor",
-                                    userInfo: ["action": "align"], deliverImmediately: true)
-        for payload: [String: Any] in [["action": "unknown"], ["action": 123], ["target": "align"]] {
+                                    userInfo: ["action": "update-codex"], deliverImmediately: true)
+        for payload: [String: Any] in [["action": "unknown"], ["action": 123], ["target": "update-codex"]] {
             center.postNotificationName(SoftwareAction.notification, object: String(pid),
                                         userInfo: payload, deliverImmediately: true)
         }
-        SoftwareAction.align.send(to: pid)
+        SoftwareAction.updateCodex.send(to: pid)
         wait { !FixtureSoftwareActionRequests.actions.isEmpty && readyCount > 0 }
         precondition(readyCount == 1, "Repeated listener registration sent duplicate readiness signals")
-        precondition(FixtureSoftwareActionRequests.actions == ["align"],
+        precondition(FixtureSoftwareActionRequests.actions == ["update-codex"],
                      "Another PID, a malformed action or duplicate registration reached the editor")
-        SoftwareAction.updateAll.send(to: pid)
+        SoftwareAction.updateDodex.send(to: pid)
         wait { FixtureSoftwareActionRequests.actions.count == 2 }
-        precondition(FixtureSoftwareActionRequests.actions == ["align", "update-all"])
+        precondition(FixtureSoftwareActionRequests.actions == ["update-codex", "update-dodex"])
     }
 
     private static func verifyEditorReuse() {
@@ -41,53 +41,53 @@ import AppKit
         let launcher = fixture.launcher()
         var results: [String?] = []
         launcher.open { results.append($0) }
-        launcher.open(action: .align) { results.append($0) }
-        launcher.open(action: .updateAll) { results.append($0) }
+        launcher.open(action: .updateCodex) { results.append($0) }
+        launcher.open(action: .updateDodex) { results.append($0) }
         precondition(fixture.arguments == [["codex-tui"]] && results.count == 1
                      && results[0]?.contains("already waiting") == true,
                      "Requests during launch spawned extra editors or silently queued repeated operations")
         fixture.finishLaunching()
         precondition(fixture.sent.isEmpty && results.count == 2,
                      "Launch completion sent a notification before the editor installed its listener")
-        launcher.open(action: .align) { results.append($0) }
+        launcher.open(action: .updateCodex) { results.append($0) }
         precondition(fixture.sent.isEmpty, "A reused editor received an action before it was ready")
         fixture.becomeReady(pid: fixture.pid + 1)
         precondition(fixture.sent.isEmpty, "Another editor's readiness released the pending action")
         fixture.becomeReady()
-        precondition(fixture.sent == [.align] && fixture.activations == 2)
+        precondition(fixture.sent == [.updateCodex] && fixture.activations == 2)
         precondition(results.count == 4 && results[1] == nil && results[3] == nil
                      && results[2]?.contains("already waiting") == true,
                      "Only one pending action may be dispatched after readiness")
-        launcher.open(action: .align) { results.append($0) }
+        launcher.open(action: .updateCodex) { results.append($0) }
         launcher.open { results.append($0) }
         precondition(fixture.arguments.count == 1 && fixture.activations == 4,
                      "A running editor was not reused by both Settings and software actions")
-        precondition(fixture.sent == [.align, .align] && results.count == 6)
+        precondition(fixture.sent == [.updateCodex, .updateCodex] && results.count == 6)
 
         fixture.running = false
-        launcher.open(action: .updateAll) { results.append($0) }
-        launcher.open(action: .align) { results.append($0) }
-        precondition(fixture.arguments.last == ["codex-tui", "--software-action", "update-all"])
+        launcher.open(action: .updateDodex) { results.append($0) }
+        launcher.open(action: .updateCodex) { results.append($0) }
+        precondition(fixture.arguments.last == ["codex-tui", "--software-action", "update-dodex"])
         fixture.fail()
         precondition(results.count == 8 && results.suffix(2).allSatisfy { $0 == EditorFixture.errorText },
                      "A launch failure did not reach every waiting request")
         let sentBeforeRetry = fixture.sent
-        launcher.open(action: .align) { results.append($0) }
+        launcher.open(action: .updateCodex) { results.append($0) }
         // Launch Services may report completion after the ready notification.
         fixture.becomeReady()
         fixture.finishLaunching()
-        precondition(fixture.arguments.last == ["codex-tui", "--software-action", "align"])
+        precondition(fixture.arguments.last == ["codex-tui", "--software-action", "update-codex"])
         precondition(fixture.arguments.count == 3 && fixture.sent == sentBeforeRetry && results.last! == nil,
                      "Retry replayed a failed request or duplicated the action already supplied on the command line")
-        launcher.open(action: .updateAll) { results.append($0) }
-        precondition(fixture.sent.last == .updateAll, "Readiness arriving before the launch callback was lost")
+        launcher.open(action: .updateDodex) { results.append($0) }
+        precondition(fixture.sent.last == .updateDodex, "Readiness arriving before the launch callback was lost")
 
         let timeoutFixture = EditorFixture()
         let timeoutLauncher = timeoutFixture.launcher(readinessTimeout: 0.02)
         var timeoutError: String?
         timeoutLauncher.open { precondition($0 == nil) }
         timeoutFixture.finishLaunching()
-        timeoutLauncher.open(action: .align) { timeoutError = $0 }
+        timeoutLauncher.open(action: .updateCodex) { timeoutError = $0 }
         wait { timeoutError != nil }
         precondition(timeoutFixture.sent.isEmpty && timeoutError!.contains("did not become ready"),
                      "An editor that never becomes ready silently lost its pending request")
@@ -129,19 +129,19 @@ import AppKit
                      "Opening the context menu launched an editor or requested another release check")
         let menu = presented[0]
         precondition(menu.items.filter { !$0.isSeparatorItem }.map(\.title)
-                     == ["对齐 Codex/Dodex 版本", "全部更新到最新", "Exit"])
+                     == ["更新 Codex TUI", "更新 Dodex TUI", "Exit"])
         menu.performActionForItem(at: 0)
-        precondition(fixture.arguments == [["codex-tui", "--software-action", "align"]])
+        precondition(fixture.arguments == [["codex-tui", "--software-action", "update-codex"]])
         precondition(!controller.menuPanelIsVisible, "An action left the task popup open")
         fixture.finishLaunching()
         fixture.becomeReady()
         menu.performActionForItem(at: 1)
-        precondition(fixture.arguments.count == 1 && fixture.sent == [.updateAll] && fixture.activations == 2)
+        precondition(fixture.arguments.count == 1 && fixture.sent == [.updateDodex] && fixture.activations == 2)
 
         fixture.running = false
         menu.performActionForItem(at: 1)
         fixture.fail()
-        precondition(errors.count == 1 && errors[0].contains("全部更新到最新")
+        precondition(errors.count == 1 && errors[0].contains("更新 Dodex TUI")
                      && errors[0].contains(EditorFixture.errorText), "A failed action left no visible error")
         controller.handleMenuBarClick(mouse(.leftMouseUp, modifiers: .control))
         precondition(presented.count == 2 && !controller.menuPanelIsVisible)

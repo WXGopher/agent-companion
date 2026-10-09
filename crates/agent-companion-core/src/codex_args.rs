@@ -5,15 +5,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum Action {
-    Native,
-    App(Option<PathBuf>),
-    Update,
-    AppHelp,
-    UpdateHelp,
-}
-
 fn value_option(name: &str) -> bool {
     matches!(
         name,
@@ -44,6 +35,7 @@ fn value_option(name: &str) -> bool {
             | "--title"
             | "--base"
             | "--commit"
+            | "--permission-profile"
     )
 }
 fn short_value(name: char) -> Option<&'static str> {
@@ -56,6 +48,7 @@ fn short_value(name: char) -> Option<&'static str> {
         'C' => "--cd",
         'a' => "--ask-for-approval",
         'o' => "--output-last-message",
+        'P' => "--permission-profile",
         _ => return None,
     })
 }
@@ -74,6 +67,9 @@ fn bool_option(name: &str) -> bool {
             | "--search"
             | "--no-alt-screen"
             | "--full-auto"
+            | "--no-daemon"
+            | "--ignore-user-config"
+            | "--ignore-rules"
     )
 }
 
@@ -145,7 +141,64 @@ fn option(args: &[OsString], index: usize) -> Option<(usize, Options)> {
 }
 
 pub fn config_overrides(args: &[OsString]) -> Vec<String> {
+    option_values(args, "--config").0
+}
+
+/// Named profile files are additional config layers in current native Codex.
+/// Help/version paths never load them; leave those paths with the native parser.
+pub fn named_profiles(args: &[OsString]) -> Vec<String> {
+    let (mut profiles, help) = option_values(args, "--profile");
+    if help || root_command(args, false) == Some("help") || ignores_user_config(args) {
+        Vec::new()
+    } else {
+        // Native runtime subcommands override the root's shared --profile.
+        profiles.pop().into_iter().collect()
+    }
+}
+
+pub fn ignores_user_config(args: &[OsString]) -> bool {
+    !option_values(args, "--ignore-user-config").0.is_empty()
+}
+
+/// Return the effective initial project directory only for runtime commands.
+/// Management/help paths do not load a thread's project configuration.
+pub fn project_directory(args: &[OsString], cwd: &Path) -> Option<PathBuf> {
+    let (mut directories, help) = option_values(args, "--cd");
+    if help
+        || matches!(
+            root_command(args, false),
+            Some(
+                "help"
+                    | "update"
+                    | "completion"
+                    | "app"
+                    | "login"
+                    | "logout"
+                    | "mcp"
+                    | "plugin"
+                    | "app-server"
+                    | "remote-control"
+                    | "features"
+                    | "doctor"
+                    | "migrate-rollouts"
+                    | "cloud"
+                    | "exec-server"
+            )
+        )
+    {
+        None
+    } else {
+        Some(
+            directories
+                .pop()
+                .map_or_else(|| cwd.to_owned(), |path| cwd.join(path)),
+        )
+    }
+}
+
+fn option_values(args: &[OsString], name: &str) -> (Vec<String>, bool) {
     let mut result = Vec::new();
+    let mut help = false;
     let mut index = 0;
     while index < args.len() {
         if args[index] == "--" {
@@ -156,103 +209,90 @@ pub fn config_overrides(args: &[OsString]) -> Vec<String> {
             .is_some_and(|value| value.starts_with('-'))
             && let Some((end, options)) = option(args, index)
         {
+            help |= options
+                .iter()
+                .any(|(key, _)| matches!(key.as_str(), "--help" | "--version"));
             result.extend(
                 options
                     .into_iter()
-                    .filter_map(|(key, value)| (key == "--config").then_some(value).flatten()),
+                    .filter(|(key, _)| key == name)
+                    .map(|(_, value)| value.unwrap_or_default()),
             );
             index = end;
         } else {
             index += 1;
         }
     }
-    result
+    (result, help)
 }
 
-pub fn route(args: &[OsString], cwd: &Path) -> Result<Action, String> {
-    let (mut index, mut prefix) = (0, Vec::new());
+/// Inspect only the root command. Unknown option arity and option values stay
+/// with the native parser; prompts containing "app"/"update" are never routed.
+fn root_command(args: &[OsString], expand_help: bool) -> Option<&str> {
+    let mut index = 0;
     while index < args.len() {
-        let Some(token) = args[index].to_str() else {
-            return Ok(Action::Native);
-        };
+        let token = args[index].to_str()?;
         if token == "--" {
-            return Ok(Action::Native);
+            return None;
         }
         if token.starts_with('-') && token != "-" {
-            let Some((end, options)) = option(args, index) else {
-                return Ok(Action::Native);
-            };
-            prefix.extend(options);
-            index = end;
-            continue;
-        }
-        if prefix
-            .iter()
-            .any(|(name, _)| name == "--help" || name == "--version")
-        {
-            return Ok(Action::Native);
-        }
-        return match token {
-            "app" => app_request(&args[index + 1..], prefix, cwd),
-            "update" if index == 0 && args.len() == 1 => Ok(Action::Update),
-            "update"
-                if index == 0 && args.len() == 2 && (args[1] == "--help" || args[1] == "-h") =>
+            let (end, options) = option(args, index)?;
+            if options
+                .iter()
+                .any(|(key, _)| key == "--help" || key == "--version")
             {
-                Ok(Action::UpdateHelp)
+                return None;
             }
-            "update" => {
-                Err("Use dodex update without options to open Companion's update controls.".into())
-            }
-            _ => Ok(Action::Native),
-        };
-    }
-    Ok(Action::Native)
-}
-
-fn app_request(args: &[OsString], mut options: Options, cwd: &Path) -> Result<Action, String> {
-    let (mut index, mut separated, mut values) = (0, false, Vec::new());
-    while index < args.len() {
-        if !separated && args[index] == "--" {
-            separated = true;
-            index += 1;
-            continue;
-        }
-        if !separated
-            && args[index]
-                .to_str()
-                .is_some_and(|value| value.starts_with('-') && value != "-")
-        {
-            let (end, consumed) =
-                option(args, index).ok_or("dodex app supports [PATH] and -C/--cd only.")?;
-            options.extend(consumed);
             index = end;
         } else {
-            values.push(&args[index]);
-            index += 1;
+            return if token == "help" && expand_help {
+                args.get(index + 1)?.to_str()
+            } else {
+                Some(token)
+            };
         }
     }
-    if options.iter().any(|(name, _)| name == "--help") {
-        return Ok(Action::AppHelp);
+    None
+}
+
+pub fn is_app_command(args: &[OsString]) -> bool {
+    root_command(args, true) == Some("app")
+}
+pub fn is_update_command(args: &[OsString]) -> bool {
+    if root_command(args, false) != Some("update") {
+        return false;
     }
-    if options.iter().any(|(name, _)| name != "--cd") || options.len() > 1 || values.len() > 1 {
-        return Err("dodex app supports one [PATH] and at most one -C/--cd directory.".into());
+    let mut index = 0;
+    let mut command = false;
+    while index < args.len() {
+        if args[index] == "--" {
+            return command && index + 1 == args.len();
+        }
+        if args[index]
+            .to_str()
+            .is_some_and(|value| value.starts_with('-'))
+        {
+            let Some((end, options)) = option(args, index) else {
+                // Leave unknown/invalid arguments to the native parser. A
+                // package-manager update must not run on a help/error path.
+                return false;
+            };
+            if options.iter().any(|(key, _)| {
+                *key == "--help"
+                    || *key == "--version"
+                    || (command && !matches!(key.as_str(), "--config" | "--enable" | "--disable"))
+            }) {
+                return false;
+            }
+            index = end;
+        } else if !command && args[index] == "update" {
+            command = true;
+            index += 1;
+        } else {
+            return false;
+        }
     }
-    if values.is_empty() && options.is_empty() {
-        return Ok(Action::App(None));
-    }
-    let mut workspace = cwd.to_path_buf();
-    if let Some((_, Some(directory))) = options.first() {
-        workspace = workspace.join(directory);
-    }
-    if let Some(path) = values.first() {
-        workspace = workspace.join(path);
-    }
-    if !workspace.is_dir() {
-        return Err("The workspace must be an existing directory.".into());
-    }
-    Ok(Action::App(Some(std::path::absolute(workspace).map_err(
-        |_| "Could not resolve the workspace directory.",
-    )?)))
+    command
 }
 
 #[cfg(test)]
@@ -262,28 +302,41 @@ mod tests {
         values.iter().map(OsString::from).collect()
     }
     #[test]
-    fn prompts_option_values_and_subcommands_preserve_native_ownership() {
+    fn only_the_real_desktop_subcommand_is_rejected_and_updates_stay_native() {
         for values in [
             &["--", "app"][..],
             &["resume", "id", "app"],
             &["--image", "picture", "app"],
-            &["--future", "value", "update"],
+            &["--future", "value", "app"],
             &["--model", "app"],
             &["--help", "app"],
         ] {
-            assert_eq!(
-                route(&args(values), Path::new(".")).unwrap(),
-                Action::Native
-            );
+            assert!(!is_app_command(&args(values)), "{values:?}");
         }
-        assert_eq!(
-            route(&args(&["update"]), Path::new(".")).unwrap(),
-            Action::Update
-        );
-        assert_eq!(
-            route(&args(&["app"]), Path::new(".")).unwrap(),
-            Action::App(None)
-        );
+        for values in [
+            &["app"][..],
+            &["help", "app"],
+            &["--no-daemon", "app"],
+            &["-C", "/somewhere", "app", "--help"],
+        ] {
+            assert!(is_app_command(&args(values)), "{values:?}");
+        }
+        assert!(is_update_command(&args(&["update"])));
+        assert!(is_update_command(&args(&["-C", "/work", "update"])));
+        assert!(!is_update_command(&args(&["update", "--help"])));
+        assert!(!is_update_command(&args(&["help", "update"])));
+        assert!(!is_update_command(&args(&[
+            "-C", "/work", "help", "update"
+        ])));
+        assert!(!is_update_command(&args(&["exec", "update"])));
+        assert!(!is_update_command(&args(&[
+            "update",
+            "-hc",
+            "model='fixture'"
+        ])));
+        assert!(!is_update_command(&args(&["update", "--unknown"])));
+        assert!(!is_update_command(&args(&["update", "unexpected-value"])));
+        assert!(is_update_command(&args(&["update", "-c", "model='-h'"])));
     }
     #[test]
     fn config_scanner_stops_at_separator_and_consumes_attached_or_separate_values() {
@@ -310,14 +363,55 @@ mod tests {
             ["sqlite_home='/bad'", "profiles.work.log_dir='/bad'"]
         );
     }
+
     #[test]
-    fn project_paths_and_cd_reach_one_public_app_route() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::create_dir(temp.path().join("project with spaces")).unwrap();
-        assert_eq!(
-            route(&args(&["-C", "project with spaces", "app"]), temp.path()).unwrap(),
-            Action::App(Some(temp.path().join("project with spaces")))
-        );
-        assert!(route(&args(&["app", "--config", "model=o3"]), temp.path()).is_err());
+    fn named_profile_scanner_preserves_native_help_values_and_separator() {
+        for values in [
+            &["--profile", "work", "resume", "id"][..],
+            &["resume", "id", "--profile=work"],
+            &["exec", "-pwork", "prompt"],
+            &["exec", "-p", "work", "--", "-pother"],
+            &["--profile", "root", "exec", "--profile", "work", "prompt"],
+        ] {
+            assert_eq!(named_profiles(&args(values)), ["work"], "{values:?}");
+        }
+        for values in [
+            &["--profile", "work", "--help"][..],
+            &["--profile", "work", "help", "resume"],
+            &["--profile", "work", "--version"],
+            &["--model", "-pwork"],
+            &["exec", "--", "-pwork"],
+        ] {
+            assert!(named_profiles(&args(values)).is_empty(), "{values:?}");
+        }
+    }
+
+    #[test]
+    fn project_directory_follows_native_cd_without_consuming_option_values() {
+        let cwd = Path::new("fixture");
+        for values in [
+            &["-C", "project", "resume", "id"][..],
+            &["resume", "id", "--cd=project"],
+            &["-C", "root", "exec", "-Cproject", "prompt"],
+        ] {
+            assert_eq!(
+                project_directory(&args(values), cwd),
+                Some(cwd.join("project"))
+            );
+        }
+        for values in [
+            &["--model", "-Cproject", "prompt"][..],
+            &["exec", "--", "-Cproject"],
+        ] {
+            assert_eq!(project_directory(&args(values), cwd), Some(cwd.to_owned()));
+        }
+        for values in [
+            &["--help"][..],
+            &["--version"],
+            &["update"],
+            &["help", "resume"],
+        ] {
+            assert_eq!(project_directory(&args(values), cwd), None);
+        }
     }
 }

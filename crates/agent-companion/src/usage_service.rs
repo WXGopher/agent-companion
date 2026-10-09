@@ -350,60 +350,25 @@ fn resolve_source(mut source: Source) -> Source {
     source
 }
 
+fn primary_executable() -> Option<PathBuf> {
+    crate::tui_deployment::primary_instance()?.runtime().ok()
+}
+
 #[cfg(not(windows))]
 fn user_home() -> Option<PathBuf> {
-    let value = std::env::var_os("HOME");
-    value.filter(|value| !value.is_empty()).map(PathBuf::from)
+    std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
-fn primary_executable() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        crate::codex::executable(None).ok()
-    }
-    #[cfg(not(windows))]
-    {
-        let mut candidates: Vec<_> = std::env::var_os("PATH")
-            .into_iter()
-            .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
-            .filter(|path| path.is_absolute())
-            .map(|path| path.join("codex"))
-            .collect();
-        if let Some(home) = user_home() {
-            candidates.push(home.join(".local/bin/codex"));
-        }
-        candidates.extend([
-            PathBuf::from("/opt/homebrew/bin/codex"),
-            PathBuf::from("/usr/local/bin/codex"),
-        ]);
-        #[cfg(target_os = "macos")]
-        {
-            let home = user_home()?;
-            primary_macos_executable(
-                &home,
-                candidates,
-                Path::new("/Applications"),
-                &home.join("Applications"),
-            )
-        }
-        #[cfg(not(target_os = "macos"))]
-        candidates.into_iter().find(|path| is_executable(path))
-    }
-}
-
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 fn primary_macos_executable(
     home: &Path,
     candidates: impl IntoIterator<Item = PathBuf>,
-    system_applications: &Path,
-    user_applications: &Path,
+    _system_applications: &Path,
+    _user_applications: &Path,
 ) -> Option<PathBuf> {
     for path in candidates.into_iter().filter(|path| is_executable(path)) {
-        if let Ok(native) = crate::software_updates::primary_native(home, &path)
-            && primary_runtime_location(home, &native)
-        {
-            return Some(native);
-        }
         // Reading usage also supports existing native Homebrew/standalone
         // binaries that predate the updater's complete-package layout. Resolve
         // links without executing a shell/Node wrapper that could select another
@@ -421,11 +386,10 @@ fn primary_macos_executable(
             }
         }
     }
-    crate::macos_primary_app::discover(system_applications, user_applications)
-        .and_then(|app| app.executable)
+    None
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 fn primary_runtime_location(home: &Path, path: &Path) -> bool {
     !path.components().any(|component| {
         let name = component.as_os_str().to_string_lossy();
@@ -433,6 +397,7 @@ fn primary_runtime_location(home: &Path, path: &Path) -> bool {
     }) && ![
         "Library/Application Support/AgentCompanion/Tui",
         "Library/Application Support/AgentCompanion/Dodex",
+        "Library/Application Support/AgentCompanion/DodexApp",
         "Library/Application Support/Codex-B",
     ]
     .iter()
@@ -442,7 +407,7 @@ fn primary_runtime_location(home: &Path, path: &Path) -> bool {
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 fn npm_native(entry: &Path) -> Option<PathBuf> {
     let package = entry.parent()?.parent()?;
     if entry != package.join("bin/codex.js") {
@@ -456,7 +421,7 @@ fn npm_native(entry: &Path) -> Option<PathBuf> {
         {
             return None;
         }
-        let bytes = crate::managed_tui::read_limited(&path, 64 * 1024).ok()?;
+        let bytes = agent_companion_core::tui_instance::read_limited(&path, 64 * 1024).ok()?;
         serde_json::from_slice(&bytes).ok()
     };
     let main = manifest(package)?;
@@ -503,7 +468,7 @@ fn npm_native(entry: &Path) -> Option<PathBuf> {
     None
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", test))]
 fn is_macos_native(path: &Path) -> bool {
     use std::io::Read;
     let mut magic = [0; 4];

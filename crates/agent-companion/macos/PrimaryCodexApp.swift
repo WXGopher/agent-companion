@@ -11,25 +11,6 @@ enum PrimaryCodexApp {
          userApplications.appendingPathComponent("ChatGPT.app")]
     }
 
-    static func findCLIExecutable() -> URL? {
-        findCLIExecutable(home: FileManager.default.homeDirectoryForCurrentUser,
-                       searchPath: ProcessInfo.processInfo.environment["PATH", default: ""],
-                       systemApplications: URL(fileURLWithPath: "/Applications"),
-                       systemCLIPaths: ["/opt/homebrew/bin/codex", "/usr/local/bin/codex"])
-    }
-
-    static func findCLIExecutable(home: URL, searchPath: String, systemApplications: URL,
-                               systemCLIPaths: [String]) -> URL? {
-        let paths = searchPath.split(separator: ":")
-            .filter { $0.hasPrefix("/") }.map { String($0) + "/codex" }
-        let candidates = paths + [home.appendingPathComponent(".local/bin/codex").path] + systemCLIPaths
-        if let executable = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
-            return URL(fileURLWithPath: executable)
-        }
-        return PrimaryCodexApp.findExecutable(systemApplications: systemApplications,
-                                              userApplications: home.appendingPathComponent("Applications"))
-    }
-
     static func regularFile(_ url: URL, executable: Bool = false) -> Bool {
         let file = url.standardizedFileURL
         guard file.path == file.resolvingSymlinksInPath().path,
@@ -60,13 +41,7 @@ enum PrimaryCodexApp {
         return regularFile(executable, executable: true) ? executable : nil
     }
 
-    static func findExecutable(systemApplications: URL, userApplications: URL) -> URL? {
-        for app in candidates(systemApplications: systemApplications, userApplications: userApplications)
-            where isCodex(app) {
-            if let executable = executable(in: app) { return executable }
-        }
-        return nil
-    }
+
 }
 
 /// Foundation parses both binary and XML plists for native and Rust callers;

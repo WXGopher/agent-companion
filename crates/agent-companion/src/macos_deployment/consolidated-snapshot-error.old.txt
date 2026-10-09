@@ -1,1 +1,0 @@
-            raise ManagerError("This is not a complete snapshot for these fixed B paths.")

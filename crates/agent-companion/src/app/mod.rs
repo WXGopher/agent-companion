@@ -1320,7 +1320,7 @@ impl App {
         self.close_flyout();
         self.launching_dodex.set(true);
         std::thread::spawn(|| {
-            let result = crate::windows_deployment::launch(None);
+            let result = crate::tui_deployment::open_terminal(None);
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(app) = APP.with(|slot| slot.borrow().clone()) {
                     app.launching_dodex.set(false);
@@ -1563,7 +1563,7 @@ impl App {
     fn sync_subscription_sources(&self) {
         use crate::usage_service::Source;
         let mut sources = Vec::new();
-        if let Ok(home) = crate::windows_deployment::primary_home() {
+        if let Ok(home) = crate::tui_deployment::primary_home() {
             sources.push(Source {
                 instance_id: "codex".into(),
                 database_path: agent_companion_core::dashboard::database_home(&home),
@@ -1908,7 +1908,7 @@ impl App {
             self.refresh_settings();
             return;
         }
-        let editor = crate::windows_deployment::primary_home().and_then(|home| {
+        let editor = crate::tui_deployment::primary_home().and_then(|home| {
             codex_tui::Editor::with_release_updates(home.join("config.toml"), self.updates.clone())
                 .map_err(io::Error::other)
         });
@@ -2047,7 +2047,7 @@ impl App {
         self.refresh_app_preferences();
         let open = self.settings_window.borrow();
         let Some(window) = open.as_ref() else { return };
-        let codex_home = crate::windows_deployment::primary_home();
+        let codex_home = crate::tui_deployment::primary_home();
         window.set_codex_present(codex_home.as_ref().is_ok_and(|home| home.is_dir()));
         match codex_home.and_then(|home| agent_companion_core::install::status_codex(&home)) {
             Ok(report) => {
@@ -2194,7 +2194,7 @@ impl App {
     }
 
     fn run_codex_install(&self, install: bool) {
-        let outcome = crate::windows_deployment::primary_home().and_then(|home| {
+        let outcome = crate::tui_deployment::primary_home().and_then(|home| {
             if install {
                 let stable = agent_companion_core::install::install_binaries()?;
                 agent_companion_core::install::install_codex(&home, &stable.hook)

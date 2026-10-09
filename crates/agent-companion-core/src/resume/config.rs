@@ -20,6 +20,23 @@ pub(super) fn inspect(
     session: &Session,
     profile: Option<&str>,
 ) -> Result<Settings, String> {
+    #[cfg(target_os = "macos")]
+    let managed = vec![
+        PathBuf::from("/Library/Managed Preferences/com.openai.codex.plist"),
+        user_home().join("Library/Managed Preferences/com.openai.codex.plist"),
+    ];
+    #[cfg(not(target_os = "macos"))]
+    let managed = Vec::new();
+    inspect_with_policy(source, session, profile, &system_directory(), &managed)
+}
+
+fn inspect_with_policy(
+    source: &Environment,
+    session: &Session,
+    profile: Option<&str>,
+    system: &Path,
+    managed: &[PathBuf],
+) -> Result<Settings, String> {
     let mut settings = Settings {
         model: None,
         database_home: super::discovery::database_home(source),
@@ -44,7 +61,6 @@ pub(super) fn inspect(
     {
         return Err("Profile 名称仅支持字母、数字、下划线和连字符。".into());
     }
-    let system = system_directory();
     for path in [
         system.join("managed_config.toml"),
         system.join("requirements.toml"),
@@ -58,11 +74,7 @@ pub(super) fn inspect(
                 .push("存在系统或组织托管策略；其有效配置尚未验证，接力已禁用。".into());
         }
     }
-    #[cfg(target_os = "macos")]
-    for path in [
-        PathBuf::from("/Library/Managed Preferences/com.openai.codex.plist"),
-        user_home().join("Library/Managed Preferences/com.openai.codex.plist"),
-    ] {
+    for path in managed {
         if path.exists() {
             settings
                 .blockers
@@ -461,6 +473,19 @@ fn user_home() -> PathBuf {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    fn inspect(
+        source: &Environment,
+        session: &Session,
+        profile: Option<&str>,
+    ) -> Result<Settings, String> {
+        inspect_with_policy(
+            source,
+            session,
+            profile,
+            &source.home.join("fixture-system-policy"),
+            &[],
+        )
+    }
     fn fixture(contents: &str) -> (TempDir, Environment, Session) {
         let root = TempDir::new().unwrap();
         let home = root.path().join("source");
@@ -488,6 +513,26 @@ mod tests {
         };
         (root, environment, session)
     }
+    #[test]
+    fn explicit_managed_policy_fixture_still_blocks_account_handoff() {
+        let (_root, source, session) =
+            fixture("model='fixture'\ncli_auth_credentials_store='file'\n");
+        let system = source.home.join("fixture-system-policy");
+        fs::create_dir_all(&system).unwrap();
+        fs::write(
+            system.join("requirements.toml"),
+            "approval_policy='never'\n",
+        )
+        .unwrap();
+        let settings = inspect_with_policy(&source, &session, None, &system, &[]).unwrap();
+        assert!(
+            settings
+                .blockers
+                .iter()
+                .any(|message| message.contains("托管策略"))
+        );
+    }
+
     #[test]
     fn disabled_mcp_relative_command_and_cwd_do_not_block_resume() {
         for syntax in [

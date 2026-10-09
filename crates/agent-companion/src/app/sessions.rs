@@ -40,7 +40,7 @@ pub struct CodexWatcher {
 
 impl CodexWatcher {
     pub fn new() -> Self {
-        Self::with_home(crate::windows_deployment::primary_home().ok())
+        Self::with_home(crate::tui_deployment::primary_home().ok())
     }
 
     pub fn with_home(home: Option<PathBuf>) -> Self {

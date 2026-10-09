@@ -3,13 +3,13 @@
 //! settings, and profile sync backs up its target before overwriting it.
 
 #[cfg(target_os = "macos")]
-use crate::macos_deployment as deployment;
+use crate::tui_deployment as deployment;
+#[cfg(windows)]
+use crate::tui_deployment as deployment;
 #[cfg(target_os = "macos")]
-use crate::macos_deployment::settings_status as deployment_status;
+use crate::tui_deployment::settings_status as deployment_status;
 #[cfg(windows)]
-use crate::windows_deployment as deployment;
-#[cfg(windows)]
-use crate::windows_deployment::status as deployment_status;
+use crate::tui_deployment::status as deployment_status;
 
 use std::{cell::RefCell, collections::HashSet, path::PathBuf, rc::Rc};
 
@@ -1018,10 +1018,7 @@ impl Editor {
             .spawn(move || {
                 let result = match enabled {
                     Some(enabled) => deployment::set_enabled(enabled),
-                    #[cfg(target_os = "macos")]
                     None => deployment::install_and_configure(),
-                    #[cfg(windows)]
-                    None => deployment::deploy(),
                 };
                 let _ = sender.send(result);
             });
@@ -1048,26 +1045,7 @@ impl Editor {
         let worker = std::thread::Builder::new()
             .name("open-dodex".into())
             .spawn(move || {
-                #[cfg(target_os = "macos")]
-                let result = (|| {
-                    deployment::desktop_entry(false)?;
-                    let app = deployment::settings_presentation()
-                        .app_path
-                        .ok_or("Dodex App 尚未安装，请先完成安装与配置。")?;
-                    let mut command = std::process::Command::new("/usr/bin/open");
-                    agent_companion_core::process_environment::isolate_command(&mut command);
-                    let status = command
-                        .arg("-a")
-                        .arg(app)
-                        .status()
-                        .map_err(|_| "无法打开 Dodex，请从应用程序中重试。")?;
-                    if !status.success() {
-                        return Err("无法打开 Dodex，请从应用程序中重试。".into());
-                    }
-                    Ok(deployment_status())
-                })();
-                #[cfg(windows)]
-                let result = deployment::launch(None).map(|_| deployment_status());
+                let result = deployment::open_terminal(None).map(|_| deployment_status());
                 let _ = sender.send(result);
             });
         if worker.is_err() {
@@ -1153,12 +1131,11 @@ impl Editor {
             .as_ref()
             .map(|pair| pair.secondary.config.clone());
         #[cfg(windows)]
-        let config_path =
-            deployment::active_instance().map(|instance| instance.codex_home.join("config.toml"));
+        let config_path = deployment::settings_config_path();
         let (available, selection_changed) = {
             let mut drafts = self.drafts.borrow_mut();
             let previous_path = drafts.active().path.clone();
-            drafts.set_secondary(config_path.clone().filter(|_| status.enabled));
+            drafts.set_secondary(config_path.clone().filter(|_| status.deployed));
             (
                 drafts.secondary_available,
                 previous_path != drafts.active().path,
@@ -1175,72 +1152,64 @@ impl Editor {
         }
         self.window
             .set_selected_instance(i32::from(self.drafts.borrow().secondary_selected));
-        self.window.set_dual_enabled(available);
+        self.window.set_dual_enabled(status.enabled);
         self.window.set_dual_deployed(status.deployed);
         self.window.set_dual_busy(busy);
-        #[cfg(target_os = "macos")]
-        {
-            let presentation = deployment::settings_presentation();
-            self.window
-                .set_dual_app_installed(presentation.app_path.is_some());
-            self.window.set_dual_app_path(
-                presentation
-                    .app_path
-                    .as_deref()
-                    .map(|path| path.to_string_lossy().into_owned())
-                    .unwrap_or_default()
-                    .into(),
-            );
-            self.window
-                .set_dual_app_version(presentation.app_version.into());
-            self.window.set_dual_profile_home(
-                presentation
-                    .profile_home
-                    .as_deref()
-                    .map(|path| path.to_string_lossy().into_owned())
-                    .unwrap_or_default()
-                    .into(),
-            );
-            self.window
-                .set_dual_tui_available(presentation.tui_available);
-            self.window
-                .set_dual_tui_configured(presentation.tui_configured);
-            self.window.set_dual_phase(
-                if self.sync_operation.borrow().is_some() {
-                    "正在同步所选配置文件…"
-                } else if status.busy {
-                    &status.message
-                } else {
-                    "正在处理双开设置…"
-                }
+        let presentation = deployment::settings_presentation();
+        self.window
+            .set_dual_tui_installed(presentation.tui_available);
+        self.window.set_dual_command_path(
+            presentation
+                .command_path
+                .as_deref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default()
                 .into(),
-            );
-        }
-        #[cfg(windows)]
-        {
-            self.window.set_dual_app_installed(status.deployed);
-            self.window.set_dual_tui_available(status.deployed);
-            self.window.set_dual_tui_configured(status.deployed);
-            self.window.set_dual_profile_home(
-                config_path
-                    .as_deref()
-                    .and_then(std::path::Path::parent)
-                    .map(|path| path.to_string_lossy().into_owned())
-                    .unwrap_or_default()
-                    .into(),
-            );
-            self.window.set_dual_phase(
-                match status.phase.as_str() {
-                    "copying" => "正在复制官方运行程序…",
-                    "configuring" => "正在创建独立环境…",
-                    "verifying" => "正在验证隔离与签名…",
-                    "shell" => "正在设置 dodex 命令…",
-                    "finishing" => "正在完成部署…",
-                    _ => "正在检查双开环境…",
-                }
+        );
+        self.window.set_dual_package_path(
+            presentation
+                .package_path
+                .as_deref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default()
                 .into(),
-            );
-        }
+        );
+        self.window.set_dual_profile_home(
+            presentation
+                .profile_home
+                .as_deref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default()
+                .into(),
+        );
+        self.window.set_dual_database_dir(
+            presentation
+                .database_dir
+                .as_deref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default()
+                .into(),
+        );
+        self.window.set_dual_log_dir(
+            presentation
+                .log_dir
+                .as_deref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default()
+                .into(),
+        );
+        self.window
+            .set_dual_tui_available(presentation.tui_available);
+        self.window
+            .set_dual_tui_configured(presentation.tui_configured);
+        self.window.set_dual_phase(
+            if status.busy {
+                status.message.as_str()
+            } else {
+                "正在处理 TUI 双开设置…"
+            }
+            .into(),
+        );
         let error = self.deployment_error.borrow();
         self.window
             .set_dual_error(error.is_some() || status.phase == "failed");
@@ -1511,7 +1480,7 @@ fn update_rows(model: &VecModel<ui::StatusComponent>, rows: Vec<ui::StatusCompon
 /// Standalone mode owns only this window. No tray, pipe, hook, or monitor starts.
 pub fn run() -> std::io::Result<()> {
     #[cfg(windows)]
-    let path = crate::windows_deployment::primary_home()?.join("config.toml");
+    let path = crate::tui_deployment::primary_home()?.join("config.toml");
     #[cfg(all(not(target_os = "macos"), not(windows)))]
     let path = agent_companion_core::install::codex_home()?.join("config.toml");
     #[cfg(target_os = "macos")]

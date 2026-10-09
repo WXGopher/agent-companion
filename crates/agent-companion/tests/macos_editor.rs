@@ -2,6 +2,10 @@
 //! not exercise AppKit initialization performed by the separate editor process.
 #[cfg(target_os = "macos")]
 #[allow(dead_code, unused_imports)]
+#[path = "../src/cli_install.rs"]
+mod cli_install;
+#[cfg(target_os = "macos")]
+#[allow(dead_code, unused_imports)]
 #[path = "../src/codex_tui.rs"]
 mod codex_tui;
 #[cfg(target_os = "macos")]
@@ -10,15 +14,8 @@ mod codex_tui;
 mod macos;
 #[cfg(target_os = "macos")]
 #[allow(dead_code, unused_imports)]
-#[path = "../src/macos_deployment.rs"]
-mod macos_deployment;
-#[cfg(target_os = "macos")]
-#[allow(dead_code, unused_imports)]
 #[path = "../src/macos_primary_app.rs"]
 mod macos_primary_app;
-#[cfg(target_os = "macos")]
-#[path = "../src/managed_tui.rs"]
-mod managed_tui;
 #[cfg(target_os = "macos")]
 #[allow(dead_code, unused_imports)]
 #[path = "../src/settings_update.rs"]
@@ -27,6 +24,10 @@ mod settings_update;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/software_updates.rs"]
 mod software_updates;
+#[cfg(target_os = "macos")]
+#[allow(dead_code, unused_imports)]
+#[path = "../src/tui_deployment.rs"]
+mod tui_deployment;
 #[cfg(target_os = "macos")]
 #[allow(dead_code, unused_imports)]
 #[path = "../src/update_service.rs"]
@@ -313,9 +314,9 @@ fn check_editor_startup() {
                         "sync-error-progress",
                         "sync-error-light",
                         "sync-instructions-light",
-                        "dual-app-only-light",
-                        "dual-app-disabled-light",
-                        "dual-app-enabled-dark",
+                        "dual-package-only-light",
+                        "dual-monitor-disabled-light",
+                        "dual-monitor-enabled-dark",
                         "software-progress-dark",
                         "software-error-light",
                         "general-light",
@@ -324,7 +325,7 @@ fn check_editor_startup() {
                         "setup-fresh",
                         "setup-partial",
                         "setup-ready",
-                        "setup-aligning",
+                        "setup-updating",
                         "setup-advanced",
                         "setup-windows-pending",
                         "setup-windows",
@@ -395,8 +396,8 @@ fn check_editor_startup() {
                 assert!(!window.get_dual_advanced_open(), "Advanced controls must not add setup steps to the main flow");
                 assert!(!window.get_dual_enabled());
                 assert!(!window.get_dual_deployed());
-                assert!(!window.get_dual_app_installed());
-                assert!(window.get_dual_app_path().is_empty());
+                assert!(!window.get_dual_tui_installed());
+                assert!(window.get_dual_command_path().is_empty());
                 assert!(window.get_dual_profile_home().is_empty());
                 assert!(!window.get_dual_tui_available());
                 assert!(!window.get_dual_tui_configured());
@@ -411,17 +412,17 @@ fn check_editor_startup() {
                 assert!(!config_path.exists());
                 window.set_dual_busy(false);
                 window.set_dual_error(true);
-                window.set_dual_app_installed(true);
+                window.set_dual_tui_installed(true);
                 window.set_dual_tui_available(true);
                 window.set_dual_tui_configured(false);
-                window.set_dual_message("Dodex App 已安装；TUI 配置未完成。已完成的部分保留，请继续安装并配置。".into());
+                window.set_dual_message("Dodex TUI 包已安装；TUI 配置未完成。已完成的部分保留，请继续安装并配置。".into());
             }
             11 => {
                 assert!(window.get_dual_error());
                 assert!(!window.get_dual_busy(), "A failed operation must allow retry");
-                assert!(window.get_dual_app_installed() && window.get_dual_tui_available());
-                assert!(!window.get_dual_tui_configured(), "An App's bundled CLI must not imply a configured dodex command");
-                window.set_dual_app_installed(false);
+                assert!(window.get_dual_tui_installed() && window.get_dual_tui_available());
+                assert!(!window.get_dual_tui_configured(), "A native package must not imply a configured public command");
+                window.set_dual_tui_installed(false);
                 window.set_dual_deployed(true);
                 window.set_dual_enabled(true);
                 window.set_dual_error(false);
@@ -430,7 +431,7 @@ fn check_editor_startup() {
             }
             12 => {
                 assert!(window.get_dual_deployed());
-                assert!(!window.get_dual_app_installed(), "A saved CLI profile must not imply an installed desktop App");
+                assert!(!window.get_dual_tui_installed(), "A saved profile must not imply an installed native TUI package");
                 assert!(window.get_dual_tui_available());
                 assert_eq!(window.get_dual_profile_home(), second_config_path.parent().unwrap().to_string_lossy().as_ref());
                 window.set_settings_page(0);
@@ -632,22 +633,22 @@ fn check_editor_startup() {
                 assert_eq!(std::fs::read_to_string(second_config_path.with_file_name("AGENTS.override.md")).unwrap(), "Secondary override stays local\n");
                 window.set_dual_advanced_open(false);
                 window.set_dual_scroll_y(0.0);
-                window.set_dual_app_installed(true);
-                window.set_dual_app_path("/Applications/Dodex.app".into());
-                window.set_dual_app_version("26.924.22138 (11645)".into());
+                window.set_dual_tui_installed(true);
+                window.set_dual_command_path("/Users/example/.local/bin/dodex".into());
+                window.set_dual_package_path("/Users/example/dodex/packages/standalone/releases/0.160.0".into());
                 window.set_dual_tui_available(false);
                 window.set_dual_tui_configured(false);
-                window.set_dual_message("Dodex App 已安装；Companion 监控未启用。".into());
+                window.set_dual_message("Dodex TUI 包已安装；Companion 监控未启用。".into());
             }
             29 => {
-                assert!(window.get_dual_app_installed() && window.get_dual_deployed());
+                assert!(window.get_dual_tui_installed() && window.get_dual_deployed());
                 assert!(!window.get_dual_enabled() && !window.get_dual_tui_available());
-                assert!(!window.get_dual_app_path().is_empty());
+                assert!(!window.get_dual_command_path().is_empty());
                 assert_eq!(window.get_dual_profile_home(), second_config_path.parent().unwrap().to_string_lossy().as_ref());
                 window.set_dual_tui_available(true);
             }
             30 => {
-                assert!(window.get_dual_app_installed() && window.get_dual_tui_available());
+                assert!(window.get_dual_tui_installed() && window.get_dual_tui_available());
                 assert!(!window.get_dual_tui_configured(), "Discovery alone must not claim that installation completed");
                 assert!(!window.get_dual_enabled(), "Detecting a CLI must not enable monitoring");
                 window.set_dual_tui_configured(true);
@@ -658,24 +659,22 @@ fn check_editor_startup() {
             31 => {
                 assert!(window.get_dual_enabled() && window.get_dual_tui_available());
                 assert!(window.get_dual_tui_configured());
-                assert!(window.get_dual_app_installed());
-                assert_eq!(window.get_dual_app_path(), "/Applications/Dodex.app");
+                assert!(window.get_dual_tui_installed());
+                assert_eq!(window.get_dual_command_path(), "/Users/example/.local/bin/dodex");
                 window.set_software_versions(slint::ModelRc::new(slint::VecModel::from(vec![
                     ui::SoftwareVersion { name: "Codex TUI".into(), current: "0.159.3".into(), target: "0.160.0".into(), message: "目标：官方稳定版".into(), error: false },
                     ui::SoftwareVersion { name: "Dodex TUI".into(), current: "0.155.0-alpha.16.4".into(), target: "0.160.0".into(), message: "保留已有副账号会话与完整原生安装包".into(), error: false },
-                    ui::SoftwareVersion { name: "Codex App".into(), current: "26.924.22138 (11645)".into(), target: "26.928.31416 (12553)".into(), message: "正在验证官方签名".into(), error: false },
-                    ui::SoftwareVersion { name: "Dodex App".into(), current: "26.924.22138 (11645)".into(), target: "26.928.31416 (12553)".into(), message: "等待主应用更新完成后同步".into(), error: false },
                 ])));
                 window.set_software_busy(true);
-                window.set_software_message("正在下载并验证官方稳定版；Codex / Dodex 的 App 与 TUI 使用各自版本，账号目录、SQLite、会话和日志均保持原样。请保持相关程序关闭。".into());
+                window.set_software_message("正在下载并验证官方稳定版；所选 TUI 使用自己的版本，账号目录、SQLite、会话和日志均保持原样。现有终端会话保持运行。".into());
                 window.set_dual_scroll_y(0.0);
             }
             32 => {
                 assert!(window.get_software_busy());
-                assert_eq!(window.get_software_versions().row_count(), 4);
+                assert_eq!(window.get_software_versions().row_count(), 2);
                 window.set_software_busy(false);
                 window.set_software_error(true);
-                window.set_software_message("操作未全部完成：Codex / Dodex 的 App 或 TUI 仍在运行。请自行退出相关应用和终端会话，再点击重试。已完成的更新会保留，尚未更新的项目不会标记为最新。".into());
+                window.set_software_message("操作未全部完成：另一个目标实例更新正在进行。请等待完成后重试。已完成的更新会保留，尚未更新的项目不会标记为最新。".into());
                 window.set_software_notice("已有操作正在等待或进行中；重复请求已忽略。请等待结果后再操作。".into());
                 window.global::<ui::Palette>().set_color_scheme(ColorScheme::Light);
             }
@@ -738,13 +737,16 @@ fn check_editor_startup() {
                 window.set_dual_scroll_y(0.0);
                 window.set_dual_enabled(false);
                 window.set_dual_deployed(false);
-                window.set_dual_app_installed(false);
+                window.set_dual_tui_installed(false);
                 window.set_dual_tui_available(false);
                 window.set_dual_tui_configured(false);
                 window.set_dual_busy(false);
                 window.set_dual_error(false);
                 window.set_dual_message("".into());
-                window.set_software_versions(slint::ModelRc::new(slint::VecModel::from(Vec::<ui::SoftwareVersion>::new())));
+                window.set_software_versions(slint::ModelRc::new(slint::VecModel::from(vec![
+                    ui::SoftwareVersion { name: "Codex TUI".into(), current: "0.160.1".into(), target: "Homebrew".into(), message: "".into(), error: false },
+                    ui::SoftwareVersion { name: "Dodex TUI".into(), current: "0.159.3".into(), target: "官方 standalone".into(), message: "".into(), error: false },
+                ])));
                 window.set_software_busy(false);
                 window.set_software_error(false);
                 window.set_software_message("".into());
@@ -752,52 +754,53 @@ fn check_editor_startup() {
             }
             37 => {
                 assert!(!window.get_dual_advanced_open());
-                assert!(!window.get_dual_app_installed() && !window.get_dual_tui_configured());
+                assert!(!window.get_dual_tui_installed() && !window.get_dual_tui_configured());
                 // Real pointer events at the minimum 820×720 layout verify
                 // forwarding through MacSettings → DualSettings → root.
-                click("一键安装并配置 Dodex App、TUI 和 Companion 接入");
+                click("安装独立 Dodex TUI 与终端入口");
                 assert_eq!(setup_requests.get(), 1);
-                click("分别对齐 Codex 与 Dodex 的 App 和 TUI 版本");
-                assert!(maintenance_requests.borrow().is_empty(), "Alignment requires a configured TUI");
-                window.set_dual_app_installed(true);
+                click("仅更新 Dodex TUI，保留 Codex 版本");
+                assert!(maintenance_requests.borrow().is_empty(), "Update requires a configured TUI");
+                window.set_dual_tui_installed(true);
                 window.set_dual_tui_available(true);
                 window.set_dual_error(true);
-                window.set_dual_message("Dodex App 已完成，TUI 入口配置失败。已完成内容保留，修正后继续安装并配置。".into());
+                window.set_dual_message("Dodex TUI 包已完成，TUI 入口配置失败。已完成内容保留，修正后继续安装并配置。".into());
             }
             38 => {
-                assert!(window.get_dual_app_installed() && window.get_dual_tui_available());
+                assert!(window.get_dual_tui_installed() && window.get_dual_tui_available());
                 assert!(!window.get_dual_tui_configured() && window.get_dual_error());
-                click("一键安装并配置 Dodex App、TUI 和 Companion 接入");
+                click("修复独立 Dodex TUI 安装与终端入口");
                 assert_eq!(setup_requests.get(), 2, "A partial installation must allow retry");
-                click("分别对齐 Codex 与 Dodex 的 App 和 TUI 版本");
-                assert!(maintenance_requests.borrow().is_empty(), "The App's bundled CLI is not a configured TUI entry");
+                click("仅更新 Dodex TUI，保留 Codex 版本");
+                assert!(maintenance_requests.borrow().is_empty(), "The incomplete command is not a configured TUI entry");
                 window.set_dual_tui_configured(true);
                 window.set_dual_enabled(true);
                 window.set_dual_error(false);
-                window.set_dual_message("安装与配置已完成。打开 Dodex 后，请自行登录第二个账号。".into());
+                window.set_dual_message("安装与配置已完成。打开终端后，请自行登录第二个账号。".into());
             }
             39 => {
                 assert!(window.get_dual_tui_configured() && window.get_dual_enabled());
                 assert!(!window.get_dual_error(), "Waiting for the user's login is a successful installation state");
-                click("打开 Dodex");
+                click("在终端中打开 Dodex TUI");
                 assert_eq!(open_requests.get(), 1);
-                click("分别对齐 Codex 与 Dodex 的 App 和 TUI 版本");
-                assert_eq!(*maintenance_requests.borrow(), ["align"]);
+                click("仅更新 Dodex TUI，保留 Codex 版本");
+                click("仅更新 Codex TUI，保留 Dodex 版本");
+                assert_eq!(*maintenance_requests.borrow(), ["update-dodex", "update-codex"]);
                 click("显示双开高级设置");
                 assert!(window.get_dual_advanced_open(), "Advanced controls must be reachable through the visible button");
                 click("收起双开高级设置");
                 assert!(!window.get_dual_advanced_open());
                 window.set_software_busy(true);
-                window.set_software_message("正在对齐 Dodex TUI，保留副账号配置与会话…".into());
+                window.set_software_message("正在更新 Dodex TUI，保留副账号配置与会话…".into());
             }
             40 => {
-                assert!(window.get_software_busy() && !window.get_dual_busy(), "Alignment must not masquerade as installation progress");
-                click("一键安装并配置 Dodex App、TUI 和 Companion 接入");
-                click("打开 Dodex");
-                click("分别对齐 Codex 与 Dodex 的 App 和 TUI 版本");
-                assert_eq!(setup_requests.get(), 2, "Installing is disabled while alignment owns the maintenance lock");
+                assert!(window.get_software_busy() && !window.get_dual_busy(), "Update must not masquerade as installation progress");
+                click("修复独立 Dodex TUI 安装与终端入口");
+                click("在终端中打开 Dodex TUI");
+                click("仅更新 Dodex TUI，保留 Codex 版本");
+                assert_eq!(setup_requests.get(), 2, "Installing is disabled while update owns the maintenance lock");
                 assert_eq!(open_requests.get(), 1);
-                assert_eq!(*maintenance_requests.borrow(), ["align"], "Repeated alignment clicks must be disabled");
+                assert_eq!(*maintenance_requests.borrow(), ["update-dodex", "update-codex"], "Repeated update clicks must be disabled");
                 window.set_software_busy(false);
                 window.set_software_message("".into());
                 window.set_dual_advanced_open(true);
@@ -818,7 +821,7 @@ fn check_editor_startup() {
             }
             _ => {
                 assert!(window.get_windows_preferences() && !window.get_macos_preferences());
-                assert!(window.get_dual_app_installed() && window.get_dual_tui_configured());
+                assert!(window.get_dual_tui_installed() && window.get_dual_tui_configured());
                 completed_check.set(true);
                 slint::quit_event_loop().unwrap();
             }
@@ -837,6 +840,6 @@ fn check_editor_startup() {
     finished.send(None).unwrap();
     watchdog.join().unwrap();
     println!(
-        "PASS: opaque AppKit editor; two main dual-instance actions with fresh/partial/ready/alignment states and collapsed advanced settings on macOS and Windows layouts; login-item states and isolated callbacks; separate status-bar drafts; manual config/AGENTS sync with backups and dirty/busy guards; all file writes stayed in isolated fixtures"
+        "PASS: opaque AppKit editor; two main dual-instance actions with fresh/partial/ready/update states and collapsed advanced settings on macOS and Windows layouts; login-item states and isolated callbacks; separate status-bar drafts; manual config/AGENTS sync with backups and dirty/busy guards; all file writes stayed in isolated fixtures"
     );
 }

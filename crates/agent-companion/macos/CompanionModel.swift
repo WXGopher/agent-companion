@@ -65,6 +65,7 @@ struct CodexInstance: Decodable, Identifiable {
     var codexHome: String
     var appPath: String? = nil
     var executablePath: String? = nil
+    var commandPath: String? = nil
     var databasePath: String? = nil
     var weekly: WeeklyUsage? = nil
     var error: String? = nil

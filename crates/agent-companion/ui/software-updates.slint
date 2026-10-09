@@ -1,13 +1,5 @@
 import { SettingsButton, SettingsCard, SettingsColors } from "settings-common.slint";
-
-export struct SoftwareVersion {
-    name: string,
-    current: string,
-    target: string,
-    message: string,
-    error: bool,
-}
-
+export struct SoftwareVersion { name: string, current: string, target: string, message: string, error: bool, }
 export component SoftwareUpdates inherits SettingsCard {
     in property <[SoftwareVersion]> versions;
     in property <bool> busy;
@@ -21,36 +13,25 @@ export component SoftwareUpdates inherits SettingsCard {
     VerticalLayout {
         padding: 18px;
         spacing: 12px;
-        Text { text: "对齐 Codex / Dodex 版本"; font-size: 15px; font-weight: 600; color: SettingsColors.text; }
-        Text {
-            text: "App 对齐本机 Codex App，TUI 对齐本机 Codex TUI；两者版本可以不同。较新的 Dodex 不会自动降级。";
-            font-size: 12px; color: SettingsColors.secondary; wrap: word-wrap;
-        }
-        HorizontalLayout {
-            spacing: 10px;
-            SettingsButton { text: root.busy ? "正在处理版本…" : "对齐版本"; primary: true; enabled: root.available && !root.busy && !root.blocked; accessible-label: "分别对齐 Codex 与 Dodex 的 App 和 TUI 版本"; clicked => { root.maintain("align"); } }
-            if !root.available: Text { text: "先完成上方 Dodex 安装与配置。"; font-size: 12px; color: SettingsColors.secondary; vertical-alignment: center; }
-            Rectangle { horizontal-stretch: 1; }
-        }
-        for version in root.versions: VerticalLayout {
-            spacing: 4px;
+        Text { text: "TUI 版本与更新"; font-size: 15px; font-weight: 600; color: SettingsColors.text; }
+        Text { text: "Codex 保留原安装渠道，Dodex 使用独立官方 standalone 包。每次仅更新所选实例。"; font-size: 12px; color: SettingsColors.secondary; wrap: word-wrap; }
+        for version[index] in root.versions: VerticalLayout {
+            spacing: 6px;
             Rectangle { height: 1px; background: SettingsColors.border; }
             HorizontalLayout {
                 spacing: 12px;
-                Text { width: 92px; text: version.name; font-weight: 600; font-size: 12px; color: SettingsColors.text; }
-                Text { text: "当前：" + version.current; font-size: 12px; color: SettingsColors.secondary; wrap: word-wrap; }
-                Text { text: "目标：" + version.target; font-size: 12px; color: SettingsColors.secondary; wrap: word-wrap; }
+                Text { width: 92px; text: version.name; font-weight: 600; font-size: 12px; color: SettingsColors.text; vertical-alignment: center; }
+                Text { text: version.current + " · " + version.target; font-size: 12px; color: SettingsColors.secondary; wrap: word-wrap; vertical-alignment: center; horizontal-stretch: 1; }
+                SettingsButton {
+                    text: index == 0 ? "更新 Codex" : "更新 Dodex";
+                    accessible-label: index == 0 ? "仅更新 Codex TUI，保留 Dodex 版本" : "仅更新 Dodex TUI，保留 Codex 版本";
+                    enabled: !root.busy && !root.blocked && (index == 0 || root.available);
+                    clicked => { root.maintain(index == 0 ? "update-codex" : "update-dodex"); }
+                }
             }
             if version.message != "": Text { text: version.message; font-size: 11px; color: version.error ? SettingsColors.error : SettingsColors.secondary; wrap: word-wrap; }
         }
-        if root.message != "": Text {
-            text: root.message;
-            font-size: 12px; color: root.error ? SettingsColors.error : SettingsColors.secondary; wrap: word-wrap;
-        }
+        if root.message != "": Text { text: root.message; font-size: 12px; color: root.error ? SettingsColors.error : SettingsColors.secondary; wrap: word-wrap; }
         if root.notice != "": Text { text: root.notice; font-size: 12px; color: SettingsColors.error; wrap: word-wrap; }
-        Text {
-            text: "对齐使用本机程序，不下载新版本。替换前请退出 Dodex App 和 TUI；账号、配置和会话保留。";
-            font-size: 11px; color: SettingsColors.secondary; wrap: word-wrap;
-        }
     }
 }

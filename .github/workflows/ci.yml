@@ -5,20 +5,42 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_run:
+        description: Optional successful Release run for direct native candidate acceptance
+        type: string
+        default: ''
+      platform:
+        description: Platform for direct candidate acceptance
+        type: choice
+        options: [both, windows, macos]
+        default: both
+
+permissions:
+  contents: read
+  actions: read
+  attestations: read
 
 env:
   CARGO_TERM_COLOR: always
   AGENT_COMPANION_RELEASE_BUILD: "1"
 
 jobs:
+  native-candidate:
+    if: inputs.release_run != ''
+    uses: ./.github/workflows/native-tui-acceptance.yml
+    with:
+      release_run: ${{ inputs.release_run }}
+      platform: ${{ inputs.platform }}
+
   native-menu-bar:
+    if: inputs.release_run == ''
     name: Native macOS menu bar
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-      - name: Check Dodex repair helpers
+      - name: Check native resume contracts
         run: |
-          python3 -m unittest discover -s scripts -p 'test_prepare_dodex_manager.py'
           python3 -m unittest discover -s scripts/tests -p 'test_*.py'
       - name: Check menu-bar status and quota behavior
         run: sh scripts/test-macos-ui.sh --menu-bar
@@ -32,6 +54,7 @@ jobs:
           retention-days: 7
 
   build:
+    if: inputs.release_run == ''
     name: Build & test (${{ matrix.target }})
     strategy:
       fail-fast: false
@@ -40,17 +63,27 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             packages: --workspace
+            console: acomp.exe
           - os: macos-14
             target: aarch64-apple-darwin
             packages: -p agent-companion -p agent-companion-core
+            console: acomp
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Native Windows acceptance host preflight
+        if: runner.os == 'Windows'
+        run: ./scripts/test-tui-instances-windows.ps1 -Companion (Get-Command python3).Source -PreflightOnly
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
           targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: Format
         run: cargo fmt --all --check
@@ -65,10 +98,30 @@ jobs:
         run: cargo clippy ${{ matrix.packages }} --all-targets --target ${{ matrix.target }} --locked -- -D warnings
 
       - name: Test
+        env:
+          AGENT_COMPANION_RENDER_DIR: ${{ github.workspace }}/target/tui-ui-renders
         run: cargo test ${{ matrix.packages }} --target ${{ matrix.target }} --locked
+
+      - name: Preserve native TUI settings and navigation renders
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}-tui-ui-renders
+          path: target/tui-ui-renders/
+          if-no-files-found: ignore
+          compression-level: 9
+          retention-days: 7
 
       - name: Common backend and migration tests
         run: cargo test -p agent-companion-core --features server --target ${{ matrix.target }} --locked
+
+      - name: Native TUI installation, update and daemon isolation
+        if: runner.os == 'macOS'
+        run: python3 scripts/test-tui-instances.py --companion target/${{ matrix.target }}/debug/${{ matrix.console }}
+
+      - name: Native Windows TUI installation, update and daemon isolation
+        if: runner.os == 'Windows'
+        run: ./scripts/test-tui-instances-windows.ps1 -Companion target/${{ matrix.target }}/debug/${{ matrix.console }}
 
       - name: Preserve failed macOS UI renders
         if: failure() && runner.os == 'macOS'

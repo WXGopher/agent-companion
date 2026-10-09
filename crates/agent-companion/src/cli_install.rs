@@ -2,12 +2,10 @@
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    fs::{self, OpenOptions},
-    io::{self, Write},
+    fs::{self, File, OpenOptions},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
 };
-#[cfg(windows)]
-use std::{fs::File, io::Read};
 
 const OWNER: &str = "agent-companion/terminal-cli";
 const MARKER: &str = ".agent-companion-cli.json";
@@ -51,7 +49,7 @@ struct Ownership {
 }
 
 pub fn run() -> io::Result<()> {
-    let home = crate::resume_cli::user_home()?;
+    let home = agent_companion_core::tui_instance::Layout::current()?.user_home;
     let executable = std::env::current_exe()?.canonicalize()?;
     let source_dir = executable
         .parent()
@@ -65,6 +63,7 @@ pub fn run() -> io::Result<()> {
                 source_dir.join("agent-companion"),
             ),
             ("acomp".to_owned(), source_dir.join("acomp")),
+            ("dodex".to_owned(), source_dir.join("dodex")),
         ],
     );
     #[cfg(windows)]
@@ -83,6 +82,7 @@ pub fn run() -> io::Result<()> {
                     source_dir.join("acomp.exe"),
                 ),
                 ("acomp.exe".to_owned(), source_dir.join("acomp.exe")),
+                ("dodex.exe".to_owned(), source_dir.join("dodex.exe")),
             ],
         )
     };
@@ -91,7 +91,7 @@ pub fn run() -> io::Result<()> {
     register_user_path(&directory)?;
     writeln!(
         io::stdout(),
-        "Installed acomp and agent-companion in {}",
+        "Installed acomp, agent-companion, and dodex in {}",
         directory.display()
     )?;
     #[cfg(unix)]
@@ -107,7 +107,7 @@ pub fn run() -> io::Result<()> {
     #[cfg(windows)]
     writeln!(
         io::stdout(),
-        "Open a new terminal to use the commands. Installed console entries provide resume, install-cli, help, and version; the full application keeps its existing commands."
+        "Open a new terminal to use the commands. Installed Companion console entries provide resume, install-cli, dodex-tui, help, and version; the full application keeps its existing commands."
     )?;
     Ok(())
 }
@@ -140,12 +140,19 @@ fn install(directory: &Path, sources: &[(String, PathBuf)]) -> io::Result<()> {
             return Err(io::Error::other("Packaged CLI entry is not a regular file"));
         }
         let destination = directory.join(name);
+        let expected = source_fingerprint(&source, name)?;
         if fs::symlink_metadata(&destination).is_ok() {
             let actual = fingerprint(&destination)?;
             if !ownership
                 .entries
                 .get(name)
                 .is_some_and(|known| known.contains(&actual))
+                && actual != expected
+                && !(name.starts_with("dodex")
+                    && crate::tui_deployment::command_is_owned(
+                        &destination,
+                        &fs::read(&destination)?,
+                    ))
             {
                 return Err(io::Error::other(format!(
                     "Refusing to replace an unrelated command: {}",
@@ -153,7 +160,6 @@ fn install(directory: &Path, sources: &[(String, PathBuf)]) -> io::Result<()> {
                 )));
             }
         }
-        let expected = source_fingerprint(&source)?;
         ownership
             .entries
             .entry(name.clone())
@@ -203,6 +209,23 @@ fn read_ownership(marker: &Path) -> io::Result<Ownership> {
     Ok(ownership)
 }
 
+pub(crate) fn command_is_owned(path: &Path) -> bool {
+    let Some(directory) = path.parent() else {
+        return false;
+    };
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    read_ownership(&directory.join(MARKER)).is_ok_and(|ownership| {
+        fingerprint(path).is_ok_and(|actual| {
+            ownership
+                .entries
+                .get(name)
+                .is_some_and(|known| known.contains(&actual))
+        })
+    })
+}
+
 fn write_ownership(marker: &Path, ownership: &Ownership) -> io::Result<()> {
     let mut temporary = tempfile::NamedTempFile::new_in(marker.parent().unwrap())?;
     serde_json::to_writer(&mut temporary, ownership)?;
@@ -231,24 +254,41 @@ fn is_link(path: &Path) -> io::Result<bool> {
 
 #[cfg(unix)]
 fn fingerprint(path: &Path) -> io::Result<String> {
-    fs::read_link(path)
-        .map(|target| target.to_string_lossy().into_owned())
-        .map_err(|_| io::Error::other("Existing command is not an owned symbolic link"))
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        Ok(fs::read_link(path)?.to_string_lossy().into_owned())
+    } else if metadata.is_file() {
+        file_fingerprint(path)
+    } else {
+        Err(io::Error::other(
+            "Existing command is not a supported CLI entry",
+        ))
+    }
 }
 #[cfg(unix)]
-fn source_fingerprint(source: &Path) -> io::Result<String> {
-    Ok(source.to_string_lossy().into_owned())
+fn source_fingerprint(source: &Path, name: &str) -> io::Result<String> {
+    if name == "dodex" {
+        file_fingerprint(source)
+    } else {
+        Ok(source.to_string_lossy().into_owned())
+    }
 }
 #[cfg(unix)]
 fn replace_entry(source: &Path, destination: &Path) -> io::Result<()> {
     let stage = tempfile::tempdir_in(destination.parent().unwrap())?;
-    let link = stage.path().join("entry");
-    std::os::unix::fs::symlink(source, &link)?;
-    fs::rename(link, destination)
+    let entry = stage.path().join("entry");
+    // TUI repair publishes regular, hash-owned console entries. Keep Dodex
+    // independent of the Companion bundle and compatible with repeat repair.
+    if destination.file_name().is_some_and(|name| name == "dodex") {
+        fs::copy(source, &entry)?;
+        File::open(&entry)?.sync_all()?;
+    } else {
+        std::os::unix::fs::symlink(source, &entry)?;
+    }
+    fs::rename(entry, destination)
 }
 
-#[cfg(windows)]
-fn fingerprint(path: &Path) -> io::Result<String> {
+fn file_fingerprint(path: &Path) -> io::Result<String> {
     use sha2::{Digest, Sha256};
     if is_link(path)? {
         return Err(io::Error::other("Existing command is redirected"));
@@ -266,7 +306,11 @@ fn fingerprint(path: &Path) -> io::Result<String> {
     Ok(format!("{:x}", digest.finalize()))
 }
 #[cfg(windows)]
-fn source_fingerprint(source: &Path) -> io::Result<String> {
+fn fingerprint(path: &Path) -> io::Result<String> {
+    file_fingerprint(path)
+}
+#[cfg(windows)]
+fn source_fingerprint(source: &Path, _name: &str) -> io::Result<String> {
     fingerprint(source)
 }
 #[cfg(windows)]
@@ -279,7 +323,7 @@ fn replace_entry(source: &Path, destination: &Path) -> io::Result<()> {
 }
 
 #[cfg(windows)]
-fn register_user_path(directory: &Path) -> io::Result<()> {
+pub(crate) fn register_user_path(directory: &Path) -> io::Result<()> {
     use std::{
         ffi::OsString,
         os::windows::ffi::{OsStrExt, OsStringExt},
@@ -450,5 +494,28 @@ mod tests {
         install(&directory, &[("acomp".into(), source.clone())]).unwrap();
         install(&directory, &[("acomp".into(), source)]).unwrap();
         assert_eq!(fs::read_to_string(&entry).unwrap(), "test executable");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dodex_entry_is_regular_and_survives_a_companion_bundle_move() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let directory = root.join("bin");
+        let source = root.join("packaged-dodex");
+        fs::write(&source, "console generation 1").unwrap();
+        install(&directory, &[("dodex".into(), source.clone())]).unwrap();
+        let entry = directory.join("dodex");
+        assert!(
+            !fs::symlink_metadata(&entry)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        fs::write(&source, "console generation 2").unwrap();
+        install(&directory, &[("dodex".into(), source.clone())]).unwrap();
+        install(&directory, &[("dodex".into(), source.clone())]).unwrap();
+        fs::rename(&source, root.join("moved-package")).unwrap();
+        assert_eq!(fs::read_to_string(&entry).unwrap(), "console generation 2");
     }
 }

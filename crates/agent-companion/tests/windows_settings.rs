@@ -3,20 +3,20 @@
 #![cfg(target_os = "macos")]
 #![allow(dead_code, unused_imports)]
 
+#[path = "../src/cli_install.rs"]
+mod cli_install;
 #[path = "../src/codex_tui.rs"]
 mod codex_tui;
 #[path = "../src/macos.rs"]
 mod macos;
-#[path = "../src/macos_deployment.rs"]
-mod macos_deployment;
 #[path = "../src/macos_primary_app.rs"]
 mod macos_primary_app;
-#[path = "../src/managed_tui.rs"]
-mod managed_tui;
 #[path = "../src/settings_update.rs"]
 mod settings_update;
 #[path = "../src/software_updates.rs"]
 mod software_updates;
+#[path = "../src/tui_deployment.rs"]
+mod tui_deployment;
 #[path = "../src/update_service.rs"]
 mod update_service;
 #[path = "../src/usage_service.rs"]

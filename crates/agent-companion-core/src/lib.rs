@@ -21,6 +21,8 @@ pub mod resume;
 pub mod server;
 pub mod state;
 pub mod transcript;
+#[cfg(feature = "config-edit")]
+pub mod tui_instance;
 pub mod usage;
 pub mod usage_service;
 
