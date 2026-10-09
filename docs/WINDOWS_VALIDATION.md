@@ -1,5 +1,37 @@
 # Windows validation
 
+## v0.3.32 PowerShell module compatibility (2026-10-09)
+
+Local migration with the v0.3.31 package stopped at native package signature
+verification: Windows PowerShell inherited PowerShell 7's `PSModulePath` and
+could not load `Microsoft.PowerShell.Security`. A diagnostic using the explicit
+Windows PowerShell built-in module directory reported a valid OpenAI signature
+for the same native executable.
+
+The v0.3.32 change gives Companion's Windows PowerShell maintenance processes
+an explicit matching module root for installation, junction creation and
+signature verification. Terminal launch retains the caller's module path.
+Package verification continues to require `Valid` signatures and an OpenAI
+signer for both native executables.
+
+A targeted Windows `acomp` regression passed against the saved fix. It uses
+real Windows PowerShell with inherited PowerShell 7 and synthetic conflicting
+module paths, checks a signed system executable through the matching security
+module, and exercises a temporary installer script, instance environment,
+junction and hidden native child. The child retains the inherited module paths,
+including a Unicode fixture path. The test modifies no installed TUI or personal
+profile. Formatting, diff whitespace and locked offline package metadata checks
+also passed; all three workspace packages report version 0.3.32.
+
+The v0.3.31 GUI was installed and started locally, and the recorded personal
+baseline checks passed. The subsequent TUI migration did not complete; these
+results do not count as a successful local repair. The pushed v0.3.31 tag is
+retained, and its release remains a draft while v0.3.32 is prepared.
+
+v0.3.32 full workspace checks, native CI, release-archive verification and
+authorized local repair are pending at this documentation stage. Results below belong to
+the named v0.3.31 source or earlier candidates and are not v0.3.32 acceptance.
+
 ## v0.3.31 independent TUI verification (2026-10-09)
 
 This revision removes the Dodex desktop mirror. Codex and Dodex have separate
@@ -26,9 +58,9 @@ path segments, redirected directories and different storage remain rejected.
 
 Synthetic Settings renders were inspected at the end of this run: the TUI setup
 page has separate Codex and Dodex version/update rows and terminal actions, with
-no duplicated desktop App control. Final PR CI, release packaging, exact-archive
-acceptance and local deployment results are recorded in the published release
-notes; the candidate runs below are evidence from earlier branch revisions.
+no duplicated desktop App control. These source checks do not establish a
+successful local TUI migration; the later Windows PowerShell failure is recorded
+above. The candidate runs below are evidence from earlier branch revisions.
 
 ### Earlier candidate checks
 

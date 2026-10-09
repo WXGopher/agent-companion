@@ -899,7 +899,7 @@ fn install_native_release(instance: &InstanceConfig, release: Option<&str>) -> i
     #[cfg(not(windows))]
     let mut command = Command::new("/bin/sh");
     #[cfg(windows)]
-    let mut command = powershell_command()?;
+    let mut command = maintenance_powershell_command()?;
     #[cfg(windows)]
     command.args(["-ExecutionPolicy", "Bypass", "-File"]);
     command.arg(script);
@@ -959,7 +959,7 @@ fn publish_private_entry(instance: &InstanceConfig) -> io::Result<()> {
     #[cfg(windows)]
     {
         if fs::symlink_metadata(&instance.install_dir).is_err() {
-            let mut command = powershell_command()?;
+            let mut command = maintenance_powershell_command()?;
             command.arg("-Command").arg("$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path $env:AC_TUI_PREFIX -Target $env:AC_TUI_BIN | Out-Null")
                 .env("AC_TUI_PREFIX", &instance.install_dir)
                 .env("AC_TUI_BIN", instance.cli_path.parent().unwrap());
@@ -1001,7 +1001,7 @@ fn verify_package_at(instance: &InstanceConfig, root: &Path) -> io::Result<()> {
     }
     #[cfg(windows)]
     for name in ["codex.exe", "codex-code-mode-host.exe"] {
-        let mut command = powershell_command()?;
+        let mut command = maintenance_powershell_command()?;
         command.arg("-Command").arg("$ErrorActionPreference='Stop'; $s=Get-AuthenticodeSignature -LiteralPath $env:AC_TUI_NATIVE; if ($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notmatch 'OpenAI') { exit 1 }")
             .env("AC_TUI_NATIVE", root.join("bin").join(name));
         run_bounded(&mut command, Duration::from_secs(30))?;
@@ -1068,6 +1068,17 @@ fn powershell_command() -> io::Result<Command> {
     command
         .args(["-NoLogo", "-NoProfile", "-NonInteractive"])
         .creation_flags(0x08000000);
+    Ok(command)
+}
+
+#[cfg(windows)]
+fn maintenance_powershell_command() -> io::Result<Command> {
+    let mut command = powershell_command()?;
+    // Native callers can inherit PowerShell 7 module paths that Windows
+    // PowerShell cannot load. Maintenance needs only its own bundled modules.
+    // Keep terminal launches on the inherited environment for user modules.
+    let modules = Path::new(command.get_program()).with_file_name("Modules");
+    command.env("PSModulePath", modules);
     Ok(command)
 }
 

@@ -1,4 +1,26 @@
-# v0.3.31 TUI 双开验证（2026-10-09）
+# v0.3.32 Windows PowerShell 模块兼容修复（2026-10-09）
+
+Windows 本机使用 v0.3.31 包迁移 TUI 时，程序包签名校验因 Windows PowerShell
+继承 PowerShell 7 的 `PSModulePath` 而失败：`Microsoft.PowerShell.Security`
+模块无法加载。诊断时为同一 Windows PowerShell 明确指定系统内置模块目录，
+同一原生程序返回有效的 OpenAI 签名。
+
+v0.3.32 为安装、创建入口和签名校验所用的 Windows PowerShell 子进程明确指定
+匹配的模块根目录，打开 TUI 时保留用户原有的模块路径。两个原生程序继续要求有效
+签名及 OpenAI 签名者。
+已推送的 v0.3.31 标签保留，其 Release 仍为草稿；本轮准备独立的 v0.3.32 发布。
+
+已保存修复的 Windows `acomp` 定向回归通过：在继承 PowerShell 7 及合成冲突
+模块路径时，用真实 Windows PowerShell 加载匹配的签名模块；验证系统签名程序、
+临时安装脚本参数与实例环境、junction，以及隐藏原生子进程对 Unicode 模块路径
+的继承。格式检查、diff 空白检查和锁定依赖的离线元数据检查通过，三个工作区包
+均为 0.3.32。这些测试未操作已安装 TUI 或个人配置。
+
+v0.3.31 GUI 已在 Windows 本机安装并启动，个人数据基线检查通过，但后续 TUI
+迁移未完成。v0.3.32 的完整工作区检查、原生 CI、发布归档验收和本机修复尚待执行与
+记录，不能用下面的 v0.3.31 结果替代。详见 [Windows 验证记录](WINDOWS_VALIDATION.md)。
+
+## v0.3.31 TUI 双开验证（2026-10-09）
 
 本轮移除 Dodex 桌面镜像，只维护两个独立 TUI。历史版本的验证记录保留在下方。
 
@@ -16,7 +38,7 @@
 
 [原生 TUI 验收 37842931266](https://github.com/WXGopher/agent-companion/actions/runs/37842931266) 的 macOS 和 Windows 均通过。该验收使用上述 Release 的优化程序包，先验证来源证明及产品源码未变，再执行真实安装、重复修复、原生更新、双账号 daemon、多终端恢复和 queue。真实安装验收仅用临时合成账号与本机 loopback 模型服务。Windows 使用临时普通用户、在 runner Job 外启动原生程序；不注入后台禁用参数。一次 Windows 0.159.3 首次 daemon 安装返回 `Access is denied`，同源码、同程序包在新临时环境重跑通过；未用产品回退或自动重试隐藏该失败。
 
-本机已部署签名校验通过的 Companion 0.3.31，刷新终端入口并重复修复成功。Codex 保留 Homebrew 0.160.1，Dodex 选择已有完整 standalone 0.160.1。旧 Dodex App 已移入废纸篓并注销桌面注册，重复清理通过；清理后的空闲旧会话经已安装入口恢复，正常退出码为 0。原副账号文件、SQLite、历史、日志与正在运行的 TUI 均保留。验证过程中曾误选原生升级提示，现已恢复原包选择，新增包保留；包选择恢复和部署备份均记录在本机私有 `TuiMigration` 日志中。
+macOS 本机已部署签名校验通过的 Companion 0.3.31，刷新终端入口并重复修复成功。Codex 保留 Homebrew 0.160.1，Dodex 选择已有完整 standalone 0.160.1。旧 Dodex App 已移入废纸篓并注销桌面注册，重复清理通过；清理后的空闲旧会话经已安装入口恢复，正常退出码为 0。原副账号文件、SQLite、历史、日志与正在运行的 TUI 均保留。验证过程中曾误选原生升级提示，现已恢复原包选择，新增包保留；包选择恢复和部署备份均记录在本机私有 `TuiMigration` 日志中。
 
 Windows MSVC CI 保留原生设置和任务面板渲染图；本机新版 Companion 进程启动通过，但桌面自动化未取得已安装菜单栏应用的窗口，因此不计为人工视觉验收。macOS 的 44 阶段原生交互检查和 Windows 的原生窗口检查使用测试拥有的窗口。人工 Windows 桌面验收未执行，忽略的机器相关用例不计为通过，详见 [Windows 验收边界](WINDOWS_VALIDATION.md)。
 
