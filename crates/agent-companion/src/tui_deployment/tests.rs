@@ -493,3 +493,130 @@ if ($process.ExitCode -ne 0) { throw 'Native child failed' }
     }
     assert_eq!(std::env::var_os("PSModulePath"), inherited);
 }
+
+#[cfg(windows)]
+#[test]
+fn repair_replaces_running_windows_alias_without_stopping_its_process() {
+    use std::os::windows::{io::AsRawHandle, process::CommandExt};
+    use windows::Win32::{
+        Foundation::{FILETIME, HANDLE},
+        System::Threading::GetProcessTimes,
+    };
+
+    struct LiveFixture(std::process::Child);
+    impl LiveFixture {
+        fn creation_time(&self) -> u64 {
+            let mut created = FILETIME::default();
+            let mut exited = FILETIME::default();
+            let mut kernel = FILETIME::default();
+            let mut user = FILETIME::default();
+            unsafe {
+                GetProcessTimes(
+                    HANDLE(self.0.as_raw_handle()),
+                    &mut created,
+                    &mut exited,
+                    &mut kernel,
+                    &mut user,
+                )
+                .unwrap();
+            }
+            (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime)
+        }
+    }
+    impl Drop for LiveFixture {
+        fn drop(&mut self) {
+            if let Some(mut input) = self.0.stdin.take() {
+                let _ = input.write_all(b"exit\r\n");
+            }
+            for _ in 0..500 {
+                if self.0.try_wait().ok().flatten().is_some() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            // This handle belongs solely to the fixture child created below.
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    let (_temporary, layout) = fixture();
+    let home = layout.user_home.join("profile");
+    let record = Registry {
+        schema: SCHEMA,
+        primary: None,
+        dodex: layout.secondary(home.clone(), home.join("sqlite"), home.join("logs")),
+        dodex_enabled: true,
+    };
+    let system = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32");
+    let old = fs::read(system.join("cmd.exe")).unwrap();
+    let new = fs::read(system.join("hostname.exe")).unwrap();
+    publish_commands_from(&layout, &record, &new, &[]).unwrap();
+    let aliases = layout.user_home.join(".cargo/bin");
+    fs::create_dir_all(&aliases).unwrap();
+    let alias = aliases.join("dodex.exe");
+    fs::write(&alias, &old).unwrap();
+    atomic_json(
+        &aliases.join("dodex.agent-companion.json"),
+        &serde_json::json!({"schema":2,"owner":"agent-companion/dodex","hashes":[digest(&old)]}),
+    )
+    .unwrap();
+    let backup = alias.with_extension("before-tui");
+    fs::write(&backup, &old).unwrap();
+    let mut process = LiveFixture(
+        Command::new(&alias)
+            .args(["/d", "/q"])
+            .current_dir(&layout.user_home)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(0x08000000)
+            .spawn()
+            .unwrap(),
+    );
+    let pid = process.0.id();
+    let started = process.creation_time();
+    assert!(process.0.try_wait().unwrap().is_none());
+    assert_eq!(
+        atomic_write(&alias, &new, 0o755)
+            .unwrap_err()
+            .raw_os_error(),
+        Some(5)
+    );
+    assert_eq!(digest(&fs::read(&alias).unwrap()), digest(&old));
+
+    for _ in 0..2 {
+        publish_commands_from(&layout, &record, &new, std::slice::from_ref(&aliases)).unwrap();
+        assert!(process.0.try_wait().unwrap().is_none());
+        assert_eq!(process.0.id(), pid);
+        assert_eq!(process.creation_time(), started);
+        assert_eq!(digest(&fs::read(&alias).unwrap()), digest(&new));
+        assert_eq!(
+            digest(&fs::read(&record.dodex.command_path).unwrap()),
+            digest(&new)
+        );
+        assert_eq!(digest(&fs::read(&backup).unwrap()), digest(&old));
+        let retired: Vec<_> = fs::read_dir(&aliases)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(".dodex.exe.retired-")
+            })
+            .collect();
+        assert_eq!(
+            retired.len(),
+            1,
+            "Same-generation repair must not retire another file"
+        );
+        assert_eq!(digest(&fs::read(&retired[0]).unwrap()), digest(&old));
+        let owner: Ownership =
+            serde_json::from_slice(&fs::read(layout.support.join(OWNER)).unwrap()).unwrap();
+        assert!(owner.hashes[&alias].contains(&digest(&old)));
+        assert!(owner.hashes[&alias].contains(&digest(&new)));
+        assert!(!owner.hashes.contains_key(&retired[0]));
+    }
+    assert!(!home.exists());
+}

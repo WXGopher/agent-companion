@@ -23,6 +23,10 @@ use std::{
 #[path = "tui_deployment/windows_retirement.rs"]
 mod windows_retirement;
 
+#[cfg(windows)]
+#[path = "tui_deployment/windows_owned_entry.rs"]
+mod windows_owned_entry;
+
 #[cfg(target_os = "macos")]
 #[path = "tui_deployment/shell.rs"]
 mod shell;
@@ -444,6 +448,8 @@ fn publish_commands_from(
         }
     }
     let desired = digest(bytes);
+    #[cfg(windows)]
+    let mut previous = std::collections::BTreeMap::new();
     for entry in &entries {
         if vendor_entry_link(entry, record) {
             no_redirects(entry.parent().unwrap())?;
@@ -452,11 +458,12 @@ fn publish_commands_from(
         no_redirects(entry)?;
         if entry.exists() {
             let existing = fs::read(entry)?;
+            let existing_hash = digest(&existing);
             if !owner
                 .hashes
                 .get(entry)
-                .is_some_and(|hashes| hashes.contains(&digest(&existing)))
-                && digest(&existing) != desired
+                .is_some_and(|hashes| hashes.contains(&existing_hash))
+                && existing_hash != desired
                 && !crate::cli_install::command_is_owned(entry)
                 && !legacy_entry(layout, entry, &existing)?
             {
@@ -464,19 +471,36 @@ fn publish_commands_from(
                     "Existing TUI command is not owned by Companion; no command was overwritten",
                 ));
             }
+            #[cfg(windows)]
+            {
+                previous.insert(
+                    entry.clone(),
+                    windows_owned_entry::Generation {
+                        hash: existing_hash.clone(),
+                        length: existing.len() as u64,
+                    },
+                );
+                let hashes = owner.hashes.entry(entry.clone()).or_default();
+                if !hashes.contains(&existing_hash) {
+                    hashes.push(existing_hash);
+                }
+            }
         }
     }
     // Save both generations before publishing to survive a crash between the
     // entries. Existing identical binaries are skipped (also on Windows).
     for entry in &entries {
-        let backup = entry.with_extension("before-tui");
-        if vendor_entry_link(entry, record) {
-            #[cfg(unix)]
-            if fs::symlink_metadata(&backup).is_err() {
-                std::os::unix::fs::symlink(fs::read_link(entry)?, &backup)?;
+        #[cfg(not(windows))]
+        {
+            let backup = entry.with_extension("before-tui");
+            if vendor_entry_link(entry, record) {
+                #[cfg(unix)]
+                if fs::symlink_metadata(&backup).is_err() {
+                    std::os::unix::fs::symlink(fs::read_link(entry)?, &backup)?;
+                }
+            } else if entry.exists() && !backup.exists() {
+                atomic_write(&backup, &fs::read(entry)?, 0o700)?;
             }
-        } else if entry.exists() && !backup.exists() {
-            atomic_write(&backup, &fs::read(entry)?, 0o700)?;
         }
         let hashes = owner.hashes.entry(entry.clone()).or_default();
         if !hashes.contains(&desired) {
@@ -491,6 +515,9 @@ fn publish_commands_from(
         if vendor_entry_link(&entry, record) {
             atomic_write_inner(&entry, bytes, 0o755, true)?;
         } else {
+            #[cfg(windows)]
+            windows_owned_entry::publish(&entry, bytes, previous.get(&entry))?;
+            #[cfg(not(windows))]
             atomic_write(&entry, bytes, 0o755)?;
         }
     }
