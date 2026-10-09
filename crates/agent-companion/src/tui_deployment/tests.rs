@@ -350,3 +350,146 @@ fn primary_discovery_keeps_an_earlier_npm_command_ahead_of_native_executables() 
     assert_eq!(primary.updater, Some(npm_bin.join("npm.cmd")));
     assert_eq!(primary.runtime().unwrap(), native.canonicalize().unwrap());
 }
+
+#[cfg(windows)]
+#[test]
+fn maintenance_powershell_ignores_inherited_modules_without_changing_terminal_environment() {
+    const CHILD: &str = "ACOMP_TUI_POWERSHELL_TEST_CHILD";
+    const TEST: &str = "tui_deployment::tests::maintenance_powershell_ignores_inherited_modules_without_changing_terminal_environment";
+    let inherited = std::env::var_os("PSModulePath");
+    if std::env::var_os(CHILD).is_some() {
+        let (temporary, layout) = fixture();
+        let root = temporary.path();
+        let home = layout.user_home.join("profile");
+        let instance = layout.secondary(home.clone(), home.join("sqlite"), home.join("logs"));
+        let mut signature = maintenance_powershell_command().unwrap();
+        signature.args(["-Command", r#"
+$ErrorActionPreference = 'Stop'
+$signature = Get-AuthenticodeSignature -LiteralPath (Join-Path $PSHOME 'powershell.exe')
+$source = (Get-Command Get-AuthenticodeSignature).Module.Path
+if ($signature.Status -ne 'Valid' -or -not $source.StartsWith((Join-Path $PSHOME 'Modules\'), [StringComparison]::OrdinalIgnoreCase)) { throw 'Wrong signature module' }
+if ($env:ACOMP_TUI_TEST_INHERITED -ne 'preserved') { throw 'Lost inherited environment' }
+[Console]::Out.Write('verified')
+"#]);
+        assert_eq!(
+            run_bounded(&mut signature, Duration::from_secs(30)).unwrap(),
+            b"verified"
+        );
+
+        // Exercise the installer's -File/argument/environment contract and the
+        // private entry's junction cmdlet, using only disposable fixture data.
+        let target = root.join("target");
+        let link = root.join("entry");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("marker"), b"synthetic").unwrap();
+        let script = root.join("installer-probe.ps1");
+        fs::write(&script, r#"
+param([string]$Release)
+$ErrorActionPreference = 'Stop'
+if ($Release -ne 'synthetic-release' -or $env:CODEX_HOME -ne $env:ACOMP_TUI_EXPECTED_HOME -or $env:CODEX_SQLITE_HOME -ne $env:ACOMP_TUI_EXPECTED_SQLITE -or $env:CODEX_INSTALL_DIR -ne $env:ACOMP_TUI_EXPECTED_INSTALL) { throw 'Lost installer arguments or environment' }
+$null = Get-Command Invoke-RestMethod, Invoke-WebRequest, Expand-Archive, Start-Process
+$null = ConvertFrom-Json '{"synthetic":true}'
+New-Item -ItemType Junction -Path $env:ACOMP_TUI_TEST_LINK -Target $env:ACOMP_TUI_TEST_TARGET | Out-Null
+[Console]::Out.Write('installed')
+"#).unwrap();
+        let mut installer = maintenance_powershell_command().unwrap();
+        instance.environment(&mut installer);
+        installer
+            .args(["-ExecutionPolicy", "Bypass", "-File"])
+            .arg(&script)
+            .args(["-Release", "synthetic-release"])
+            .env("ACOMP_TUI_EXPECTED_HOME", &instance.codex_home)
+            .env("ACOMP_TUI_EXPECTED_SQLITE", &instance.database_dir)
+            .env("ACOMP_TUI_EXPECTED_INSTALL", &instance.install_dir)
+            .env("ACOMP_TUI_TEST_LINK", &link)
+            .env("ACOMP_TUI_TEST_TARGET", &target);
+        assert_eq!(
+            run_bounded(&mut installer, Duration::from_secs(30)).unwrap(),
+            b"installed"
+        );
+        assert_eq!(fs::read(link.join("marker")).unwrap(), b"synthetic");
+
+        // The terminal launcher must still pass user modules to its native
+        // child. WinPS may add its default paths during startup; compare with
+        // that shell's inherited environment, including every supplied path.
+        let output = root.join("terminal-environment.txt");
+        let expected = root.join("shell-environment.txt");
+        let mut terminal = powershell_command().unwrap();
+        terminal.args(["-Command", r#"
+$ErrorActionPreference = 'Stop'
+[IO.File]::WriteAllText($env:ACOMP_TUI_TEST_EXPECTED, $env:PSModulePath)
+$process = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\cmd.exe') -ArgumentList @('/d', '/u', '/c', 'set PSModulePath') -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput $env:ACOMP_TUI_TEST_OUTPUT
+if ($process.ExitCode -ne 0) { throw 'Native child failed' }
+"#])
+            .env("ACOMP_TUI_TEST_OUTPUT", &output)
+            .env("ACOMP_TUI_TEST_EXPECTED", &expected);
+        run_bounded(&mut terminal, Duration::from_secs(30)).unwrap();
+        let output = fs::read(output).unwrap();
+        let (code_units, remainder) = output.as_chunks::<2>();
+        assert!(remainder.is_empty(), "Incomplete UTF-16 code unit");
+        let output = String::from_utf16(
+            &code_units
+                .iter()
+                .copied()
+                .map(u16::from_le_bytes)
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let (name, value) = output.trim().split_once('=').unwrap();
+        assert!(name.eq_ignore_ascii_case("PSModulePath"));
+        assert_eq!(value, fs::read_to_string(expected).unwrap());
+        let paths: Vec<_> = std::env::split_paths(value).collect();
+        for path in std::env::split_paths(inherited.as_ref().unwrap()) {
+            assert!(
+                paths.contains(&path),
+                "Terminal lost an inherited module path"
+            );
+        }
+    } else {
+        // Set the parent environment in a separate test process, never with
+        // process-global set_var while the remaining Rust tests run in parallel.
+        let temporary = tempfile::tempdir().unwrap();
+        let modules = temporary.path().join("modules-模块");
+        let security = modules.join("Microsoft.PowerShell.Security");
+        fs::create_dir_all(&security).unwrap();
+        fs::write(
+            security.join("Microsoft.PowerShell.Security.psd1"),
+            "@{ RootModule='Security.psm1'; ModuleVersion='99.0'; FunctionsToExport=@('Get-AuthenticodeSignature') }",
+        )
+        .unwrap();
+        fs::write(
+            security.join("Security.psm1"),
+            "function Get-AuthenticodeSignature { throw 'Inherited signature module was loaded' }; Export-ModuleMember -Function Get-AuthenticodeSignature",
+        )
+        .unwrap();
+        let mut paths = vec![modules];
+        let mut pwsh = Command::new("pwsh.exe");
+        pwsh.args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "[Console]::Out.Write($PSHOME)",
+        ]);
+        match run_bounded(&mut pwsh, Duration::from_secs(30)) {
+            Ok(bytes) => {
+                let path = PathBuf::from(String::from_utf8(bytes).unwrap()).join("Modules");
+                assert!(path.join("Microsoft.PowerShell.Security").is_dir());
+                paths.insert(0, path);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => panic!("PowerShell 7 module discovery failed: {error}"),
+        }
+        if let Some(value) = &inherited {
+            paths.extend(std::env::split_paths(value));
+        }
+        let mut child = Command::new(std::env::current_exe().unwrap());
+        child
+            .args(["--exact", TEST, "--nocapture"])
+            .env(CHILD, "1")
+            .env("PSModulePath", std::env::join_paths(paths).unwrap())
+            .env("ACOMP_TUI_TEST_INHERITED", "preserved");
+        run_bounded(&mut child, Duration::from_secs(120)).unwrap();
+    }
+    assert_eq!(std::env::var_os("PSModulePath"), inherited);
+}
