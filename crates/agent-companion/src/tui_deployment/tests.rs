@@ -425,10 +425,13 @@ if ($process.ExitCode -ne 0) { throw 'Native child failed' }
             .env("ACOMP_TUI_TEST_EXPECTED", &expected);
         run_bounded(&mut terminal, Duration::from_secs(30)).unwrap();
         let output = fs::read(output).unwrap();
+        let (code_units, remainder) = output.as_chunks::<2>();
+        assert!(remainder.is_empty(), "Incomplete UTF-16 code unit");
         let output = String::from_utf16(
-            &output
-                .chunks_exact(2)
-                .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+            &code_units
+                .iter()
+                .copied()
+                .map(u16::from_le_bytes)
                 .collect::<Vec<_>>(),
         )
         .unwrap();
