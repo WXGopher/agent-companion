@@ -1,4 +1,32 @@
-# v0.3.32 Windows PowerShell 模块兼容修复（2026-10-09）
+# v0.3.33 Windows 运行中入口迁移（2026-10-09）
+
+本轮面向公开 v0.3.30 用户，交付 macOS / Windows 移除 Dodex 桌面双开、保留
+两套独立原生 TUI 的完整迁移，并包含 PowerShell 模块兼容和运行中命令入口更新
+两项 Windows 修复。v0.3.31 与 v0.3.32 标签保留不覆盖；截至本记录，两版均未
+公开发布，不能视为用户已经完成的升级。
+
+Windows 本机迁移遇到第二个阻塞：经归属确认的旧 `dodex.exe` 仍在运行，发布
+新的 PATH 入口时，Windows 拒绝原位覆盖映射中的程序文件。未结束该用户进程。
+临时合成程序实测表明，将运行中的旧文件更名为同目录的唯一保留文件后，可以
+发布新入口；旧进程继续运行，新旧文件哈希和已有迁移备份均保留。该结果验证文件
+操作的可行性，不代表已安装 TUI 的修复成功。
+
+v0.3.33 将此处理限定于经归属校验的 Windows 命令发布。Windows `acomp` 的
+18 项 TUI 部署定向回归通过：真实运行的合成 PE 在两次修复后仍保留原 PID 和
+创建时间，入口、保留副本和原备份哈希正确；同时覆盖目录竞争保护、无关文件
+保留、发布失败恢复，以及此前的 PowerShell 模块兼容修复。这些检查只操作临时
+合成目录和测试拥有的子进程。
+
+v0.3.33 Windows 本机完整工作区串行测试通过：594 项通过、10 项显式忽略。
+核心 `--features server` 测试另有 258 项通过、2 项忽略；这些测试组重叠，不相加
+为唯一用例总数。核心 `--no-default-features` 检查、工作区全目标 Clippy、格式
+检查和 diff 空白检查均通过。Release 优化构建正在进行。
+
+当前 v0.3.33 PR / main CI、Windows 与 macOS 两平台原生 TUI 验收、最终发布归档
+验收及本机修复尚待完成与记录；个人数据基线检查和 GUI 启动通过不等于 TUI 迁移完成。
+详见 [Windows 验证记录](WINDOWS_VALIDATION.md)。
+
+## v0.3.32 Windows PowerShell 模块兼容修复：源码阶段记录（2026-10-09）
 
 Windows 本机使用 v0.3.31 包迁移 TUI 时，程序包签名校验因 Windows PowerShell
 继承 PowerShell 7 的 `PSModulePath` 而失败：`Microsoft.PowerShell.Security`
@@ -8,7 +36,7 @@ Windows 本机使用 v0.3.31 包迁移 TUI 时，程序包签名校验因 Window
 v0.3.32 为安装、创建入口和签名校验所用的 Windows PowerShell 子进程明确指定
 匹配的模块根目录，打开 TUI 时保留用户原有的模块路径。两个原生程序继续要求有效
 签名及 OpenAI 签名者。
-已推送的 v0.3.31 标签保留，其 Release 仍为草稿；本轮准备独立的 v0.3.32 发布。
+本节保留 v0.3.32 源码阶段的验证记录；后续迁移阻塞及 v0.3.33 状态见上方。
 
 已保存修复的 Windows `acomp` 定向回归通过：在继承 PowerShell 7 及合成冲突
 模块路径时，用真实 Windows PowerShell 加载匹配的签名模块；验证系统签名程序、
@@ -17,8 +45,11 @@ v0.3.32 为安装、创建入口和签名校验所用的 Windows PowerShell 子�
 均为 0.3.32。这些测试未操作已安装 TUI 或个人配置。
 
 v0.3.31 GUI 已在 Windows 本机安装并启动，个人数据基线检查通过，但后续 TUI
-迁移未完成。v0.3.32 的完整工作区检查、原生 CI、发布归档验收和本机修复尚待执行与
-记录，不能用下面的 v0.3.31 结果替代。详见 [Windows 验证记录](WINDOWS_VALIDATION.md)。
+迁移未完成。之后 v0.3.32 的 [PR #33](https://github.com/WXGopher/agent-companion/pull/33)
+已合并，[最终 CI 37907308282](https://github.com/WXGopher/agent-companion/actions/runs/37907308282)
+通过。本机修复仍在发布命令入口时返回 `Access is denied`：经归属确认的旧
+`dodex.exe` 程序映像仍在运行，Windows 拒绝覆盖。该用户进程保留，TUI 迁移未完成；
+v0.3.32 未公开发布，也未计为成功升级。下面的 v0.3.31 结果属于更早的候选记录。
 
 ## v0.3.31 TUI 双开验证（2026-10-09）
 

@@ -1,6 +1,42 @@
 # Windows validation
 
-## v0.3.32 PowerShell module compatibility (2026-10-09)
+## v0.3.33 publication of running command entries (2026-10-09)
+
+This release carries the full independent-TUI migration from public v0.3.30,
+including removal of the desktop mirror and the Windows PowerShell and running
+command compatibility fixes. The v0.3.31 and v0.3.32 tags are retained without
+replacement. Neither candidate has been publicly released at this snapshot.
+
+Local migration reached a second confirmed Windows blocker: a verified owned
+`dodex.exe` command was still running, and replacing that mapped executable
+returned `Access is denied`. The user's process was left running. A synthetic
+executable probe showed that renaming the running old file to a unique path in
+the same directory allows publication of the new entry. The original process
+continued, the old and new executable hashes matched their inputs, and an
+existing migration backup was preserved. This probe establishes the filesystem
+behavior, not successful repair of the installed TUI.
+
+The v0.3.33 fix applies this behavior only to verified owned Windows command
+publication. The Windows `acomp` TUI deployment group passes all 18 targeted
+tests. A real running PE in a temporary fixture retains its PID and creation
+time through two repairs; the new entry, retired file and existing backup keep
+the expected hashes, and the second repair adds no retired file. The group also
+covers directory races, preservation of competing entries and backups, failed
+publication recovery and the earlier PowerShell compatibility regression. Only
+synthetic directories and test-owned children are used.
+
+Local v0.3.33 Windows source checks pass the serial workspace suite with 594
+passed and 10 explicitly ignored. The separate core `--features server` suite
+passes 258 with 2 ignored. These suites overlap and are not added together as
+unique tests. The core `--no-default-features` check, workspace all-targets
+Clippy, formatting and diff whitespace checks also pass. The optimized Release
+build is in progress.
+
+v0.3.33 PR / main CI, native acceptance on both Windows and macOS, final release
+archive verification and authorized local repair remain pending at this source
+snapshot. Personal baseline checks and GUI startup do not establish completed migration.
+
+## v0.3.32 PowerShell compatibility source snapshot (2026-10-09)
 
 Local migration with the v0.3.31 package stopped at native package signature
 verification: Windows PowerShell inherited PowerShell 7's `PSModulePath` and
@@ -25,12 +61,16 @@ also passed; all three workspace packages report version 0.3.32.
 
 The v0.3.31 GUI was installed and started locally, and the recorded personal
 baseline checks passed. The subsequent TUI migration did not complete; these
-results do not count as a successful local repair. The pushed v0.3.31 tag is
-retained, and its release remains a draft while v0.3.32 is prepared.
+results do not count as a successful local repair. This section preserves the
+v0.3.32 source-stage evidence; the later blocker and v0.3.33 status appear above.
 
-v0.3.32 full workspace checks, native CI, release-archive verification and
-authorized local repair are pending at this documentation stage. Results below belong to
-the named v0.3.31 source or earlier candidates and are not v0.3.32 acceptance.
+Subsequently, v0.3.32 [PR #33](https://github.com/WXGopher/agent-companion/pull/33)
+was merged and [final CI 37907308282](https://github.com/WXGopher/agent-companion/actions/runs/37907308282)
+passed. Local repair still returned `Access is denied` while publishing a
+command: the verified owned old `dodex.exe` image was running and Windows refused
+to replace it. That process was preserved and TUI migration remained incomplete.
+v0.3.32 was not publicly released or counted as a successful local upgrade.
+Results below belong to the named v0.3.31 source or earlier candidates.
 
 ## v0.3.31 independent TUI verification (2026-10-09)
 
