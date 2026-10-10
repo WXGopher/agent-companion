@@ -162,7 +162,6 @@ fn entries(hooks: &Value, expected: Option<&str>) -> Vec<EntryStatus> {
                 command: found
                     .and_then(|entry| entry["command"].as_str())
                     .map(str::to_string),
-                note: None,
             }
         })
         .collect()

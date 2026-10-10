@@ -55,7 +55,9 @@ fn main() {
         return;
     }
 
-    let source = parse_source();
+    let Some(source) = parse_source(std::env::args().skip(1)) else {
+        return;
+    };
 
     let mut raw = String::new();
     if std::io::stdin().read_to_string(&mut raw).is_err() {
@@ -69,11 +71,11 @@ fn main() {
     payload.set_terminal_meta(collect_terminal_meta());
 
     let event_name = payload.event_name().to_string();
-    let wait_budget = timeouts::for_event(&event_name, source);
+    let wait_budget = timeouts::for_event(&event_name);
 
     let envelope = Envelope::Command {
-        command: Command::ProcessClaudeHook {
-            claude_hook: payload,
+        command: Command::ProcessHook {
+            hook: payload,
             source,
         },
     };
@@ -82,7 +84,7 @@ fn main() {
     };
 
     if let Some(reply) = exchange(line, wait_budget)
-        && let Some(stdout_json) = decision_stdout(&reply, source)
+        && let Some(stdout_json) = decision_stdout(&reply)
     {
         // print!, not println!: the decision already ends in a newline.
         let mut stdout = std::io::stdout();
@@ -91,26 +93,21 @@ fn main() {
     }
 }
 
-/// `--source claude|codex`, defaulting to Claude Code.
-///
-/// The default matters: if a Claude Code build ignores the installer's `args`
-/// array and runs the bare command string, the hook still identifies itself
-/// correctly instead of failing to parse its own arguments.
-fn parse_source() -> HookSource {
-    let mut args = std::env::args().skip(1);
+/// Old Codex installations pass an explicit source; the bare hook also uses
+/// Codex. Reject unknown sources before reading stdin or opening the pipe.
+fn parse_source(mut args: impl Iterator<Item = String>) -> Option<HookSource> {
+    let source = HookSource::Codex;
     while let Some(arg) = args.next() {
-        let value = match arg.strip_prefix("--source=") {
-            Some(inline) => Some(inline.to_string()),
-            None if arg == "--source" => args.next(),
-            None => None,
+        let value = if let Some(value) = arg.strip_prefix("--source=") {
+            value.to_string()
+        } else if arg == "--source" {
+            args.next()?
+        } else {
+            return None;
         };
-        if let Some(value) = value
-            && let Some(source) = HookSource::parse(value.trim())
-        {
-            return source;
-        }
+        HookSource::parse(value.trim())?;
     }
-    HookSource::Claude
+    Some(source)
 }
 
 /// The terminal-identifying environment this hook inherited, so the app can
@@ -320,11 +317,11 @@ fn connect(path: &str, budget: Duration) -> std::io::Result<File> {
 }
 
 /// Turn a reply line into the exact bytes the agent expects on stdout.
-fn decision_stdout(reply: &str, source: HookSource) -> Option<String> {
+fn decision_stdout(reply: &str) -> Option<String> {
     match agent_companion_core::protocol::decode_line(reply.trim_end()).ok()? {
         Envelope::Response {
             response: Response::Decision { decision },
-        } => decision.to_stdout_json_for(source),
+        } => Some(decision.to_stdout_json()),
         // Ack / Error / anything else: the app explicitly declined to decide.
         _ => None,
     }
@@ -333,6 +330,24 @@ fn decision_stdout(reply: &str, source: HookSource) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_codex_sources_are_accepted() {
+        for args in [vec![], vec!["--source", "codex"], vec!["--source=codex"]] {
+            assert_eq!(
+                parse_source(args.into_iter().map(str::to_string)),
+                Some(HookSource::Codex)
+            );
+        }
+        for args in [
+            vec!["--source", "unsupported"],
+            vec!["--source=unsupported"],
+            vec!["--source"],
+            vec!["--unexpected"],
+        ] {
+            assert!(parse_source(args.into_iter().map(str::to_string)).is_none());
+        }
+    }
 
     #[cfg(windows)]
     #[test]

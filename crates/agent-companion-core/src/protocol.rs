@@ -27,21 +27,18 @@ use serde_json::{Map, Value};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HookSource {
-    Claude,
     Codex,
 }
 
 impl HookSource {
     pub fn as_str(self) -> &'static str {
         match self {
-            HookSource::Claude => "claude",
             HookSource::Codex => "codex",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
-            "claude" => Some(HookSource::Claude),
             "codex" => Some(HookSource::Codex),
             _ => None,
         }
@@ -80,11 +77,14 @@ pub enum Event {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Command {
-    /// A hook fired. `claude_hook` is the agent's stdin JSON plus Agent Companion's
+    /// A hook fired. `hook` is the agent's stdin JSON plus Agent Companion's
     /// injected terminal metadata.
-    #[serde(rename_all = "camelCase")]
-    ProcessClaudeHook {
-        claude_hook: HookPayload,
+    // Keep the historical Codex wire names so new launchers also work with an
+    // older running Companion. Only Codex sources are accepted.
+    #[serde(rename = "processClaudeHook", alias = "processHook")]
+    ProcessHook {
+        #[serde(rename = "claudeHook", alias = "hook")]
+        hook: HookPayload,
         source: HookSource,
     },
 }
@@ -229,201 +229,63 @@ pub mod timeouts {
     pub const SEND: Duration = Duration::from_millis(500);
     /// `PreToolUse` blocks the tool call itself, so it stays short.
     pub const PRE_TOOL_USE: Duration = Duration::from_secs(45);
-    /// A `PermissionRequest` is a human-facing prompt: wait effectively forever.
-    pub const PERMISSION_REQUEST_CLAUDE: Duration = Duration::from_secs(86_400);
     /// Codex caps its own permission prompts an hour out.
     pub const PERMISSION_REQUEST_CODEX: Duration = Duration::from_secs(3_600);
 
     /// The wait budget for `event_name`, or `None` if it does not block.
-    pub fn for_event(event_name: &str, source: super::HookSource) -> Option<Duration> {
+    pub fn for_event(event_name: &str) -> Option<Duration> {
         match event_name {
             super::events::PRE_TOOL_USE => Some(PRE_TOOL_USE),
-            super::events::PERMISSION_REQUEST => Some(match source {
-                super::HookSource::Claude => PERMISSION_REQUEST_CLAUDE,
-                super::HookSource::Codex => PERMISSION_REQUEST_CODEX,
-            }),
+            super::events::PERMISSION_REQUEST => Some(PERMISSION_REQUEST_CODEX),
             _ => None,
         }
     }
 }
 
-/// A decision the app sends back to a blocked hook.
-///
-/// `PermissionRequest` has exactly one shape here — the *object* form,
-/// `decision: {"behavior": ...}`. See [`PermissionRequestDecision`] for why the
-/// competing flat form is gone.
+/// A Codex permission-hook decision. Questions use [`Response::CodexInput`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum HookDecision {
-    PreToolUse(PreToolUseDecision),
     PermissionRequest(PermissionRequestDecision),
 }
 
 impl HookDecision {
-    /// Codex rejects Claude-only permission fields, even when they are empty.
-    /// Keep the shared wire decision, but render the agent's own stdout schema.
-    pub fn to_stdout_json_for(&self, source: HookSource) -> Option<String> {
-        if source == HookSource::Claude {
-            return Some(self.to_stdout_json());
-        }
-        let HookDecision::PermissionRequest(decision) = self else {
-            return None;
-        };
-        // Codex's question/input API is not a PermissionRequest hook.
-        if decision.updated_input.is_some() {
-            return None;
-        }
+    /// Codex's hook stdout schema, with a trailing newline.
+    pub fn to_stdout_json(&self) -> String {
+        let Self::PermissionRequest(decision) = self;
         let mut body = serde_json::json!({"behavior": decision.behavior.as_str()});
         if decision.behavior == PermissionBehavior::Deny
             && let Some(message) = &decision.message
         {
             body["message"] = Value::String(message.clone());
         }
-        Some(format!(
+        format!(
             "{}\n",
             serde_json::json!({
                 "hookSpecificOutput": {"hookEventName": events::PERMISSION_REQUEST, "decision": body}
             })
+        )
+    }
+
+    pub fn allow_for(event_name: &str, reason: Option<String>) -> Option<Self> {
+        (event_name == events::PERMISSION_REQUEST).then_some(Self::PermissionRequest(
+            PermissionRequestDecision {
+                behavior: PermissionBehavior::Allow,
+                message: reason,
+            },
         ))
     }
 
-    /// Render the decision exactly as the agent expects it on the hook's stdout:
-    /// key-sorted JSON with a trailing newline.
-    pub fn to_stdout_json(&self) -> String {
-        let value = match self {
-            HookDecision::PreToolUse(decision) => decision.to_value(),
-            HookDecision::PermissionRequest(decision) => decision.to_value(),
-        };
-        let mut out = serde_json::to_string(&value).unwrap_or_default();
-        out.push('\n');
-        out
-    }
-
-    /// An unconditional approval for `event_name`, or `None` for events that
-    /// take no decision.
-    pub fn allow_for(event_name: &str, reason: Option<String>) -> Option<Self> {
-        Self::allow_for_with_input(event_name, reason, None)
-    }
-
-    /// An approval that also rewrites the tool's input — how an answered
-    /// `AskUserQuestion` gets its answer back to the agent.
-    pub fn allow_for_with_input(
-        event_name: &str,
-        reason: Option<String>,
-        updated_input: Option<Value>,
-    ) -> Option<Self> {
-        match event_name {
-            events::PRE_TOOL_USE => Some(HookDecision::PreToolUse(PreToolUseDecision {
-                permission_decision: PermissionDecision::Allow,
-                permission_decision_reason: reason,
-                updated_input,
-            })),
-            events::PERMISSION_REQUEST => {
-                Some(HookDecision::PermissionRequest(PermissionRequestDecision {
-                    behavior: PermissionBehavior::Allow,
-                    updated_input,
-                    message: reason,
-                    interrupt: None,
-                }))
-            }
-            _ => None,
-        }
-    }
-
-    /// A refusal for `event_name`, or `None` for events that take no decision.
-    ///
-    /// A denial never interrupts the turn: the agent is told "not this call" and
-    /// left free to try something else, which is what a user tapping Deny on one
-    /// card means.
     pub fn deny_for(event_name: &str, reason: Option<String>) -> Option<Self> {
-        match event_name {
-            events::PRE_TOOL_USE => Some(HookDecision::PreToolUse(PreToolUseDecision {
-                permission_decision: PermissionDecision::Deny,
-                permission_decision_reason: reason,
-                updated_input: None,
-            })),
-            events::PERMISSION_REQUEST => {
-                Some(HookDecision::PermissionRequest(PermissionRequestDecision {
-                    behavior: PermissionBehavior::Deny,
-                    updated_input: None,
-                    message: reason,
-                    interrupt: Some(false),
-                }))
-            }
-            _ => None,
-        }
+        (event_name == events::PERMISSION_REQUEST).then_some(Self::PermissionRequest(
+            PermissionRequestDecision {
+                behavior: PermissionBehavior::Deny,
+                message: reason,
+            },
+        ))
     }
 }
 
-/// `hookSpecificOutput.permissionDecision` for `PreToolUse`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PermissionDecision {
-    /// Run the tool without prompting.
-    Allow,
-    /// Block the tool call.
-    Deny,
-    /// Hand the choice back to the agent's own permission flow. Claude Code
-    /// spells this `ask`; the upstream macOS project calls it "escalate".
-    #[serde(alias = "escalate")]
-    Ask,
-}
-
-impl PermissionDecision {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            PermissionDecision::Allow => "allow",
-            PermissionDecision::Deny => "deny",
-            PermissionDecision::Ask => "ask",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PreToolUseDecision {
-    pub permission_decision: PermissionDecision,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub permission_decision_reason: Option<String>,
-    /// Replacement `tool_input`. Only meaningful alongside `allow`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub updated_input: Option<Value>,
-}
-
-impl PreToolUseDecision {
-    /// ```json
-    /// {"continue":true,"hookSpecificOutput":{"hookEventName":"PreToolUse",
-    ///  "permissionDecision":"allow","permissionDecisionReason":"..."},"suppressOutput":true}
-    /// ```
-    pub fn to_value(&self) -> Value {
-        let mut specific = Map::new();
-        specific.insert(
-            "hookEventName".into(),
-            Value::String(events::PRE_TOOL_USE.into()),
-        );
-        specific.insert(
-            "permissionDecision".into(),
-            Value::String(self.permission_decision.as_str().into()),
-        );
-        if let Some(reason) = &self.permission_decision_reason {
-            specific.insert(
-                "permissionDecisionReason".into(),
-                Value::String(reason.clone()),
-            );
-        }
-        if let Some(updated) = &self.updated_input {
-            specific.insert("updatedInput".into(), updated.clone());
-        }
-
-        let mut root = Map::new();
-        root.insert("continue".into(), Value::Bool(true));
-        root.insert("hookSpecificOutput".into(), Value::Object(specific));
-        root.insert("suppressOutput".into(), Value::Bool(true));
-        Value::Object(root)
-    }
-}
-
-/// `decision.behavior` for `PermissionRequest`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PermissionBehavior {
@@ -434,8 +296,8 @@ pub enum PermissionBehavior {
 impl PermissionBehavior {
     pub fn as_str(self) -> &'static str {
         match self {
-            PermissionBehavior::Allow => "allow",
-            PermissionBehavior::Deny => "deny",
+            Self::Allow => "allow",
+            Self::Deny => "deny",
         }
     }
 }
@@ -444,73 +306,8 @@ impl PermissionBehavior {
 #[serde(rename_all = "camelCase")]
 pub struct PermissionRequestDecision {
     pub behavior: PermissionBehavior,
-    /// Replacement tool input. Only meaningful alongside `allow`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub updated_input: Option<Value>,
-    /// Why the request was denied. Only meaningful alongside `deny`. Emitted as
-    /// both `message` and `reason` — see [`PermissionRequestDecision::to_value`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
-    /// Whether a denial should also interrupt the turn.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub interrupt: Option<bool>,
-}
-
-impl PermissionRequestDecision {
-    /// ```json
-    /// {"hookSpecificOutput":{"decision":{"behavior":"allow","updatedInput":{}},
-    ///  "hookEventName":"PermissionRequest"},"suppressOutput":true}
-    /// ```
-    ///
-    /// **Verdict (2026-08-23, settled):** this object form is the only shape
-    /// Agent Companion ever sends. The installed Claude Code binary's handler reads
-    /// `hookSpecificOutput.decision.behavior` and `decision.updatedInput`; under
-    /// the flat form that Claude Code's written hook reference shows —
-    /// `"decision": "allow"` with a sibling `reason` — `decision.behavior` is
-    /// undefined, which that handler maps to **deny**. Emitting it would
-    /// silently reject the user's own approval, so the flat shape is gone from
-    /// this crate entirely rather than left as a reachable option.
-    ///
-    /// The denial reason goes out under both `message` and `reason`: the two
-    /// sources disagree on the spelling and an ignored key costs nothing.
-    pub fn to_value(&self) -> Value {
-        let mut decision = Map::new();
-        decision.insert(
-            "behavior".into(),
-            Value::String(self.behavior.as_str().into()),
-        );
-        match self.behavior {
-            PermissionBehavior::Allow => {
-                // An empty object means "run it exactly as requested".
-                decision.insert(
-                    "updatedInput".into(),
-                    self.updated_input
-                        .clone()
-                        .unwrap_or_else(|| Value::Object(Map::new())),
-                );
-            }
-            PermissionBehavior::Deny => {
-                if let Some(interrupt) = self.interrupt {
-                    decision.insert("interrupt".into(), Value::Bool(interrupt));
-                }
-                let reason = self.message.clone().unwrap_or_default();
-                decision.insert("message".into(), Value::String(reason.clone()));
-                decision.insert("reason".into(), Value::String(reason));
-            }
-        }
-
-        let mut specific = Map::new();
-        specific.insert("decision".into(), Value::Object(decision));
-        specific.insert(
-            "hookEventName".into(),
-            Value::String(events::PERMISSION_REQUEST.into()),
-        );
-
-        let mut root = Map::new();
-        root.insert("hookSpecificOutput".into(), Value::Object(specific));
-        root.insert("suppressOutput".into(), Value::Bool(true));
-        Value::Object(root)
-    }
 }
 
 /// Serialize an envelope as one newline-terminated line.
@@ -531,177 +328,26 @@ mod tests {
 
     #[test]
     fn codex_approvals_only_emit_fields_supported_by_codex() {
-        let allow =
-            HookDecision::allow_for(events::PERMISSION_REQUEST, Some("approved".into())).unwrap();
-        let deny =
-            HookDecision::deny_for(events::PERMISSION_REQUEST, Some("not this command".into()))
-                .unwrap();
         for (decision, expected) in [
-            (allow, serde_json::json!({"behavior":"allow"})),
             (
-                deny,
+                HookDecision::allow_for(events::PERMISSION_REQUEST, Some("approved".into()))
+                    .unwrap(),
+                serde_json::json!({"behavior":"allow"}),
+            ),
+            (
+                HookDecision::deny_for(events::PERMISSION_REQUEST, Some("not this command".into()))
+                    .unwrap(),
                 serde_json::json!({"behavior":"deny","message":"not this command"}),
             ),
         ] {
-            let output: Value =
-                serde_json::from_str(&decision.to_stdout_json_for(HookSource::Codex).unwrap())
-                    .unwrap();
+            let output: Value = serde_json::from_str(&decision.to_stdout_json()).unwrap();
             assert_eq!(
                 output,
                 serde_json::json!({"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":expected}})
             );
         }
-        let question = HookDecision::allow_for_with_input(
-            events::PERMISSION_REQUEST,
-            None,
-            Some(serde_json::json!({"answers":{}})),
-        )
-        .unwrap();
-        assert!(question.to_stdout_json_for(HookSource::Codex).is_none());
-        assert!(question.to_stdout_json_for(HookSource::Claude).is_some());
-    }
-
-    #[test]
-    fn pre_tool_use_allow_is_byte_stable() {
-        let decision = HookDecision::PreToolUse(PreToolUseDecision {
-            permission_decision: PermissionDecision::Allow,
-            permission_decision_reason: Some("approved in Agent Companion".into()),
-            updated_input: None,
-        });
-        assert_eq!(
-            decision.to_stdout_json(),
-            concat!(
-                r#"{"continue":true,"hookSpecificOutput":{"hookEventName":"PreToolUse","#,
-                r#""permissionDecision":"allow","permissionDecisionReason":"approved in Agent Companion"},"#,
-                r#""suppressOutput":true}"#,
-                "\n"
-            )
-        );
-    }
-
-    #[test]
-    fn pre_tool_use_skips_none_fields() {
-        let decision = HookDecision::PreToolUse(PreToolUseDecision {
-            permission_decision: PermissionDecision::Deny,
-            permission_decision_reason: None,
-            updated_input: None,
-        });
-        assert_eq!(
-            decision.to_stdout_json(),
-            concat!(
-                r#"{"continue":true,"hookSpecificOutput":{"hookEventName":"PreToolUse","#,
-                r#""permissionDecision":"deny"},"suppressOutput":true}"#,
-                "\n"
-            )
-        );
-    }
-
-    #[test]
-    fn pre_tool_use_carries_updated_input() {
-        let decision = HookDecision::PreToolUse(PreToolUseDecision {
-            permission_decision: PermissionDecision::Ask,
-            permission_decision_reason: None,
-            updated_input: Some(serde_json::json!({ "command": "ls", "cwd": "." })),
-        });
-        assert_eq!(
-            decision.to_stdout_json(),
-            concat!(
-                r#"{"continue":true,"hookSpecificOutput":{"hookEventName":"PreToolUse","#,
-                r#""permissionDecision":"ask","updatedInput":{"command":"ls","cwd":"."}},"#,
-                r#""suppressOutput":true}"#,
-                "\n"
-            )
-        );
-    }
-
-    #[test]
-    fn permission_request_allow_is_byte_stable() {
-        let decision = HookDecision::PermissionRequest(PermissionRequestDecision {
-            behavior: PermissionBehavior::Allow,
-            updated_input: None,
-            message: None,
-            interrupt: None,
-        });
-        assert_eq!(
-            decision.to_stdout_json(),
-            concat!(
-                r#"{"hookSpecificOutput":{"decision":{"behavior":"allow","updatedInput":{}},"#,
-                r#""hookEventName":"PermissionRequest"},"suppressOutput":true}"#,
-                "\n"
-            )
-        );
-    }
-
-    #[test]
-    fn permission_request_deny_is_byte_stable() {
-        let decision = HookDecision::PermissionRequest(PermissionRequestDecision {
-            behavior: PermissionBehavior::Deny,
-            updated_input: None,
-            message: Some("denied in Agent Companion".into()),
-            interrupt: Some(true),
-        });
-        assert_eq!(
-            decision.to_stdout_json(),
-            concat!(
-                r#"{"hookSpecificOutput":{"decision":{"behavior":"deny","interrupt":true,"#,
-                r#""message":"denied in Agent Companion","reason":"denied in Agent Companion"},"#,
-                r#""hookEventName":"PermissionRequest"},"suppressOutput":true}"#,
-                "\n"
-            )
-        );
-    }
-
-    /// The 2026-08-23 verdict, locked down: whatever else changes, a
-    /// `PermissionRequest` approval must keep nesting the verdict under a
-    /// `decision` *object*. The flat spelling reads as a denial to Claude Code.
-    #[test]
-    fn a_permission_request_verdict_is_never_a_bare_string() {
-        for decision in [
-            HookDecision::allow_for(events::PERMISSION_REQUEST, None).unwrap(),
-            HookDecision::deny_for(events::PERMISSION_REQUEST, Some("no".into())).unwrap(),
-        ] {
-            let value: Value = serde_json::from_str(&decision.to_stdout_json()).unwrap();
-            let verdict = &value["hookSpecificOutput"]["decision"];
-            assert!(
-                verdict.is_object(),
-                "the verdict must be an object, got {verdict}"
-            );
-            assert!(verdict["behavior"].is_string());
-        }
-    }
-
-    #[test]
-    fn permission_request_deny_does_not_interrupt_the_turn() {
-        let decision = HookDecision::deny_for(events::PERMISSION_REQUEST, Some("denied".into()))
-            .expect("PermissionRequest takes a decision");
-        assert_eq!(
-            decision.to_stdout_json(),
-            concat!(
-                r#"{"hookSpecificOutput":{"decision":{"behavior":"deny","interrupt":false,"#,
-                r#""message":"denied","reason":"denied"},"#,
-                r#""hookEventName":"PermissionRequest"},"suppressOutput":true}"#,
-                "\n"
-            )
-        );
-    }
-
-    #[test]
-    fn an_answered_question_rides_back_as_updated_input() {
-        let decision = HookDecision::allow_for_with_input(
-            events::PRE_TOOL_USE,
-            None,
-            Some(serde_json::json!({"answers": {"Which?": "Postgres"}})),
-        )
-        .expect("PreToolUse takes a decision");
-        assert_eq!(
-            decision.to_stdout_json(),
-            concat!(
-                r#"{"continue":true,"hookSpecificOutput":{"hookEventName":"PreToolUse","#,
-                r#""permissionDecision":"allow","updatedInput":{"answers":{"Which?":"Postgres"}}},"#,
-                r#""suppressOutput":true}"#,
-                "\n"
-            )
-        );
+        assert!(HookDecision::allow_for(events::PRE_TOOL_USE, None).is_none());
+        assert!(HookDecision::deny_for(events::PRE_TOOL_USE, None).is_none());
     }
 
     #[test]
@@ -751,9 +397,9 @@ mod tests {
             serde_json::from_str(r#"{"hook_event_name":"SessionStart","session_id":"s1"}"#)
                 .unwrap();
         let envelope = Envelope::Command {
-            command: Command::ProcessClaudeHook {
-                claude_hook: payload,
-                source: HookSource::Claude,
+            command: Command::ProcessHook {
+                hook: payload,
+                source: HookSource::Codex,
             },
         };
         let line = encode_line(&envelope).unwrap();
@@ -762,26 +408,26 @@ mod tests {
             concat!(
                 r#"{"type":"command","command":{"type":"processClaudeHook","#,
                 r#""claudeHook":{"hook_event_name":"SessionStart","session_id":"s1"},"#,
-                r#""source":"claude"}}"#,
+                r#""source":"codex"}}"#,
                 "\n"
             )
         );
 
         let decoded = decode_line(line.trim_end()).unwrap();
         let Envelope::Command {
-            command: Command::ProcessClaudeHook { claude_hook, .. },
+            command: Command::ProcessHook { hook, .. },
         } = decoded
         else {
-            panic!("expected a processClaudeHook command");
+            panic!("expected a processHook command");
         };
-        assert_eq!(claude_hook.event_name(), "SessionStart");
+        assert_eq!(hook.event_name(), "SessionStart");
     }
 
     #[test]
     fn response_envelope_round_trips() {
         let response = Envelope::Response {
             response: Response::Decision {
-                decision: HookDecision::allow_for(events::PRE_TOOL_USE, None).unwrap(),
+                decision: HookDecision::allow_for(events::PERMISSION_REQUEST, None).unwrap(),
             },
         };
         let line = encode_line(&response).unwrap();
@@ -792,6 +438,53 @@ mod tests {
             panic!("expected a decision response");
         };
         assert!(decision.to_stdout_json().contains(r#""allow""#));
+    }
+
+    #[test]
+    fn old_codex_launchers_remain_compatible_without_accepting_other_sources() {
+        let old_frame = serde_json::json!({
+            "type": "command",
+            "command": {
+                "type": "processClaudeHook",
+                "claudeHook": {
+                    "hook_event_name": events::CODEX_USER_INPUT,
+                    "session_id": "thread-1",
+                },
+                "source": "codex",
+            },
+        });
+        let Envelope::Command {
+            command: Command::ProcessHook { hook, source },
+        } = decode_line(&old_frame.to_string()).unwrap()
+        else {
+            panic!("expected a hook command");
+        };
+        assert_eq!(hook.event_name(), events::CODEX_USER_INPUT);
+        assert_eq!(hook.session_id.as_deref(), Some("thread-1"));
+        assert_eq!(source, HookSource::Codex);
+        let mut unsupported_frame = old_frame;
+        unsupported_frame["command"]["source"] = serde_json::json!("claude");
+        assert!(decode_line(&unsupported_frame.to_string()).is_err());
+    }
+
+    #[test]
+    fn generic_hook_wire_names_decode_to_the_same_codex_command() {
+        let frame = serde_json::json!({
+            "type": "command",
+            "command": {
+                "type": "processHook",
+                "hook": {"hook_event_name": events::SESSION_START},
+                "source": "codex",
+            },
+        });
+        let Envelope::Command {
+            command: Command::ProcessHook { hook, source },
+        } = decode_line(&frame.to_string()).unwrap()
+        else {
+            panic!("expected a hook command");
+        };
+        assert_eq!(hook.event_name(), events::SESSION_START);
+        assert_eq!(source, HookSource::Codex);
     }
 
     #[test]
@@ -849,33 +542,20 @@ mod tests {
     }
 
     #[test]
-    fn blocking_timeouts_follow_the_source() {
+    fn blocking_timeouts_match_codex_events() {
         assert_eq!(
-            timeouts::for_event(events::PRE_TOOL_USE, HookSource::Claude),
+            timeouts::for_event(events::PRE_TOOL_USE),
             Some(timeouts::PRE_TOOL_USE)
         );
         assert_eq!(
-            timeouts::for_event(events::PERMISSION_REQUEST, HookSource::Claude),
-            Some(timeouts::PERMISSION_REQUEST_CLAUDE)
-        );
-        assert_eq!(
-            timeouts::for_event(events::PERMISSION_REQUEST, HookSource::Codex),
+            timeouts::for_event(events::PERMISSION_REQUEST),
             Some(timeouts::PERMISSION_REQUEST_CODEX)
         );
-        assert_eq!(
-            timeouts::for_event(events::SESSION_START, HookSource::Claude),
-            None
-        );
+        assert_eq!(timeouts::for_event(events::SESSION_START), None);
     }
 
     #[test]
-    fn escalate_is_accepted_as_ask() {
-        let decision: PermissionDecision = serde_json::from_str(r#""escalate""#).unwrap();
-        assert_eq!(decision, PermissionDecision::Ask);
-        assert_eq!(
-            serde_json::to_string(&decision).unwrap(),
-            r#""ask""#,
-            "we normalize back to the name Claude Code documents"
-        );
+    fn unknown_hook_sources_are_rejected() {
+        assert!(serde_json::from_str::<HookSource>("\"unsupported\"").is_err());
     }
 }

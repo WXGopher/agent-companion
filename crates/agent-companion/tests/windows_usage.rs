@@ -17,18 +17,3 @@ mod ui {
 mod subscription;
 #[path = "../src/usage_cache.rs"]
 mod usage_cache;
-
-mod util {
-    pub fn home_dir() -> Option<std::path::PathBuf> {
-        None
-    }
-    pub fn debug_log(_: &str) {}
-}
-
-mod app {
-    pub mod net {
-        pub fn get_json(_: &str, _: &str, _: &[(&str, &str)]) -> std::io::Result<String> {
-            panic!("presentation tests must not query a network endpoint")
-        }
-    }
-}

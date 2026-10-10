@@ -112,13 +112,6 @@ mod tests {
             100,
         );
         seed(
-            &mut primary,
-            "other-agent",
-            "turn_failed",
-            HookSource::Claude,
-            100,
-        );
-        seed(
             &mut secondary,
             "same-id",
             "turn_failed",

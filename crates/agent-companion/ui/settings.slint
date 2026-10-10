@@ -33,12 +33,6 @@ export component AppSettings inherits Rectangle {
     in property <bool> integrations;
     in property <bool> dirty;
     callback review();
-    in property <bool> claude-installed;
-    // Human-readable state of the hook wiring, e.g. "8 of 8 hooks installed".
-    in property <string> claude-status: "checking…";
-    // Whether Claude Code's own directory exists on this machine at all. A
-    // machine without it is a normal machine; the row says what it found.
-    in property <bool> claude-present: true;
     in property <bool> codex-installed;
     in property <bool> codex-present: true;
     in property <string> codex-status: "checking…";
@@ -51,8 +45,6 @@ export component AppSettings inherits Rectangle {
     // The outcome of the last button press, shown along the bottom.
     in property <string> app-message;
 
-    callback install();
-    callback uninstall();
 
     in property <bool> taskbar-enabled: true;
     // What the readout actually managed to do — embedded in the taskbar, or
@@ -65,9 +57,7 @@ export component AppSettings inherits Rectangle {
     in property <bool> run-at-login;
     callback set-run-at-login(bool);
 
-    in property <bool> show-claude: true;
     in property <bool> show-codex: true;
-    // "claude" | "codex", and whether it gets its block in the readout.
     callback set-agent-shown(string, bool);
 
     // Where the percentage-left colour turns; see `usage_cache::left_tier`.
@@ -129,13 +119,6 @@ export component AppSettings inherits Rectangle {
                             checked: root.show-codex;
                             available: root.taskbar-enabled;
                             toggle(enabled) => { root.set-agent-shown("codex", enabled); }
-                        }
-                        SettingToggle {
-                            label: "Claude Code";
-                            detail: "Experimental";
-                            checked: root.show-claude;
-                            available: root.taskbar-enabled;
-                            toggle(enabled) => { root.set-agent-shown("claude", enabled); }
                         }
                     }
                 }
@@ -200,28 +183,6 @@ export component AppSettings inherits Rectangle {
                             }
                         }
                         Text { text: "Tasks and Usage work without hooks. Install hooks for approvals and terminal details; review them with /hooks in Codex."; font-size: 11px; color: SettingsColors.secondary; wrap: word-wrap; }
-                    }
-                }
-                if root.integrations: SettingsCard {
-                    VerticalLayout {
-                        padding: 18px;
-                        spacing: 12px;
-                        HorizontalLayout {
-                            spacing: 24px;
-                            VerticalLayout {
-                                spacing: 6px;
-                                Text { text: "Claude Code · experimental"; font-size: 13px; font-weight: 600; color: SettingsColors.text; }
-                                Text { text: root.claude-status; font-size: 11px; color: SettingsColors.secondary; wrap: word-wrap; }
-                            }
-                            SettingsButton {
-                                horizontal-stretch: 0;
-                                min-width: 132px;
-                                text: root.claude-installed ? "Uninstall hooks" : "Install hooks";
-                                enabled: root.claude-present;
-                                clicked => { if root.claude-installed { root.uninstall(); } else { root.install(); } }
-                            }
-                        }
-                        Text { text: "Hooks are added alongside your existing configuration. Uninstall removes only Agent Companion hooks."; font-size: 11px; color: SettingsColors.secondary; wrap: word-wrap; }
                     }
                 }
                 if root.app-message != "": Text { text: root.app-message; color: SettingsColors.secondary; font-size: 11px; wrap: word-wrap; }

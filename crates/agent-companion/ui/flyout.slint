@@ -1,6 +1,6 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme, SessionRow, SessionBlock, UsageRow } from "common.slint";
-import { SubscriptionView, UsageDay, SubscriptionContent, QuotaRows } from "subscription.slint";
+import { SubscriptionView, UsageDay, SubscriptionContent } from "subscription.slint";
 
 component PanelButton inherits FocusScope {
     in property <string> label;
@@ -128,7 +128,6 @@ export component FlyoutWindow inherits Window {
     in-out property <bool> usage-page;
     in-out property <length> task-scroll-y;
     in-out property <length> usage-scroll-y;
-    in property <[UsageRow]> usage-rows;
     in property <[UsageRow]> subscription-limits;
     in property <[UsageDay]> usage-days;
     in property <SubscriptionView> subscription;
@@ -214,8 +213,6 @@ export component FlyoutWindow inherits Window {
                             }
                             if root.sessions.length == 0: Text { text: root.finished ? "No finished tasks" : "No active tasks"; color: Theme.dim; font-size: 12px; }
                             SessionList { sessions: root.sessions; pulse: root.pulse; jump(id) => { root.jump(id); } }
-                            if root.usage-rows.length > 0: Rectangle { height: 1px; background: Theme.hairline; }
-                            QuotaRows { rows: root.usage-rows; }
                         }
                     }
                 }

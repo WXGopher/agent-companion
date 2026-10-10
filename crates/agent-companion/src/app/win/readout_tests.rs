@@ -231,7 +231,7 @@ fn native_slint_readout_stays_frameless_through_layout_and_visibility_changes() 
                     chips.insert(
                         0,
                         Chip {
-                            agent: Some(HookSource::Claude.into()),
+                            agent: Some(HookSource::Codex.into()),
                             outcomes: Default::default(),
                             value: "23%".into(),
                             tier: "warn",

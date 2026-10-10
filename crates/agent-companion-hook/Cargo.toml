@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Minimal hook binary invoked by Claude Code and Codex to report session events to Agent Companion."
+description = "Minimal hook binary invoked by Codex to report session events to Agent Companion."
 
 [[bin]]
 name = "agent-companion-hook"
@@ -13,5 +13,5 @@ path = "src/main.rs"
 [dependencies]
 # No tokio, no clap: this binary is spawned on every hook event, so it depends
 # only on serde_json and the dependency-free half of `agent-companion-core`.
-agent-companion-core = { path = "../agent-companion-core", version = "0.3.27", default-features = false }
+agent-companion-core = { workspace = true, default-features = false }
 serde_json.workspace = true

@@ -250,9 +250,6 @@ fn project(sessions: &[SessionState], home: &Path, now: u64) -> Snapshot {
         ..Snapshot::default()
     };
     for session in sessions {
-        if session.source != crate::protocol::HookSource::Codex {
-            continue;
-        }
         let state = match session.phase {
             Phase::Running => "running",
             Phase::WaitingForApproval | Phase::WaitingForAnswer => "waiting",
@@ -417,13 +414,12 @@ mod tests {
     }
 
     #[test]
-    fn active_and_recently_finished_are_separate_and_only_codex_is_counted() {
+    fn active_and_recently_finished_are_separate() {
         let running = SessionState::new("active", HookSource::Codex, 900);
         let mut done = SessionState::new("done", HookSource::Codex, 950);
         done.phase = Phase::Completed;
         done.display_name = Some("Finish\n  the parser".into());
-        let claude = SessionState::new("other", HookSource::Claude, 999);
-        let view = project(&[done, claude, running], Path::new("fixture"), 1000);
+        let view = project(&[done, running], Path::new("fixture"), 1000);
         assert_eq!((view.active_count, view.completed_count), (1, 1));
         assert_eq!(view.tasks[0].id, "active");
         assert_eq!(view.tasks[1].title, "Finish the parser");

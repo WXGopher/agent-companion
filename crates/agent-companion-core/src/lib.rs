@@ -20,13 +20,23 @@ pub mod resume;
 #[cfg(all(windows, feature = "server"))]
 pub mod server;
 pub mod state;
-pub mod transcript;
 #[cfg(feature = "config-edit")]
 pub mod tui_instance;
 pub mod usage;
 pub mod usage_service;
 
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Resolve the user's home directory without embedding a machine-local path.
+pub fn home_dir() -> Option<std::path::PathBuf> {
+    #[cfg(windows)]
+    if let Some(profile) = std::env::var_os("USERPROFILE").filter(|value| !value.is_empty()) {
+        return Some(profile.into());
+    }
+    std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(Into::into)
+}
 
 /// Seconds since the Unix epoch, or `0` if the clock is before it.
 ///

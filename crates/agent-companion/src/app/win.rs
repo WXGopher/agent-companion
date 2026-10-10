@@ -654,7 +654,7 @@ pub fn terminal_is_foreground(ancestors: &[agent_companion_core::protocol::Proce
 /// Put the tab whose title matches `hint` in front, via UI Automation.
 ///
 /// Windows Terminal exposes its tab strip as UIA tab items whose names are
-/// the tab titles, and Claude Code titles its tab after the task it is on —
+/// the tab titles, and terminal clients can title a tab after its task —
 /// the same summary Agent Companion's session row shows. Best-effort by design: no
 /// match, an ambiguous match, or UIA failing outright all leave the window
 /// showing whatever tab it had, which is where window-level activation left
@@ -854,7 +854,7 @@ pub(crate) fn normalize_pane_text(text: &str) -> String {
 
 /// The index of the one tab that matches `hint`, if exactly one does.
 ///
-/// Titles on both sides are messy — Claude Code prefixes its tab title with a
+/// Titles on both sides are messy — terminal clients may prefix tab titles with a
 /// status glyph, the session summary may be a truncation — so matching is by
 /// normalized containment either way. Two candidates and no exact tie-break
 /// mean no answer: flipping to the wrong tab is worse than staying put.

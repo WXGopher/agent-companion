@@ -98,7 +98,7 @@ fn append_readout_chips(
 ) {
     // Replace account blocks as a unit: disabling Dodex cannot leave its last
     // reading behind, and repeated refreshes cannot duplicate either account.
-    chips.retain(|chip| chip.agent == Some(taskbar::ChipSource::Claude));
+    chips.clear();
     if show {
         chips.extend(readouts.iter().map(|readout| readout.chip(good, warn)));
     }
@@ -152,19 +152,11 @@ impl App {
     }
 
     pub(super) fn instance_quota_tooltip(&self) -> String {
-        let mut tooltip = quota_tooltip(
+        quota_tooltip(
             &self.instance_readouts(),
             now_unix_secs(),
             win::local_offset_secs(),
-        );
-        if self.display.borrow().visible(HookSource::Claude) {
-            let claude = self.usage.borrow().compact(&[HookSource::Claude]);
-            if !claude.is_empty() {
-                tooltip.push_str("\n\n");
-                tooltip.push_str(&claude);
-            }
-        }
-        tooltip
+        )
     }
     pub(super) fn secondary_tasks(&self) -> Option<AgentTasks> {
         self.secondary

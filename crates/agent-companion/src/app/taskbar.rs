@@ -2,8 +2,7 @@
 //!
 //! A vertical taskbar has a long empty stretch between the last running app and
 //! the notification area, and a horizontal one has the same stretch on its
-//! right. Agent Companion parks a compact readout there — `● 92%` for Claude,
-//! `● C 15%` for Codex and `● D 61%` for Dodex — with each leading mark showing
+//! right. Agent Companion parks a compact readout there — `● C 15%` for Codex and `● D 61%` for Dodex — with each leading mark showing
 //! that instance's task state, so the number a user
 //! actually checks is on screen without a
 //! floating window in the way of anything.
@@ -61,7 +60,6 @@ use slint::ComponentHandle;
 use super::task_status::TaskOutcomes;
 use super::ui::TaskbarBar;
 use super::win::{self, Rect, Taskbar};
-use crate::usage_cache::UsageSnapshot;
 
 /// Matches `title:` in `ui/taskbar.slint`; the Win32 lookup keys off it.
 pub const WINDOW_TITLE: &str = "Agent Companion Usage";
@@ -165,7 +163,6 @@ impl Along {
 /// both speak Codex hooks, but their accounts and task tables are independent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChipSource {
-    Claude,
     Codex,
     Dodex,
 }
@@ -173,7 +170,6 @@ pub enum ChipSource {
 impl ChipSource {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Dodex => "dodex",
         }
@@ -181,7 +177,6 @@ impl ChipSource {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Claude => "Claude",
             Self::Codex => "Codex",
             Self::Dodex => "Dodex",
         }
@@ -189,7 +184,6 @@ impl ChipSource {
 
     pub fn compact_label(self) -> &'static str {
         match self {
-            Self::Claude => "",
             Self::Codex => "C",
             Self::Dodex => "D",
         }
@@ -199,7 +193,6 @@ impl ChipSource {
 impl From<HookSource> for ChipSource {
     fn from(source: HookSource) -> Self {
         match source {
-            HookSource::Claude => Self::Claude,
             HookSource::Codex => Self::Codex,
         }
     }
@@ -219,60 +212,6 @@ pub struct Chip {
     /// mark its idle colour; no task is represented as completed by default.
     pub tasks: AgentTasks,
     pub outcomes: TaskOutcomes,
-}
-
-/// What the app knows about one agent when the readout is being laid out.
-#[derive(Debug, Clone, Copy)]
-pub struct AgentLine {
-    pub agent: HookSource,
-    /// The user's own switch: an agent they never run gives its rows back.
-    pub show: bool,
-    /// Live sessions, from [`agent_companion_core::state::SessionTable::tasks`].
-    pub tasks: AgentTasks,
-    pub outcomes: TaskOutcomes,
-}
-
-/// The readout's contents: one block per agent the user wants shown that has
-/// either a reading or something running.
-///
-/// An agent with nothing to say contributes nothing — the taskbar has room for
-/// what is true and no room for a placeholder per agent. When that leaves
-/// nothing at all, one dash stands in, because a readout that vanishes reads
-/// as broken.
-pub fn chips(usage: &UsageSnapshot, lines: &[AgentLine], good_at: i64, warn_at: i64) -> Vec<Chip> {
-    let mut chips: Vec<Chip> = lines
-        .iter()
-        .filter(|line| line.show)
-        .filter_map(|line| {
-            let window = usage.tightest_window(line.agent);
-            if window.is_none() && line.tasks.total() == 0 {
-                return None;
-            }
-            Some(Chip {
-                agent: Some(line.agent.into()),
-                value: window
-                    .as_ref()
-                    .map(|window| format!("{}%", window.left))
-                    .unwrap_or_else(|| "--".to_string()),
-                tier: window
-                    .as_ref()
-                    .map(|window| crate::usage_cache::left_tier(window.left, good_at, warn_at))
-                    .unwrap_or(""),
-                tasks: line.tasks,
-                outcomes: line.outcomes,
-            })
-        })
-        .collect();
-    if chips.is_empty() {
-        chips.push(Chip {
-            agent: None,
-            value: "--".to_string(),
-            tier: "",
-            tasks: AgentTasks::default(),
-            outcomes: TaskOutcomes::default(),
-        });
-    }
-    chips
 }
 
 /// How wide one block's task line is: a segment per non-zero state, each a
@@ -797,7 +736,6 @@ mod render_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_companion_core::usage::{ClaudeLimits, CodexUsage, UsageLimit, WindowUsage};
 
     /// Synthetic vertical taskbar; no dimensions are taken from a local shell.
     const VERTICAL: Taskbar = Taskbar {
@@ -851,43 +789,6 @@ mod tests {
         },
     };
 
-    fn usage(claude: Option<f64>, codex: Option<f64>) -> UsageSnapshot {
-        UsageSnapshot {
-            claude: ClaudeLimits {
-                limits: claude
-                    .map(|percent| {
-                        vec![
-                            UsageLimit {
-                                kind: "session".into(),
-                                label: "Session".into(),
-                                percent: 2.0,
-                                resets_at: None,
-                            },
-                            UsageLimit {
-                                kind: "weekly_all".into(),
-                                label: "Week".into(),
-                                percent,
-                                resets_at: None,
-                            },
-                        ]
-                    })
-                    .unwrap_or_default(),
-                fetched_at: None,
-            },
-            codex: codex.map(|percent| CodexUsage {
-                primary: Some(WindowUsage {
-                    used_percent: percent,
-                    resets_at: None,
-                    window_minutes: Some(300),
-                }),
-                secondary: None,
-                plan_type: None,
-                source: None,
-            }),
-            ..UsageSnapshot::default()
-        }
-    }
-
     #[test]
     fn the_orientation_comes_from_the_bars_own_shape() {
         assert_eq!(Along::of(VERTICAL.rect), Along::Vertical);
@@ -905,28 +806,6 @@ mod tests {
     }
 
     /// Both agents on, neither with live tasks — the plain two-line readout.
-    fn resting() -> [AgentLine; 2] {
-        lines(0, 0)
-    }
-
-    /// `running` sessions only; the state split has its own tests.
-    fn lines(claude_running: usize, codex_running: usize) -> [AgentLine; 2] {
-        [
-            AgentLine {
-                agent: HookSource::Claude,
-                show: true,
-                tasks: running(claude_running),
-                outcomes: TaskOutcomes::default(),
-            },
-            AgentLine {
-                agent: HookSource::Codex,
-                show: true,
-                tasks: running(codex_running),
-                outcomes: TaskOutcomes::default(),
-            },
-        ]
-    }
-
     fn running(count: usize) -> AgentTasks {
         AgentTasks {
             running: count,
@@ -934,94 +813,8 @@ mod tests {
         }
     }
 
-    const GOOD: i64 = crate::usage_cache::LEFT_COMFORTABLE;
-    const WARN: i64 = crate::usage_cache::LEFT_TIGHT;
-
     /// Each agent shows the window that will stop it first, in the same colours
     /// the detail panel uses.
-    #[test]
-    fn each_agent_shows_its_tightest_window() {
-        let both = chips(&usage(Some(31.0), Some(85.0)), &resting(), GOOD, WARN);
-        assert_eq!(both.len(), 2);
-        assert_eq!(both[0].agent, Some(ChipSource::Claude));
-        assert_eq!((both[0].value.as_str(), both[0].tier), ("69%", "good"));
-        assert_eq!(both[1].agent, Some(ChipSource::Codex));
-        assert_eq!((both[1].value.as_str(), both[1].tier), ("15%", "low"));
-
-        // The middle band, and the boundary that decides it.
-        let tier = |used| chips(&usage(Some(used), None), &resting(), GOOD, WARN)[0].tier;
-        assert_eq!(tier(51.0), "warn");
-        assert_eq!(tier(50.0), "good");
-        assert_eq!(tier(80.0), "warn");
-        assert_eq!(tier(81.0), "low");
-    }
-
-    #[test]
-    fn an_agent_with_no_reading_takes_no_room_at_all() {
-        let one = chips(&usage(None, Some(7.0)), &resting(), GOOD, WARN);
-        assert_eq!(one.len(), 1);
-        assert_eq!(one[0].agent, Some(ChipSource::Codex));
-        assert_eq!(one[0].value, "93%");
-
-        // And a readout with nothing to say says so rather than vanishing.
-        let empty = chips(&UsageSnapshot::default(), &resting(), GOOD, WARN);
-        assert_eq!(empty.len(), 1);
-        assert_eq!(empty[0].agent, None);
-        assert_eq!((empty[0].value.as_str(), empty[0].tier), ("--", ""));
-    }
-
-    /// The task counts ride along per agent, and live tasks earn an agent its
-    /// block even before any usage has been read — a running session is the
-    /// one thing more current than a quota.
-    #[test]
-    fn live_tasks_ride_along_and_earn_a_block_of_their_own() {
-        let both = chips(&usage(Some(31.0), Some(85.0)), &lines(2, 0), GOOD, WARN);
-        assert_eq!(both[0].tasks.running, 2);
-        assert_eq!(both[1].tasks.total(), 0);
-
-        let unread = chips(&UsageSnapshot::default(), &lines(1, 0), GOOD, WARN);
-        assert_eq!(unread.len(), 1);
-        assert_eq!(unread[0].agent, Some(ChipSource::Claude));
-        assert_eq!(
-            (unread[0].value.as_str(), unread[0].tasks.running),
-            ("--", 1)
-        );
-
-        // A block with nothing but finished sessions still shows its line — a
-        // turn that ended while the user was elsewhere is the readout's whole
-        // reason to have a task line at all.
-        let done_only = [AgentLine {
-            agent: HookSource::Claude,
-            show: true,
-            outcomes: TaskOutcomes::default(),
-            tasks: AgentTasks {
-                done: 2,
-                ..AgentTasks::default()
-            },
-        }];
-        let finished = chips(&UsageSnapshot::default(), &done_only, GOOD, WARN);
-        assert_eq!(finished.len(), 1);
-        assert_eq!(finished[0].tasks.done, 2);
-    }
-
-    /// The user's own switch: an agent turned off contributes nothing, tasks
-    /// or not, and both off leaves the placeholder.
-    #[test]
-    fn a_hidden_agent_stays_hidden() {
-        let mut only_claude = lines(1, 3);
-        only_claude[1].show = false;
-        let shown = chips(&usage(Some(31.0), Some(85.0)), &only_claude, GOOD, WARN);
-        assert_eq!(shown.len(), 1);
-        assert_eq!(shown[0].agent, Some(ChipSource::Claude));
-
-        let mut none = lines(0, 0);
-        none[0].show = false;
-        none[1].show = false;
-        let empty = chips(&usage(Some(31.0), Some(85.0)), &none, GOOD, WARN);
-        assert_eq!(empty.len(), 1);
-        assert_eq!(empty[0].agent, None);
-    }
-
     #[test]
     fn the_readout_stacks_on_a_vertical_bar_and_lines_up_on_a_horizontal_one() {
         let (tall_w, tall_h) = bar_size(&[running(0), running(0)], Along::Vertical);

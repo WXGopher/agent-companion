@@ -84,11 +84,7 @@ impl Tracker {
                     session_id: state.session_id.clone(),
                     title: format!(
                         "{} · {}",
-                        if state.source == agent_companion_core::protocol::HookSource::Claude {
-                            "Claude Code"
-                        } else {
-                            "Codex"
-                        },
+                        "Codex",
                         crate::util::truncate(&crate::util::one_line(&project), 60)
                     ),
                     body: "Task finished. Click to view the session.".into(),

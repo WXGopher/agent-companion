@@ -35,13 +35,6 @@ const MARGIN: i32 = 10;
 pub enum CardKind {
     Approval,
     Form,
-    Question {
-        /// One button per option.
-        options: usize,
-        /// How many lines the question text wraps to. Rust has to know, because
-        /// Rust is what sizes the window the text is laid out inside.
-        lines: usize,
-    },
 }
 
 impl CardKind {
@@ -50,17 +43,9 @@ impl CardKind {
         match self {
             CardKind::Form => 3,
             CardKind::Approval => 1,
-            CardKind::Question { .. } => 2,
         }
     }
 }
-
-/// The card body's usable width, in characters of the 13 px body font. Used to
-/// predict how many lines a question will wrap to; see [`card_height`].
-pub const BODY_COLUMNS: usize = 44;
-/// Past this the body is elided rather than grown.
-pub const MAX_BODY_LINES: usize = 3;
-const BODY_LINE: f32 = 18.0;
 
 /// The card's height, which with [`CARD_WIDTH`] is the whole window.
 pub fn card_height(kind: CardKind) -> f32 {
@@ -71,51 +56,8 @@ pub fn card_height(kind: CardKind) -> f32 {
         // always elided to one line: it is a reminder of what was asked, not the
         // thing itself.
         CardKind::Form => 520.0,
-        CardKind::Approval => base + BODY_LINE + 8.0 + 30.0,
-        // … + spacing + one button per option.
-        CardKind::Question { options, lines } => {
-            let options = options.max(1) as f32;
-            let lines = lines.clamp(1, MAX_BODY_LINES) as f32;
-            base + lines * BODY_LINE + 8.0 + options * 30.0 + (options - 1.0) * 6.0
-        }
+        CardKind::Approval => base + 18.0 + 8.0 + 30.0,
     }
-}
-
-/// How many lines `text` will wrap to inside a card.
-///
-/// An estimate, and the reason is that the window has to be sized before Slint
-/// lays the text out inside it. Greedy word wrapping over [`BODY_COLUMNS`],
-/// counting a non-ASCII character as two columns because that is roughly how
-/// wide CJK glyphs render at this size.
-pub fn body_lines(text: &str) -> usize {
-    let mut lines = 1usize;
-    let mut used = 0usize;
-    for word in text.split_whitespace() {
-        let width = text_columns(word);
-        if used == 0 {
-            used = width;
-        } else if used + 1 + width <= BODY_COLUMNS {
-            used += 1 + width;
-        } else {
-            lines += 1;
-            used = width;
-        }
-        // A single unbroken word — a long path, a URL — wraps mid-word.
-        while used > BODY_COLUMNS {
-            lines += 1;
-            used -= BODY_COLUMNS;
-        }
-        if lines >= MAX_BODY_LINES {
-            return MAX_BODY_LINES;
-        }
-    }
-    lines
-}
-
-fn text_columns(text: &str) -> usize {
-    text.chars()
-        .map(|character| if character.is_ascii() { 1 } else { 2 })
-        .sum()
 }
 
 /// Where a card opens when the user has never moved one: beside the taskbar
@@ -476,78 +418,5 @@ mod tests {
         assert_eq!((x + size.0, y + size.1), (3830, 2150));
         // A position that already fits is left exactly where it was put.
         assert_eq!(clamp_to_screen((500, 500), size, SCREEN), (500, 500));
-    }
-
-    #[test]
-    fn a_wrapped_question_gets_a_taller_card() {
-        let short = card_height(CardKind::Question {
-            options: 2,
-            lines: 1,
-        });
-        let wrapped = card_height(CardKind::Question {
-            options: 2,
-            lines: 2,
-        });
-        assert_eq!(wrapped - short, 18.0);
-        // The clamp holds even if a caller reports nonsense.
-        assert_eq!(
-            card_height(CardKind::Question {
-                options: 2,
-                lines: 99
-            }),
-            card_height(CardKind::Question {
-                options: 2,
-                lines: MAX_BODY_LINES
-            })
-        );
-    }
-
-    #[test]
-    fn a_question_card_grows_one_row_per_option() {
-        let one = card_height(CardKind::Question {
-            options: 1,
-            lines: 1,
-        });
-        let four = card_height(CardKind::Question {
-            options: 4,
-            lines: 1,
-        });
-        assert_eq!(four - one, 3.0 * 36.0);
-        // Even a malformed question with no options gets a card with room for
-        // one, rather than a zero-height sliver.
-        assert_eq!(
-            card_height(CardKind::Question {
-                options: 0,
-                lines: 1,
-            }),
-            one
-        );
-    }
-
-    #[test]
-    fn the_body_line_estimate_follows_the_wrapping() {
-        assert_eq!(body_lines(""), 1);
-        assert_eq!(body_lines("Which database?"), 1);
-        // 43 columns: still one line.
-        assert_eq!(
-            body_lines("Which database should the pipeline write to?"),
-            1
-        );
-        assert_eq!(
-            body_lines(
-                "Which database should the pipeline write to, given that it has to survive a restart?"
-            ),
-            2
-        );
-        // A CJK question is twice as wide per character.
-        assert_eq!(body_lines("这个流水线应该写到哪个数据库里去呢"), 1);
-        assert_eq!(
-            body_lines("这个流水线应该写到哪个数据库里去呢这个流水线应该写到哪个数据库"),
-            2
-        );
-        // One unbroken token still wraps rather than running off the card.
-        assert!(body_lines(&"x".repeat(100)) > 1);
-        // And nothing grows past the cap.
-        assert_eq!(body_lines(&"word ".repeat(200)), MAX_BODY_LINES);
     }
 }

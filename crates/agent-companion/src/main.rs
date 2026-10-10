@@ -7,8 +7,7 @@
 //! for the approvals a session needs, the taskbar readout, and the named-pipe server
 //! that feeds them all. The subcommands are the parts that have to
 //! work from a terminal — `headless` for watching the raw event stream, `setup`
-//! for hook installation, and `statusline` for the usage bridge Claude Code
-//! invokes on every turn.
+//! for Codex hook installation.
 //!
 //! Built for the GUI subsystem so that double-clicking `agent-companion.exe` — or running
 //! it at login — opens no console window. The subcommands get their terminal
@@ -47,8 +46,6 @@ pub mod ui {
 mod setup;
 #[cfg(windows)]
 mod single;
-#[cfg(windows)]
-mod statusline;
 #[cfg(windows)]
 mod usage_cache;
 #[cfg(windows)]
@@ -107,9 +104,6 @@ enum Command {
         #[command(subcommand)]
         action: setup::Action,
     },
-    /// Render a status line from a payload on stdin (used by Claude Code).
-    #[cfg(windows)]
-    Statusline,
     /// Launch Codex with Agent Companion question cards (experimental app-server transport).
     #[cfg(windows)]
     Codex(codex::Args),
@@ -118,8 +112,8 @@ enum Command {
 /// A GUI-subsystem process launched from a shell starts with no console and no
 /// standard handles, which would make every subcommand silent. Attaching to the
 /// parent's console gives them back — but only when the handles are actually
-/// missing: when a parent piped them (Claude Code running `statusline`, the
-/// test harness running `headless`), attaching would clobber the redirection.
+/// missing: when a parent piped them (such as the test harness running
+/// `headless`), attaching would clobber the redirection.
 /// With no console to attach to — the double-click case — this is a no-op.
 #[cfg(windows)]
 fn attach_parent_console() {
@@ -191,8 +185,6 @@ fn main() -> ExitCode {
         Some(Command::Headless(args)) => headless::run(&args),
         #[cfg(windows)]
         Some(Command::Setup { action }) => setup::run(action),
-        #[cfg(windows)]
-        Some(Command::Statusline) => statusline::run(),
         #[cfg(windows)]
         Some(Command::Codex(args)) => codex::run(&args),
     };

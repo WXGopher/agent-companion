@@ -166,45 +166,34 @@ fn loading_signed_out_and_failed_refresh_states_never_borrow_the_other_account()
 }
 
 #[test]
-fn disabling_dodex_removes_its_block_and_user_visibility_keeps_claude_intact() {
-    let scheduler = Scheduler::new(5);
+fn instance_visibility_follows_configuration_and_secondary_availability() {
     let table = SessionTable::new();
-    let readouts = [
+    let mut scheduler = Scheduler::new(5);
+    scheduler.sync_sources(vec![source("codex"), source("dodex")], NOW);
+    let both = [
         readout(&scheduler, Codex, &table),
         readout(&scheduler, Dodex, &table),
     ];
-    let claude = taskbar::Chip {
-        agent: Some(taskbar::ChipSource::Claude),
-        value: "66%".into(),
-        tier: "good",
-        tasks: AgentTasks {
-            pending: 1,
-            ..Default::default()
-        },
-        outcomes: task_status::TaskOutcomes::default(),
-    };
-    let mut chips = vec![claude.clone()];
-    append_readout_chips(&mut chips, &readouts, true, 50, 20);
+    let mut chips = Vec::new();
+    append_readout_chips(&mut chips, &both, true, 50, 20);
     assert_eq!(
-        chips.len(),
-        3,
-        "both unqueried accounts still have their own placeholders"
+        chips
+            .iter()
+            .filter_map(|chip| chip.agent)
+            .collect::<Vec<_>>(),
+        [Codex, Dodex]
     );
-    let previous = chips.clone();
-    append_readout_chips(&mut chips, &readouts, true, 50, 20);
-    assert_eq!(chips, previous, "refreshing does not duplicate an account");
-    append_readout_chips(&mut chips, &readouts[..1], true, 50, 20);
-    assert_eq!(chips.len(), 2);
-    assert_eq!(chips[1].agent, Some(Codex));
-    assert_eq!(chips[0], claude);
-    append_readout_chips(&mut chips, &readouts, false, 50, 20);
-    assert_eq!(chips, [claude]);
-
     chips.clear();
-    append_readout_chips(&mut chips, &readouts, false, 50, 20);
+    append_readout_chips(&mut chips, &both[..1], true, 50, 20);
+    assert_eq!(
+        chips
+            .iter()
+            .filter_map(|chip| chip.agent)
+            .collect::<Vec<_>>(),
+        [Codex]
+    );
+    chips.clear();
+    append_readout_chips(&mut chips, &both, false, 50, 20);
     assert_eq!(chips.len(), 1);
     assert!(chips[0].agent.is_none());
-    append_readout_chips(&mut chips, &readouts, true, 50, 20);
-    assert_eq!(chips.len(), 2);
-    assert_eq!((chips[0].agent, chips[1].agent), (Some(Codex), Some(Dodex)));
 }

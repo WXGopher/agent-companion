@@ -1,6 +1,6 @@
 //! Route a session to the client that owns it, with no cross-client fallback.
 
-use agent_companion_core::protocol::{HookSource, ProcessRef};
+use agent_companion_core::protocol::ProcessRef;
 use agent_companion_core::state::{CodexClient, SessionState};
 
 use super::win;
@@ -23,13 +23,6 @@ impl Route {
 }
 
 fn route(state: &SessionState, ancestors: &[ProcessRef], captured: bool) -> Route {
-    if state.source != HookSource::Codex {
-        return if ancestors.is_empty() {
-            Route::Unavailable
-        } else {
-            Route::Terminal
-        };
-    }
     if captured || ancestors.iter().any(|p| p.exe == "windowsterminal.exe") {
         Route::Terminal
     } else if ancestors.iter().any(|p| p.exe == "chatgpt.exe") {
@@ -58,7 +51,7 @@ pub fn can_jump(state: &SessionState, desktop_available: bool) -> bool {
     match route(state, ancestors, captured) {
         Route::Desktop => desktop_available && win::codex::thread_uri(&state.session_id).is_some(),
         Route::Terminal => captured || !ancestors.is_empty() || state.transcript_path.is_some(),
-        Route::Unavailable => state.source == HookSource::Codex && state.transcript_path.is_some(),
+        Route::Unavailable => state.transcript_path.is_some(),
     }
 }
 
@@ -76,7 +69,8 @@ impl Plan {
     /// File ownership is queried on a worker, never while rendering the panel.
     pub fn resolve(state: &SessionState) -> Self {
         let target = state.terminal.as_ref().and_then(win::target::from_meta);
-        let owner = (state.source == HookSource::Codex && target.is_none())
+        let owner = target
+            .is_none()
             .then(|| {
                 state
                     .transcript_path
@@ -126,6 +120,7 @@ impl Plan {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_companion_core::protocol::HookSource;
 
     #[test]
     fn cli_with_missing_or_closed_terminal_never_opens_the_desktop() {

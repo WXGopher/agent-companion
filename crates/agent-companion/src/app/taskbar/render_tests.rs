@@ -323,7 +323,7 @@ fn task_status_colours_prioritize_waiting_and_breathe_only_while_active() {
             yellow,
         ),
     ];
-    for agent in [ChipSource::Claude, ChipSource::Codex, ChipSource::Dodex] {
+    for agent in [ChipSource::Codex, ChipSource::Dodex] {
         for (tasks, expected) in cases {
             let chip = Chip {
                 agent: Some(agent),
@@ -356,7 +356,7 @@ fn task_status_colours_prioritize_waiting_and_breathe_only_while_active() {
                     bright.iter().enumerate().any(|(index, pixel)| {
                         index / width >= 20 && i32::from(pixel.b) - i32::from(pixel.r) > 60
                     }),
-                    "running task mark and count are blue, including Claude"
+                    "running task mark and count are blue, for each instance"
                 );
             }
             bar.breathe(0.0);
@@ -561,7 +561,7 @@ fn readout_updates_colours_and_layout_without_scheduling_idle_frames() {
     let bar = TaskbarView::new(super::TaskbarBar::new().unwrap());
     let mut chips = vec![
         Chip {
-            agent: Some(ChipSource::Claude),
+            agent: Some(ChipSource::Codex),
             value: "23%".into(),
             outcomes: TaskOutcomes::default(),
             tier: "warn",

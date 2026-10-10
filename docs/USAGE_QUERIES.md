@@ -28,7 +28,7 @@ SQLite-directory verification accepts identical absolute paths or absolute paths
 
 On macOS an existing App runtime supplied by instance discovery is used directly. If no runtime was supplied, usage discovery accepts installed native TUI binaries and resolves official npm package layouts to the native binary without executing their JavaScript entry point, then falls back to a Codex-identified `Codex.app` or `ChatGPT.app` in the standard Applications directories. Unknown wrappers and known secondary-instance runtimes are excluded. Reading usage does not require the complete package manifest used for explicit TUI maintenance.
 
-GUI task scans continue independently and no longer read local quota logs. Claude usage and headless monitoring retain their previous behavior.
+GUI task scans continue independently and no longer read local quota logs. Headless diagnostics read local quota logs from the configured Codex home.
 
 ## Verification
 

@@ -43,11 +43,11 @@ pub struct Args {
 ///
 /// There is deliberately no mode that *approves* one. `PreToolUse` fires before
 /// every tool call, including everything the user's own settings already allow,
-/// and before Claude Code has decided whether to ask anybody — so the only
+/// and before Codex has decided whether to ask anybody — so the only
 /// answers that make sense are "carry on" and "say nothing".
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
 pub enum PreToolUseMode {
-    /// Reply `Ack`: the hook exits immediately, prints nothing, and Claude Code
+    /// Reply `Ack`: the hook exits immediately, prints nothing, and Codex
     /// carries on to its own permission flow — which is what raises the
     /// `PermissionRequest` Agent Companion can actually answer.
     #[default]
@@ -69,12 +69,8 @@ impl PreToolUseMode {
 
 /// The reply modes in force.
 ///
-/// `PermissionRequest` has no mode of its own: the 2026-08-23 verdict settled
-/// its reply shape (the object form; see
-/// [`agent_companion_core::protocol::PermissionRequestDecision`]), so the only remaining
-/// question is whether the user opted into answering at all — which is what
-/// `--auto-allow` says. And no `PreToolUse` mode approves anything, so there is
-/// nothing left here to gate.
+/// `--auto-allow` controls permission replies. Tool activity is acknowledged
+/// without granting permission.
 #[derive(Debug, Clone, Copy)]
 struct Modes {
     auto_allow: bool,
@@ -191,12 +187,8 @@ impl Handler for EventPrinter {
     fn on_envelope(&self, envelope: Envelope, connection: ConnectionHandle) {
         match envelope {
             Envelope::Command {
-                command:
-                    Command::ProcessClaudeHook {
-                        claude_hook,
-                        source,
-                    },
-            } => self.on_hook(claude_hook, source, connection),
+                command: Command::ProcessHook { hook, source },
+            } => self.on_hook(hook, source, connection),
             Envelope::Hello { hello } => {
                 outln!("[{}] hello from {}", timestamp(), hello.client);
             }
@@ -313,7 +305,7 @@ impl EventPrinter {
                 Envelope::Response {
                     response: Response::Ack,
                 },
-                "<<< acked (no decision; Claude Code prompts as usual)",
+                "<<< acked (no decision; Codex prompts as usual)",
             ),
             Reply::Decision(decision) => (
                 Envelope::Response {
@@ -343,7 +335,7 @@ impl EventPrinter {
     }
 }
 
-/// `N sessions: X running, Y waiting | claude 5h A% 7d B% | codex 5h C% 7d D%`
+/// `N sessions: X running, Y waiting | codex 5h C% 7d D%`
 fn summary_line(counts: TableCounts, usage: &UsageSnapshot) -> String {
     let mut line = format!(
         "{} session{}: {} running, {} waiting",
@@ -385,7 +377,7 @@ pub fn summarize_input(payload: &HookPayload) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_companion_core::usage::{ClaudeLimits, CodexUsage, UsageLimit, WindowUsage};
+    use agent_companion_core::usage::{CodexUsage, WindowUsage};
 
     fn window(used: f64, minutes: Option<u64>) -> WindowUsage {
         WindowUsage {
@@ -412,23 +404,6 @@ mod tests {
             stale: 0,
         };
         let usage = UsageSnapshot {
-            claude: ClaudeLimits {
-                limits: vec![
-                    UsageLimit {
-                        kind: "session".into(),
-                        label: "5h".into(),
-                        percent: 23.5,
-                        resets_at: None,
-                    },
-                    UsageLimit {
-                        kind: "weekly_all".into(),
-                        label: "7d".into(),
-                        percent: 61.0,
-                        resets_at: None,
-                    },
-                ],
-                fetched_at: None,
-            },
             codex: Some(CodexUsage {
                 primary: Some(window(7.0, Some(300))),
                 secondary: Some(window(58.0, Some(10_080))),
@@ -439,7 +414,7 @@ mod tests {
         };
         assert_eq!(
             summary_line(counts, &usage),
-            "3 sessions: 1 running, 2 waiting | claude 5h 77% 7d 39% | codex 5h 93% Week 42%"
+            "3 sessions: 1 running, 2 waiting | codex 5h 93% Week 42%"
         );
     }
 

@@ -413,8 +413,8 @@ where
 async fn notify_agent_companion(payload: HookPayload, path: &str) -> io::Result<()> {
     let mut pipe = ClientOptions::new().open(path)?;
     let envelope = Envelope::Command {
-        command: Command::ProcessClaudeHook {
-            claude_hook: payload,
+        command: Command::ProcessHook {
+            hook: payload,
             source: HookSource::Codex,
         },
     };
@@ -449,8 +449,8 @@ async fn ask_agent_companion(
     };
     payload.set_terminal_meta(terminal);
     let envelope = Envelope::Command {
-        command: Command::ProcessClaudeHook {
-            claude_hook: payload,
+        command: Command::ProcessHook {
+            hook: payload,
             source: HookSource::Codex,
         },
     };
@@ -531,21 +531,14 @@ mod tests {
             .unwrap()
             .unwrap();
         let Envelope::Command {
-            command:
-                Command::ProcessClaudeHook {
-                    claude_hook,
-                    source,
-                },
+            command: Command::ProcessHook { hook, source },
         } = frame
         else {
             panic!("missing input event");
         };
         assert_eq!(source, HookSource::Codex);
-        assert_eq!(claude_hook.event_name(), events::CODEX_USER_INPUT);
-        assert_eq!(
-            claude_hook.tool_input.as_ref().unwrap()["questions"][0]["id"],
-            "q"
-        );
+        assert_eq!(hook.event_name(), events::CODEX_USER_INPUT);
+        assert_eq!(hook.tool_input.as_ref().unwrap()["questions"][0]["id"], "q");
         let answers: Answers =
             serde_json::from_value(json!({"q":{"answers":["中文\nsecond line"]}})).unwrap();
         handle
@@ -612,19 +605,12 @@ mod tests {
         client.next().await.unwrap().unwrap();
         let (reused, reused_handle) = requests_rx.recv().await.unwrap();
         let Envelope::Command {
-            command:
-                Command::ProcessClaudeHook {
-                    claude_hook: reused,
-                    ..
-                },
+            command: Command::ProcessHook { hook: reused, .. },
         } = reused
         else {
             panic!("missing reused request");
         };
-        assert_ne!(
-            reused.extra["tool_use_id"],
-            claude_hook.extra["tool_use_id"]
-        );
+        assert_ne!(reused.extra["tool_use_id"], hook.extra["tool_use_id"]);
         reused_handle
             .send(&Envelope::Response {
                 response: Response::CodexInput { answers },

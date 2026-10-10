@@ -115,11 +115,7 @@ impl Handler for Forwarder {
         }
 
         let Envelope::Command {
-            command:
-                Command::ProcessClaudeHook {
-                    claude_hook,
-                    source,
-                },
+            command: Command::ProcessHook { hook, source },
         } = envelope
         else {
             // Hellos and stray responses carry nothing a card can show.
@@ -133,10 +129,10 @@ impl Handler for Forwarder {
         // user's own settings already allow, and its hook waits 45 seconds for
         // an answer. Answering it with anything but "carry on" would mean a card
         // per tool call and a session that stalls on each one, so it is acked
-        // the moment it arrives: the hook exits silently and Claude Code runs
+        // the moment it arrives: the hook exits silently and Codex runs
         // its own permission flow, which is what raises the `PermissionRequest`
         // below if a human is really needed.
-        let reply = match claude_hook.event_name() {
+        let reply = match hook.event_name() {
             events::PERMISSION_REQUEST | events::CODEX_USER_INPUT => Some(connection),
             events::PRE_TOOL_USE => {
                 let _ = connection.send(&Envelope::Response {
@@ -151,7 +147,7 @@ impl Handler for Forwarder {
         if self
             .events
             .send(HookEvent {
-                payload: claude_hook,
+                payload: hook,
                 source,
                 reply,
             })

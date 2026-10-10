@@ -1,5 +1,5 @@
 //! End-to-end tests over the real binaries: a headless `agent-companion` on one side of a
-//! named pipe, `agent-companion-hook` on the other, and no Claude Code anywhere.
+//! named pipe, `agent-companion-hook` on the other, with synthetic Codex payloads.
 //!
 //! Each test binds its own randomly named pipe through `AGENT_COMPANION_PIPE_NAME`, so
 //! they neither collide with each other nor with an Agent Companion the developer happens
@@ -141,13 +141,9 @@ struct HookRun {
 
 /// Feed `payload` to `agent-companion-hook` on stdin and collect what it produced.
 fn run_hook(pipe_name: &str, payload: &str, skip_hooks: bool) -> HookRun {
-    run_hook_for(pipe_name, payload, skip_hooks, "claude")
-}
-
-fn run_hook_for(pipe_name: &str, payload: &str, skip_hooks: bool, source: &str) -> HookRun {
     let mut command = Command::new(hook_exe());
     command
-        .args(["--source", source])
+        .args(["--source", "codex"])
         .env("AGENT_COMPANION_PIPE_NAME", pipe_name)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -202,7 +198,7 @@ fn permission_request_gets_an_allow_decision() {
             panic!("stdout was not JSON ({error}): {:?}", run.stdout);
         });
 
-    assert_eq!(decision["suppressOutput"], true);
+    assert!(decision.get("suppressOutput").is_none());
     let specific = &decision["hookSpecificOutput"];
     assert_eq!(specific["hookEventName"], "PermissionRequest");
     assert_eq!(specific["decision"]["behavior"], "allow");
@@ -214,26 +210,6 @@ fn permission_request_gets_an_allow_decision() {
         log.iter()
             .any(|line| line.contains("PermissionRequest") && line.contains("abc12345")),
         "expected the event in the log, got {log:?}"
-    );
-}
-
-#[test]
-fn codex_permission_round_trip_uses_its_own_schema() {
-    let pipe_name = unique_pipe_name("codex-allow");
-    let server = Server::start(&pipe_name, &["--auto-allow"]);
-    server.next_line();
-    let run = run_hook_for(&pipe_name, permission_request_payload(), false, "codex");
-    assert!(run.success);
-    let decision: serde_json::Value = serde_json::from_str(run.stdout.trim()).unwrap();
-    assert_eq!(
-        decision,
-        serde_json::json!({"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}})
-    );
-    assert!(
-        server
-            .wait_for("auto-allowed")
-            .iter()
-            .any(|line| line.contains("codex"))
     );
 }
 
@@ -450,7 +426,7 @@ fn a_permission_request_is_held_without_auto_allow() {
     // A held PermissionRequest blocks its hook for a day, so run it detached
     // and check the server's side of the story instead.
     let mut child = Command::new(hook_exe())
-        .args(["--source", "claude"])
+        .args(["--source", "codex"])
         .env("AGENT_COMPANION_PIPE_NAME", &pipe_name)
         .env_remove("AGENT_COMPANION_SKIP_HOOKS")
         .stdin(Stdio::piped())
@@ -511,7 +487,7 @@ fn acking_pre_tool_use_releases_the_hook_without_a_decision() {
 }
 
 /// The flat `PermissionRequest` shape — `"decision": "allow"` with a sibling
-/// `reason` — reads as a **denial** to the installed Claude Code, so the
+/// `reason` — reads as a **denial** to the hook protocol, so the
 /// 2026-08-23 verdict removed it from the codebase. This is the guard against
 /// it coming back: there is no flag that can ask for it any more.
 #[test]
@@ -547,7 +523,7 @@ fn holding_pre_tool_use_is_available_on_request() {
     assert!(server.next_line().contains("PreToolUse=hold"));
 
     let mut child = Command::new(hook_exe())
-        .args(["--source", "claude"])
+        .args(["--source", "codex"])
         .env("AGENT_COMPANION_PIPE_NAME", &pipe_name)
         .env_remove("AGENT_COMPANION_SKIP_HOOKS")
         .stdin(Stdio::piped())
@@ -626,242 +602,5 @@ fn the_session_table_summary_follows_the_event_stream() {
             .iter()
             .any(|line| line.contains("0 running") && line.contains("1 done")),
         "expected the completed session in the summary, got {after:?}"
-    );
-}
-
-#[test]
-fn the_status_line_renders_and_caches_rate_limits() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let payload = r#"{"model":{"display_name":"Opus 5"},"context_window":{"used_percentage":42.4},"rate_limits":{"five_hour":{"used_percentage":23.5,"resets_at":1787003600},"seven_day":{"used_percentage":61}}}"#;
-
-    let mut child = Command::new(agent_companion_exe())
-        .arg("statusline")
-        // Redirect both the cache and the settings lookup into the temporary
-        // directory: the test must never read or write the real ones.
-        .env("LOCALAPPDATA", dir.path())
-        .env("USERPROFILE", dir.path())
-        .env_remove("HOME")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn agent-companion statusline");
-    child
-        .stdin
-        .take()
-        .expect("piped stdin")
-        .write_all(payload.as_bytes())
-        .expect("failed to write the payload");
-    let output = child.wait_with_output().expect("failed to wait");
-
-    assert!(output.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout).trim(),
-        "[Opus 5] 42% context"
-    );
-
-    let cache = dir.path().join("AgentCompanion").join("rl.json");
-    let cached: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&cache).expect("the cache was written"))
-            .expect("the cache is JSON");
-    assert_eq!(cached["rateLimits"]["five_hour"]["used_percentage"], 23.5);
-    assert_eq!(cached["rateLimits"]["seven_day"]["used_percentage"], 61);
-    assert!(cached["cachedAt"].is_u64());
-}
-
-#[test]
-fn the_status_line_delegates_to_a_wrapped_command() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    // A settings.json whose stashed status line is a command that echoes a
-    // recognizable string. `cmd /C echo` needs no external tool.
-    let settings_dir = dir.path().join(".claude");
-    std::fs::create_dir_all(&settings_dir).expect("settings dir");
-    std::fs::write(
-        settings_dir.join("settings.json"),
-        r#"{"_atollOriginalStatusLine":{"type":"command","command":"echo WRAPPED-ORIGINAL"}}"#,
-    )
-    .expect("settings");
-
-    let mut child = Command::new(agent_companion_exe())
-        .arg("statusline")
-        .env("LOCALAPPDATA", dir.path())
-        .env("USERPROFILE", dir.path())
-        .env_remove("HOME")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn agent-companion statusline");
-    child
-        .stdin
-        .take()
-        .expect("piped stdin")
-        .write_all(br#"{"model":{"display_name":"Opus 5"}}"#)
-        .expect("failed to write the payload");
-    let output = child.wait_with_output().expect("failed to wait");
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("WRAPPED-ORIGINAL"),
-        "the wrapped command's stdout must pass through, got {stdout:?}"
-    );
-    assert!(
-        !stdout.contains("Opus 5"),
-        "and Agent Companion must not add its own line on top, got {stdout:?}"
-    );
-}
-
-/// Feed `payload` to `agent-companion statusline` with `home` standing in for `~`, and
-/// hand back its raw stdout bytes.
-fn run_statusline(home: &std::path::Path, payload: &str) -> Vec<u8> {
-    let mut child = Command::new(agent_companion_exe())
-        .arg("statusline")
-        .env("LOCALAPPDATA", home)
-        .env("USERPROFILE", home)
-        .env_remove("HOME")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("failed to spawn agent-companion statusline");
-    child
-        .stdin
-        .take()
-        .expect("piped stdin")
-        .write_all(payload.as_bytes())
-        .expect("failed to write the payload");
-    child.wait_with_output().expect("failed to wait").stdout
-}
-
-/// The shape that broke a real user's status line, reproduced exactly: a
-/// `powershell … -File <path with a space>` shell string behind Agent Companion's wrapper.
-///
-/// The bug was Rust's `Command::arg` escaping the command line for
-/// `CreateProcess` parsing while `cmd.exe` parses by its own rules, so the
-/// quoted path arrived mangled and the delegate never ran. Agent Companion then fell back
-/// to rendering its own line, which is how the user's status line silently
-/// became Agent Companion's.
-#[test]
-fn a_wrapped_status_line_passes_through_byte_for_byte() {
-    let dir = tempfile::tempdir().expect("tempdir");
-
-    // A space in the path is the whole point: it is what forces the quoting.
-    let scripts = dir.path().join("My Scripts");
-    std::fs::create_dir_all(&scripts).expect("script dir");
-    let script = scripts.join("line.ps1");
-    std::fs::write(
-        &script,
-        "$raw = [Console]::In.ReadToEnd()\r\n\
-         $model = ($raw | ConvertFrom-Json).model.display_name\r\n\
-         Write-Output \"MINE $model 7d 41%\"\r\n",
-    )
-    .expect("script");
-
-    let shell_string = format!(
-        "powershell -NoProfile -ExecutionPolicy Bypass -File \"{}\"",
-        script.display()
-    );
-    let payload = r#"{"model":{"display_name":"Opus 5"},"context_window":{"used_percentage":42}}"#;
-
-    // What the user sees with no Agent Companion in the picture at all.
-    let mut direct = Command::new("powershell")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-        .arg(&script)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("failed to spawn powershell");
-    direct
-        .stdin
-        .take()
-        .expect("piped stdin")
-        .write_all(payload.as_bytes())
-        .expect("failed to write the payload");
-    let expected = direct.wait_with_output().expect("failed to wait").stdout;
-    assert!(
-        !expected.is_empty(),
-        "the fixture script produced nothing; the test proves nothing"
-    );
-
-    // The same thing, wrapped: `settings.json` as `--wrap-status-line` leaves it.
-    let settings_dir = dir.path().join(".claude");
-    std::fs::create_dir_all(&settings_dir).expect("settings dir");
-    let settings = serde_json::json!({
-        "_atollOriginalStatusLine": {
-            "type": "command",
-            "command": shell_string,
-            "refreshInterval": 30,
-        },
-        "statusLine": {
-            "type": "command",
-            "command": "agent-companion.exe",
-            "args": ["statusline"],
-            "refreshInterval": 30,
-        },
-    });
-    std::fs::write(settings_dir.join("settings.json"), settings.to_string()).expect("settings");
-
-    let wrapped = run_statusline(dir.path(), payload);
-    assert_eq!(
-        String::from_utf8_lossy(&wrapped),
-        String::from_utf8_lossy(&expected),
-        "the wrapped status line must be indistinguishable from the bare one"
-    );
-    assert_eq!(wrapped, expected, "and identical byte for byte");
-}
-
-/// A delegate that says nothing leaves the line empty. Agent Companion standing in for the
-/// user's status line is a worse failure than an empty status line, because the
-/// user cannot see that it happened.
-#[test]
-fn a_silent_delegate_does_not_get_replaced_by_agent_companions_own_line() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let settings_dir = dir.path().join(".claude");
-    std::fs::create_dir_all(&settings_dir).expect("settings dir");
-
-    for command in [
-        // Runs, prints nothing.
-        "cmd /C exit 0",
-        // Does not exist at all.
-        "no-such-program-agent-companion-test",
-    ] {
-        std::fs::write(
-            settings_dir.join("settings.json"),
-            serde_json::json!({
-                "_atollOriginalStatusLine": {"type": "command", "command": command},
-            })
-            .to_string(),
-        )
-        .expect("settings");
-
-        let out = run_statusline(dir.path(), r#"{"model":{"display_name":"Opus 5"}}"#);
-        assert!(
-            out.is_empty(),
-            "{command:?} produced {:?}; Agent Companion must never render over a delegate",
-            String::from_utf8_lossy(&out)
-        );
-    }
-}
-
-/// A split brain is still impossible, but the way out of it is eviction rather
-/// than refusal — the pipe never ends up shared, and the newcomer never ends up
-/// as a second readout nobody is feeding.
-///
-/// The mechanism is covered by [`a_second_agent_companion_takes_the_pipe_from_the_first`];
-/// this is the part that used to be an error, kept as its own case because
-/// "starting Agent Companion twice does not fail" is the promise that changed.
-#[test]
-fn starting_a_second_agent_companion_is_not_an_error() {
-    let pipe_name = unique_pipe_name("dup");
-    let mut first = Server::start(&pipe_name, &[]);
-
-    let second = Server::start(&pipe_name, &[]);
-    assert!(second.next_line().contains("it stood down"));
-
-    let status = first.child.wait().expect("the first server should exit");
-    assert!(
-        status.success(),
-        "standing down for a newer Agent Companion is a clean exit, got {status:?}"
     );
 }

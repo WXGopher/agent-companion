@@ -175,11 +175,7 @@ fn waiting_preview_renders_and_opens_full_details_at_common_scales() {
                         "项目 · 等待确认终端命令".into()
                     },
                     detail: "Waiting for permission · shell".into(),
-                    source: if n % 2 == 0 {
-                        "codex".into()
-                    } else {
-                        "claude".into()
-                    },
+                    source: "codex".into(),
                     phase: "waitingForApproval".into(),
                     jumpable: true,
                 })
@@ -211,7 +207,6 @@ fn waiting_preview_renders_and_opens_full_details_at_common_scales() {
 
     let card = super::ui::CardWindow::new().unwrap();
     card.set_card(3);
-    card.set_card_source("codex".into());
     card.set_card_title("agent-companion · Codex".into());
     card.set_card_tool("Question".into());
     card.set_form_progress("1 / 3 · 实现范围".into());
@@ -278,7 +273,6 @@ fn codex_tui_editor_renders_and_applies_only_explicit_actions(
     editor
         .window
         .set_window_title("Agent Companion · Settings".into());
-    editor.window.set_claude_status("Not installed".into());
     editor
         .window
         .set_codex_status("8 of 8 hooks installed".into());
@@ -799,22 +793,6 @@ fn render_readme_flyout(
             ..Default::default()
         },
     ])));
-    let usage = super::UsageSnapshot {
-        codex: Some(agent_companion_core::usage::parse_codex_rate_limits(
-            &serde_json::json!({
-                "secondary": { "used_percent": 18, "window_minutes": 10080 }
-            }),
-        )),
-        ..Default::default()
-    };
-    panel.set_usage_rows(ModelRc::new(VecModel::from(super::usage_sections(
-        &usage,
-        &[super::HookSource::Codex],
-        0,
-        0,
-        50,
-        20,
-    ))));
     panel.set_subscription(source.get_subscription());
     panel.set_subscription_limits(source.get_subscription_limits());
     panel.set_usage_days(source.get_usage_days());

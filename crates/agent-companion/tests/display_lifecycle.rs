@@ -85,8 +85,8 @@ fn send(pipe: &str, frames: &[Value]) {
 
 fn hook(source: &str, event: &str) -> Value {
     json!({"type":"command", "command": {
-        "type":"processClaudeHook", "source":source,
-        "claudeHook":{"hook_event_name":event, "session_id":source, "cwd":"display-test"}
+        "type":"processHook", "source":source,
+        "hook":{"hook_event_name":event, "session_id":source, "cwd":"display-test"}
     }})
 }
 
@@ -108,12 +108,8 @@ fn hooks_control_visibility_and_restarts_preserve_the_last_display() {
     )
     .unwrap();
     let previous = json!({
-        "claude":{"visible":true,"lastSeen":now-3600},
-        "usage":{"claude":{"limits":[{
-            "kind":"weekly_all","label":"Week","percent":77.0,"resets_at":now+86400
-        }],"fetched_at":now}},
-        "sessions":[{"id":"saved","title":"previous project","detail":"Done",
-            "phase":"completed","source":"claude"}],
+        "codex":{"visible":true,"lastSeen":now-3600},
+        "sessions":[{"id":"saved","title":"previous project","detail":"Done","phase":"completed","source":"codex"}],
         "updatedAt":now-3600
     });
     let saved = serde_json::to_vec(&previous).unwrap();
@@ -123,56 +119,30 @@ fn hooks_control_visibility_and_restarts_preserve_the_last_display() {
     assert_eq!(
         fs::read(&path).unwrap(),
         saved,
-        "startup leaves the saved display alone"
+        "startup leaves saved task text alone"
     );
-    let log = fs::read_to_string(root.join("debug.log")).unwrap_or_default();
-    assert!(
-        !log.contains("usage fetch"),
-        "no startup usage fetch: {log}"
-    );
-
     send(&pipe, &[hook("codex", "UserPromptSubmit")]);
     eventually(|| {
         let state = snapshot(&path);
-        (state["codex"]["visible"] == true && state["claude"]["visible"] == false).then_some(())
+        (state["codex"]["visible"] == true
+            && state["sessions"]
+                .as_array()
+                .is_some_and(|rows| rows.len() == 1 && rows[0]["id"] == "codex"))
+        .then_some(())
     });
-    assert_eq!(
-        snapshot(&path)["usage"]["claude"]["limits"][0]["percent"],
-        77.0
-    );
-    assert!(
-        snapshot(&path)["sessions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|row| row["source"] == "codex")
-    );
-
-    send(&pipe, &[hook("claude", "UserPromptSubmit")]);
-    eventually(|| {
-        let state = snapshot(&path);
-        (state["claude"]["visible"] == true && state["codex"]["visible"] == true).then_some(())
-    });
-
-    // Send these on the same connection to preserve event order. Exit must
-    // flush immediately, without waiting for the five-second save interval.
+    assert!(snapshot(&path).get("usage").is_none());
     let shutdown = json!({"type":"event","event":{"type":"shutdown"}});
-    send(&pipe, &[hook("claude", "SessionEnd"), shutdown.clone()]);
+    send(&pipe, std::slice::from_ref(&shutdown));
     gui.wait_for_exit();
     let mut state = snapshot(&path);
-    assert_eq!(state["claude"]["visible"], false);
-    assert_eq!(state["codex"]["visible"], true);
-    assert_eq!(state["sessions"].as_array().unwrap().len(), 1);
-
-    // Simulate a later launch: even an expired visible agent must stay as it
-    // was until a new hook arrives, including through an idle clean exit.
     state["codex"]["lastSeen"] = json!(now - 3600);
     let saved = serde_json::to_vec(&state).unwrap();
     fs::write(&path, &saved).unwrap();
     let mut restarted = Gui::start(root, &pipe);
     thread::sleep(Duration::from_millis(1500));
     assert_eq!(fs::read(&path).unwrap(), saved);
-    send(&pipe, &[shutdown]);
+    send(&pipe, &[hook("codex", "SessionEnd"), shutdown]);
     restarted.wait_for_exit();
-    assert_eq!(fs::read(&path).unwrap(), saved);
+    assert_eq!(snapshot(&path)["codex"]["visible"], false);
+    assert!(snapshot(&path)["sessions"].as_array().unwrap().is_empty());
 }

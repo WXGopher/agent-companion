@@ -82,10 +82,7 @@ pub struct TaskbarConfig {
     /// Off means no readout in the taskbar at all. On by default: it is the
     /// cheapest place Agent Companion has to put a number somebody checks all day.
     pub enabled: bool,
-    /// Whether each agent gets its block in the readout. Codex is on by default;
-    /// somebody who runs only one agent can give the other's rows back to the
-    /// taskbar.
-    pub claude: bool,
+    /// Whether Codex and Dodex account blocks are shown in the readout.
     pub codex: bool,
     /// Where the percentage-left colour turns: green at or above `good_at`,
     /// amber at or above `warn_at`, red below. The defaults match the common
@@ -99,7 +96,6 @@ impl Default for TaskbarConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            claude: false,
             codex: true,
             good_at: crate::usage_cache::LEFT_COMFORTABLE,
             warn_at: crate::usage_cache::LEFT_TIGHT,

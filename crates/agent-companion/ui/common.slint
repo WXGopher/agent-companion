@@ -9,13 +9,13 @@
 export struct SessionRow {
     // The agent's session id. Not shown; it is how a click finds its session.
     id: string,
-    // What to call this session: its transcript title, or the project folder.
+    // What to call this session: its saved conversation name or project folder.
     title: string,
     // The line under the title in the flyout — a tool name, a summary.
     detail: string,
     // "running" | "waitingForApproval" | "waitingForAnswer" | "completed" | "failed" | "stopped"
     phase: string,
-    // "claude" | "codex" | "dodex"
+    // "codex" | "dodex"
     source: string,
     // Whether a click on this row can reach the terminal that owns the
     // session. Rows without a known terminal draw no affordance and eat no
@@ -30,10 +30,10 @@ export struct SessionRow {
 // somebody opened the panel to see. A window row is that agent's individual
 // limits: a name, a bar, a percentage, and when it rolls over.
 //
-// Rust builds these; see `app::usage_sections`.
+// Rust builds these from the account usage service; see `app::subscription`.
 export struct UsageRow {
     heading: bool,
-    // "claude" | "codex" | "dodex" on a heading; "" on a window row.
+    // "codex" | "dodex" on a heading; "" on a window row.
     agent: string,
     // The agent's name on a heading, the window's name on a window row.
     label: string,
@@ -51,7 +51,7 @@ export struct UsageRow {
 // percentage left (weekly for Codex / Dodex). The UI derives C/D labels from
 // the identity independently of the current task state or allowance value.
 export struct UsageChip {
-    // "claude" | "codex" | "dodex", or "" for the placeholder shown when nothing has
+    // "codex" | "dodex", or "" for the placeholder shown when nothing has
     // reported anything yet.
     agent: string,
     // "92%", "92%*", "…" while loading, or a dash. No identity prefix.
@@ -83,7 +83,6 @@ export global Theme {
     out property <color> faint: #7d7d94;
 
     // Identity colours belong to agent marks and card accents.
-    out property <color> claude: #e8824a;
     out property <color> codex: #4a9de8;
 
     // Task status uses the same palette for every agent and instance.
@@ -139,47 +138,6 @@ export global Theme {
     out property <color> allow-hot: #379a6e;
     out property <color> soft: #ffffff14;
     out property <color> soft-hot: #ffffff29;
-}
-
-// The agent's mark, drawn rather than borrowed: a four-point sparkle for
-// Claude, angle brackets for Codex. Generic shapes that read at a glance and
-// are nobody's trademark.
-//
-// The view box is cropped to the drawing rather than to the 64-unit space the
-// commands were written in, so the mark fills whatever box it is given — at
-// 12 px in a panel row there is nothing to spare for empty margins.
-export component AgentMark {
-    in property <string> source;
-    in property <length> size: 12px;
-    in property <float> weight: 1.0;
-
-    width: root.size;
-    height: root.size;
-
-    if root.source != "codex": Path {
-        width: 100%;
-        height: 100%;
-        viewbox-x: 17;
-        viewbox-y: 17;
-        viewbox-width: 30;
-        viewbox-height: 30;
-        fill: Theme.claude;
-        opacity: root.weight;
-        commands: "M 32 18 Q 33.4 30.6 46 32 Q 33.4 33.4 32 46 Q 30.6 33.4 18 32 Q 30.6 30.6 32 18 Z";
-    }
-
-    if root.source == "codex": Path {
-        width: 100%;
-        height: 100%;
-        viewbox-x: 15;
-        viewbox-y: 20;
-        viewbox-width: 34;
-        viewbox-height: 24;
-        stroke: Theme.codex;
-        stroke-width: 3.5px;
-        opacity: root.weight;
-        commands: "M 27 22 L 17 32 L 27 42 M 37 22 L 47 32 L 37 42";
-    }
 }
 
 // How much of a rate-limit window is left, as a length rather than a number.

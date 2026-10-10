@@ -24,13 +24,11 @@ export component CardWindow inherits Window {
     background: transparent;
     default-font-family: "Microsoft YaHei UI";
 
-    // 0 none · 1 approval · 2 question
+    // 0 none · 1 approval · 3 native question form
     in property <int> card: 0;
-    in property <string> card-source: "claude";
     in property <string> card-title;
     in property <string> card-tool;
     in property <string> card-detail;
-    in property <[string]> card-options;
     // How many more cards are queued behind this one, so the user can tell that
     // dismissing this one is not the end of it.
     in property <int> card-queued: 0;
@@ -49,8 +47,6 @@ export component CardWindow inherits Window {
 
     // true = allow, false = deny.
     callback decide(bool);
-    // The index of the chosen option on a question card.
-    callback answer(int);
     // The pointer entered or left the card, which is what starts and stops the
     // grace period before an untouched card collapses.
     callback hover(bool);
@@ -59,7 +55,7 @@ export component CardWindow inherits Window {
     callback drag-done();
 
     property <bool> pulse: false;
-    property <color> card-accent: root.card-source == "codex" ? Theme.codex : Theme.claude;
+    property <color> card-accent: Theme.codex;
 
     Timer {
         interval: 1000ms;
@@ -134,9 +130,9 @@ export component CardWindow inherits Window {
             // --- body: the one line that says what is actually being asked
             if root.card != 3: Text {
                 text: root.card-detail;
-                color: root.card == 2 ? Theme.text : Theme.body-text;
+                color: Theme.body-text;
                 font-size: 13px;
-                wrap: root.card == 2 ? word-wrap : no-wrap;
+                wrap: no-wrap;
                 overflow: elide;
                 vertical-alignment: top;
             }
@@ -173,15 +169,6 @@ export component CardWindow inherits Window {
                 }
             }
 
-            if root.card == 2: VerticalLayout {
-                spacing: 6px;
-                for option[index] in root.card-options: ActionButton {
-                    label: option;
-                    clicked => {
-                        root.answer(index);
-                    }
-                }
-            }
 
             if root.card == 3: VerticalLayout {
                 spacing: 8px;

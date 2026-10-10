@@ -1,15 +1,6 @@
 //! Small helpers shared by every mode of the binary.
 
-use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-/// The user's home directory, resolved at runtime. Never a compiled-in path.
-pub fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-}
 
 /// Cut `text` to `limit` characters, marking the cut with an ellipsis.
 ///

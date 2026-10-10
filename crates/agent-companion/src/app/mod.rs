@@ -35,12 +35,10 @@ mod flyout;
 mod form;
 mod instances;
 mod navigation;
-pub mod net;
 mod notifications;
 #[cfg(test)]
 mod panel_render_tests;
 mod sessions;
-mod settings;
 mod subscription;
 mod task_status;
 mod taskbar;
@@ -54,15 +52,13 @@ use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use agent_companion_core::now_unix_secs;
 use agent_companion_core::protocol::{Envelope, HookSource, Response, events};
 use agent_companion_core::server::ConnectionHandle;
 use agent_companion_core::state::{AgentTasks, Phase, SessionTable};
-use agent_companion_core::transcript;
-use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
 use self::bridge::HookEvent;
 use self::card::Card;
@@ -71,7 +67,6 @@ use self::config::Config;
 use self::taskbar::TaskbarView;
 use self::win::Rect;
 use crate::out::errln;
-use crate::usage_cache::UsageSnapshot;
 use crate::util::{clean_title, project_name, truncate};
 
 /// The housekeeping beat: sweeps dead sessions and re-reads usage.
@@ -87,7 +82,7 @@ const PULSE_PERIOD_MS: u128 = 2_000;
 ///
 /// Adding an agent here is all it takes for the panel to include it: nothing
 /// below names an agent of its own.
-const AGENTS: [HookSource; 2] = [HookSource::Claude, HookSource::Codex];
+const AGENTS: [HookSource; 1] = [HookSource::Codex];
 
 const FLYOUT_TITLE: &str = "Agent Companion Sessions";
 const FLYOUT_WIDTH: f32 = 320.0;
@@ -181,32 +176,12 @@ struct App {
     /// Whether the pointer has ever been on the current card. A card the user
     /// has looked at collapses on its own; one they have not stays.
     touched: Cell<bool>,
-    /// Session titles read from transcripts. Filled in from a worker, so the
-    /// panel opens with whatever was already known and gains the rest a moment
-    /// later rather than waiting for a directory of files to be read.
-    titles: RefCell<HashMap<String, String>>,
-    titles_tx: std::sync::mpsc::Sender<HashMap<String, String>>,
-    titles_rx: std::sync::mpsc::Receiver<HashMap<String, String>>,
-    /// What the last scan read, so the next one only opens what has changed.
-    /// Shared with the worker, which is the only thread that touches it.
-    transcripts: Arc<Mutex<transcript::TranscriptCache>>,
-    /// Whether a scan is already running. One at a time: a second would read the
-    /// same files to the same answer.
-    scanning: Cell<bool>,
-
-    usage: RefCell<UsageSnapshot>,
     subscription: RefCell<crate::usage_service::UsageService>,
     updates: crate::update_service::UpdateService,
     usage_navigation: RefCell<subscription::Navigation>,
     secondary: RefCell<Option<instances::Secondary>>,
     launching_dodex: Cell<bool>,
     display: RefCell<display::DisplayState>,
-    /// Claude's usage arrives over the network, so it comes back on a channel
-    /// rather than being read inline: an eight-second timeout on the UI thread
-    /// would be eight seconds of frozen interface.
-    limits_tx: std::sync::mpsc::Sender<agent_companion_core::usage::ClaudeLimits>,
-    limits_rx: std::sync::mpsc::Receiver<agent_companion_core::usage::ClaudeLimits>,
-    fetching: Cell<bool>,
     config: RefCell<Config>,
     events: std::sync::mpsc::Receiver<HookEvent>,
 
@@ -225,8 +200,6 @@ impl App {
         let flyout = ui::FlyoutWindow::new().map_err(io::Error::other)?;
         let config = Config::load();
         let display = display::DisplayState::load();
-        let (limits_tx, limits_rx) = std::sync::mpsc::channel();
-        let (titles_tx, titles_rx) = std::sync::mpsc::channel();
 
         let app = Rc::new(Self {
             card_view: CardView::new(),
@@ -250,21 +223,12 @@ impl App {
             queue: RefCell::new(VecDeque::new()),
             current: RefCell::new(None),
             touched: Cell::new(false),
-            titles: RefCell::new(HashMap::new()),
-            titles_tx,
-            titles_rx,
-            transcripts: Arc::new(Mutex::new(transcript::TranscriptCache::new())),
-            scanning: Cell::new(false),
-            usage: RefCell::new(display.usage()),
             subscription: RefCell::new(crate::usage_service::UsageService::new()),
             updates: crate::update_service::UpdateService::new(),
             usage_navigation: RefCell::new(subscription::Navigation::default()),
             secondary: RefCell::new(None),
             launching_dodex: Cell::new(false),
             display: RefCell::new(display),
-            limits_tx,
-            limits_rx,
-            fetching: Cell::new(false),
             config: RefCell::new(config),
             events: bridge.events,
             started: Instant::now(),
@@ -471,13 +435,6 @@ impl App {
         });
 
         let app = Rc::downgrade(self);
-        ui.on_answer(move |index| {
-            if let Some(app) = app.upgrade() {
-                app.answer(index);
-            }
-        });
-
-        let app = Rc::downgrade(self);
         ui.on_hover(move |inside| {
             if let Some(app) = app.upgrade() {
                 app.on_hover(inside);
@@ -544,9 +501,6 @@ impl App {
 
     /// Take everything the pipe thread has queued.
     fn drain(self: &Rc<Self>) {
-        // The title worker posts to the event loop the same way the pipe thread
-        // does, so this is where its answers land too.
-        let titles_arrived = self.collect_titles();
         let sessions_arrived = self.poll_codex_sessions();
 
         let mut received = 0usize;
@@ -557,20 +511,9 @@ impl App {
         if received > 0 {
             self.promote();
         }
-        if received > 0 || titles_arrived || sessions_arrived {
+        if received > 0 || sessions_arrived {
             self.refresh();
         }
-    }
-
-    /// Take whatever the title worker has finished.
-    fn collect_titles(&self) -> bool {
-        let mut arrived = false;
-        while let Ok(titles) = self.titles_rx.try_recv() {
-            *self.titles.borrow_mut() = titles;
-            self.scanning.set(false);
-            arrived = true;
-        }
-        arrived
     }
 
     fn on_hook(self: &Rc<Self>, event: HookEvent) {
@@ -586,7 +529,7 @@ impl App {
         // `PermissionRequest` arrives with one — see [`bridge::Forwarder`] and
         // [`Card::for_request`] for why `PreToolUse` is already gone by now.
         if let Some(handle) = reply
-            && let Some(card) = Card::for_request(&payload, source, now)
+            && let Some(card) = Card::for_request(&payload)
         {
             self.blocked
                 .borrow_mut()
@@ -602,7 +545,6 @@ impl App {
         {
             self.display.borrow_mut().end_agent(source);
         }
-        self.refresh_usage_after_activity(source, now);
 
         // A `PostToolUse`, a `Stop`, or a new turn can settle the very approval
         // the open card is asking about — the user answered in the terminal, or
@@ -784,7 +726,7 @@ impl App {
         let Some(state) = self.table.borrow().get(session_id).cloned() else {
             return;
         };
-        let hint = self.titles.borrow().get(session_id).cloned();
+        let hint = state.display_name.clone();
         std::thread::spawn(move || {
             let plan = navigation::Plan::resolve(&state);
             let _ = slint::invoke_from_event_loop(move || {
@@ -879,19 +821,6 @@ impl App {
         }
     }
 
-    fn answer(self: &Rc<Self>, option: i32) {
-        let Some(card) = self.current.borrow().clone() else {
-            return;
-        };
-        if option < 0 {
-            return;
-        }
-        if let Some(decision) = card.answer(option as usize) {
-            self.reply(&card, decision);
-        }
-        self.settle_after_the_click(card);
-    }
-
     /// Resolve a card that was answered by clicking one of its buttons, on the
     /// next turn of the event loop rather than inside the click itself.
     ///
@@ -970,16 +899,9 @@ impl App {
             self.heal_readout();
         }
         ui.set_card(card.kind.as_int());
-        ui.set_card_source(card.source.as_str().into());
         ui.set_card_title(card.title.clone().into());
         ui.set_card_tool(card.tool.clone().into());
         ui.set_card_detail(card.detail.clone().into());
-        ui.set_card_options(ModelRc::new(VecModel::from(
-            card.options
-                .iter()
-                .map(SharedString::from)
-                .collect::<Vec<_>>(),
-        )));
         ui.set_card_queued(self.queue.borrow().len() as i32);
         if let Some(form) = &card.form {
             let question = &form.request.questions[form.page];
@@ -1043,18 +965,8 @@ impl App {
             .get()
             .map(|taskbar| taskbar::Along::of(taskbar.rect))
             .unwrap_or(taskbar::Along::Vertical);
-        let (claude, good_at, warn_at) = {
-            let config = self.config.borrow();
-            let claude = taskbar::AgentLine {
-                agent: HookSource::Claude,
-                show: config.taskbar.claude && self.display.borrow().visible(HookSource::Claude),
-                tasks: self.agent_tasks(HookSource::Claude),
-                outcomes: self.agent_outcomes(HookSource::Claude),
-            };
-            let (good_at, warn_at) = config.taskbar.thresholds();
-            (claude, good_at, warn_at)
-        };
-        let mut chips = taskbar::chips(&self.usage.borrow(), &[claude], good_at, warn_at);
+        let (good_at, warn_at) = self.config.borrow().taskbar.thresholds();
+        let mut chips = Vec::new();
         self.append_instance_chips(&mut chips, good_at, warn_at);
         self.bar.set_chips(&chips, along);
         self.bar.set_usage_tooltip(&self.instance_quota_tooltip());
@@ -1086,15 +998,15 @@ impl App {
         if !self.display.borrow().is_live() {
             return;
         }
-        let sessions = self.session_rows(usize::MAX, true);
+        let sessions = self.session_rows(usize::MAX);
         self.display
             .borrow_mut()
-            .remember(self.usage.borrow().clone(), sessions, now_unix_secs());
+            .remember(sessions, now_unix_secs());
     }
 
     /// The session rows, oldest session first so the blocks do not shuffle every
     /// time a phase changes.
-    fn session_rows(&self, limit: usize, rich: bool) -> Vec<ui::SessionRow> {
+    fn session_rows(&self, limit: usize) -> Vec<ui::SessionRow> {
         let display = self.display.borrow();
         if !display.is_live() {
             let available = win::codex::available();
@@ -1111,7 +1023,6 @@ impl App {
                 .collect();
         }
         let table = self.table.borrow();
-        let titles = self.titles.borrow();
         let codex_desktop = win::codex::available();
         table
             .sessions()
@@ -1123,11 +1034,7 @@ impl App {
                     .as_deref()
                     .map(project_name)
                     .filter(|name| !name.is_empty());
-                let summary = rich
-                    .then(|| titles.get(&state.session_id))
-                    .flatten()
-                    .map(String::as_str)
-                    .or(state.display_name.as_deref());
+                let summary = state.display_name.as_deref();
                 ui::SessionRow {
                     id: state.session_id.clone().into(),
                     title: session_title(project.as_deref(), summary, &state.session_id).into(),
@@ -1181,7 +1088,6 @@ impl App {
         }
         // Cheap, and the only thing that notices explorer coming back.
         self.watch_the_taskbar();
-        let limits_arrived = self.collect_claude_limits();
         let sessions_arrived = self.poll_codex_sessions();
 
         let before = self.table.borrow().counts(now);
@@ -1190,7 +1096,7 @@ impl App {
 
         if self.current_is_stale() {
             self.dismiss();
-        } else if limits_arrived || sessions_arrived || before != after {
+        } else if sessions_arrived || before != after {
             self.refresh();
         }
 
@@ -1244,61 +1150,6 @@ impl App {
                 });
         for notice in notices {
             self.notifier.send(notice);
-        }
-    }
-
-    /// Claude network requests require its own activity. Codex account queries
-    /// are scheduled by the shared service, independently of task activity.
-    fn refresh_usage_after_activity(&self, source: HookSource, now: u64) {
-        if !self.display.borrow().visible(source) {
-            return;
-        }
-        match source {
-            HookSource::Codex => {}
-            HookSource::Claude => {
-                if self
-                    .usage
-                    .borrow()
-                    .claude
-                    .is_stale(now, agent_companion_core::usage::CLAUDE_USAGE_TTL_SECS)
-                {
-                    self.spawn_claude_fetch(agent_companion_core::usage::CLAUDE_USAGE_TTL_SECS);
-                }
-            }
-        }
-    }
-
-    /// Finish a fetch already requested by a hook; timers never start one.
-    fn collect_claude_limits(&self) -> bool {
-        let mut arrived = false;
-        while let Ok(limits) = self.limits_rx.try_recv() {
-            self.usage.borrow_mut().claude = limits;
-            self.fetching.set(false);
-            arrived = true;
-        }
-        arrived
-    }
-
-    /// Fetch Claude's limits on a worker, wanting a reading no older than
-    /// `min_age_secs`, unless a fetch is already in flight.
-    fn spawn_claude_fetch(&self, min_age_secs: u64) {
-        if self.fetching.get() {
-            return;
-        }
-        self.fetching.set(true);
-        let tx = self.limits_tx.clone();
-        // A detached worker: the result is wanted, but nothing waits for it,
-        // and a request that never returns costs one thread and no more.
-        let spawned = std::thread::Builder::new()
-            .name("agent-companion-usage".to_string())
-            .spawn(move || {
-                let _ = tx.send(crate::usage_cache::fetch_claude_limits(
-                    now_unix_secs(),
-                    min_age_secs,
-                ));
-            });
-        if spawned.is_err() {
-            self.fetching.set(false);
         }
     }
 
@@ -1456,10 +1307,7 @@ impl App {
         }
         // Everything between here and `show` has to be cheap: this is a click,
         // and the window has to be up before the user has finished releasing the
-        // mouse. So the panel is drawn from what is already in memory, and the
-        // one slow thing it wants — the session titles, which live at the end of
-        // a directory of transcripts — is fetched afterwards and filled in when
-        // it arrives.
+        // mouse. The panel is drawn from the current in-memory session snapshot.
         // Geometry first, then show. A window that is mapped before it knows
         // where it goes draws its first frame in the wrong place, and the eye
         // catches that as a flicker even when it lasts one frame.
@@ -1486,9 +1334,6 @@ impl App {
                     win::mouse_buttons_down(),
                 ));
                 self.log_jumpability();
-                if self.display.borrow().is_live() {
-                    self.start_title_scan();
-                }
             }
             Err(error) => {
                 crate::util::debug_log(&format!("flyout show failed: {error}"));
@@ -1732,7 +1577,7 @@ impl App {
             self.render_update();
         }
         let previous_count = self.flyout.get_sessions().row_count();
-        let mut rows = self.session_rows(usize::MAX, true);
+        let mut rows = self.session_rows(usize::MAX);
         self.append_secondary_rows(&mut rows);
         let quotas = self.instance_quotas();
         if self.flyout.get_instance_quotas().iter().collect::<Vec<_>>() != quotas {
@@ -1763,23 +1608,9 @@ impl App {
                 task_status::is_finished(row.phase.as_str()) == self.flyout.get_finished()
             });
         }
-        let visible = self.display.borrow().visible_agents();
-        let (good_at, warn_at) = self.config.borrow().taskbar.thresholds();
-        let usage = usage_sections(
-            &self.usage.borrow(),
-            &visible,
-            self.display.borrow().reading_time(now_unix_secs()),
-            win::local_offset_secs(),
-            good_at,
-            warn_at,
-        );
         let count = rows.len();
         if self.flyout.get_sessions().iter().collect::<Vec<_>>() != rows {
             self.flyout.set_sessions(ModelRc::new(VecModel::from(rows)));
-        }
-        if self.flyout.get_usage_rows().iter().collect::<Vec<_>>() != usage {
-            self.flyout
-                .set_usage_rows(ModelRc::new(VecModel::from(usage)));
         }
         if self.flyout_peek.get()
             && count != previous_count
@@ -1847,57 +1678,6 @@ impl App {
             .set_position(slint::PhysicalPosition::new(x, y));
     }
 
-    /// Read the session titles out of the transcripts, on a thread of its own.
-    ///
-    /// A transcript is a whole-file read of something an agent writes to all
-    /// day, and there can be forty of them. Doing that on the UI thread is what
-    /// made opening the panel feel like it had stuck: the click landed, and the
-    /// window appeared when the last file had been read. Now the panel opens
-    /// with the titles from last time and the new ones arrive through
-    /// [`Self::collect_titles`], which is a repaint rather than a wait.
-    ///
-    /// The scan itself only opens what has changed since the last one; see
-    /// [`transcript::scan_claude_cached`].
-    fn start_title_scan(self: &Rc<Self>) {
-        if self.scanning.get() {
-            return;
-        }
-        let Some(home) = crate::util::home_dir() else {
-            return;
-        };
-        self.scanning.set(true);
-
-        let tx = self.titles_tx.clone();
-        let cache = Arc::clone(&self.transcripts);
-        let spawned = std::thread::Builder::new()
-            .name("agent-companion-titles".to_string())
-            .spawn(move || {
-                let options = transcript::ScanOptions::new(home);
-                let found = {
-                    // Poisoned only if a previous scan panicked mid-read, in
-                    // which case the worst the cache holds is a stale entry.
-                    let mut cache = cache.lock().unwrap_or_else(|held| held.into_inner());
-                    transcript::scan_claude_cached(&options, &mut cache).unwrap_or_default()
-                };
-                // Stored raw: the cleaning belongs with the rendering, so that
-                // changing how a label is built does not mean rescanning every
-                // transcript.
-                let titles: HashMap<String, String> = found
-                    .into_iter()
-                    .filter_map(|summary| {
-                        let title = summary.title.filter(|title| !title.trim().is_empty())?;
-                        Some((summary.session_id, title))
-                    })
-                    .collect();
-                if tx.send(titles).is_ok() {
-                    let _ = slint::invoke_from_event_loop(pump);
-                }
-            });
-        if spawned.is_err() {
-            self.scanning.set(false);
-        }
-    }
-
     // ------------------------------------------------------------- settings
 
     fn open_settings(self: &Rc<Self>) {
@@ -1924,18 +1704,6 @@ impl App {
         window.set_window_title("Agent Companion · Settings".into());
         window.set_taskbar_enabled(self.bar.is_shown());
 
-        let app = Rc::downgrade(self);
-        window.on_install(move || {
-            if let Some(app) = app.upgrade() {
-                app.run_install(true);
-            }
-        });
-        let app = Rc::downgrade(self);
-        window.on_uninstall(move || {
-            if let Some(app) = app.upgrade() {
-                app.run_install(false);
-            }
-        });
         let app = Rc::downgrade(self);
         window.on_install_codex(move || {
             if let Some(app) = app.upgrade() {
@@ -2035,7 +1803,6 @@ impl App {
         window.set_usage_refresh_minutes(self.subscription.borrow().interval_minutes() as i32);
         {
             let config = self.config.borrow();
-            window.set_show_claude(config.taskbar.claude);
             window.set_show_codex(config.taskbar.codex);
             window.set_good_at(config.taskbar.good_at as i32);
             window.set_warn_at(config.taskbar.warn_at as i32);
@@ -2076,30 +1843,6 @@ impl App {
                 );
             }
         }
-
-        // A machine with only one of the agents is a perfectly normal machine;
-        // the window says which it found rather than offering an install that
-        // has nothing to install into.
-        let claude_present = agent_present(".claude");
-        window.set_claude_present(claude_present);
-        if !claude_present {
-            window.set_claude_installed(false);
-            window.set_claude_status("not found on this machine".into());
-            return;
-        }
-
-        match agent_companion_core::install::claude_settings_path()
-            .and_then(|path| settings::read_status(&path))
-        {
-            Ok(status) => {
-                window.set_claude_installed(status.is_installed());
-                window.set_claude_status(settings::describe(&status).into());
-            }
-            Err(error) => {
-                window.set_claude_installed(false);
-                window.set_claude_status(settings::describe_error(&error).into());
-            }
-        }
     }
 
     /// One agent's block in the readout, on or off — saved, and applied at once.
@@ -2107,7 +1850,6 @@ impl App {
         {
             let mut config = self.config.borrow_mut();
             match agent {
-                "claude" => config.taskbar.claude = shown,
                 "codex" => config.taskbar.codex = shown,
                 _ => return,
             }
@@ -2178,21 +1920,6 @@ impl App {
         }
     }
 
-    fn run_install(&self, install: bool) {
-        let outcome = agent_companion_core::install::claude_settings_path().and_then(|path| {
-            if install {
-                settings::install(&path)
-            } else {
-                settings::uninstall(&path)
-            }
-        });
-        match &outcome {
-            Ok(message) => self.note_settings(message),
-            Err(error) => self.note_settings(&format!("Failed: {error}")),
-        }
-        self.refresh_settings();
-    }
-
     fn run_codex_install(&self, install: bool) {
         let outcome = crate::tui_deployment::primary_home().and_then(|home| {
             if install {
@@ -2217,76 +1944,6 @@ impl App {
 enum Anchor {
     Taskbar,
     Readout,
-}
-
-/// Extra Claude usage below the tasks. Codex instances have quota cards above.
-fn usage_sections(
-    usage: &UsageSnapshot,
-    visible: &[HookSource],
-    now: u64,
-    offset_secs: i64,
-    good_at: i64,
-    warn_at: i64,
-) -> Vec<ui::UsageRow> {
-    let mut rows = Vec::new();
-    // Codex and Dodex already have instance quota cards above the task list.
-    // Keep these extra legacy rows only for Claude, which has no such card.
-    for agent in [HookSource::Claude] {
-        if !visible.contains(&agent) {
-            continue;
-        }
-        let windows = usage.windows(agent);
-
-        // The heading carries the number the panel was opened for: the window
-        // that will stop this agent first.
-        let tightest = usage.tightest_window(agent);
-        rows.push(ui::UsageRow {
-            heading: true,
-            agent: agent.as_str().into(),
-            label: agent.as_str().into(),
-            value: tightest
-                .as_ref()
-                .map(|window| format!("{}%", window.left))
-                .unwrap_or_default()
-                .into(),
-            tier: tightest
-                .as_ref()
-                .map(|window| crate::usage_cache::left_tier(window.left, good_at, warn_at))
-                .unwrap_or_default()
-                .into(),
-            fill: 0.0,
-            resets: Default::default(),
-        });
-
-        if windows.is_empty() {
-            rows.push(ui::UsageRow {
-                heading: false,
-                agent: Default::default(),
-                label: "no data".into(),
-                value: Default::default(),
-                tier: Default::default(),
-                fill: 0.0,
-                resets: Default::default(),
-            });
-            continue;
-        }
-
-        for window in windows {
-            rows.push(ui::UsageRow {
-                heading: false,
-                agent: Default::default(),
-                label: window.label.clone().into(),
-                value: format!("{}%", window.left).into(),
-                tier: crate::usage_cache::left_tier(window.left, good_at, warn_at).into(),
-                fill: window.left as f32 / 100.0,
-                resets: crate::usage_cache::reset_label(window.resets_at, now, offset_secs)
-                    .map(|when| format!("Resets {when}"))
-                    .unwrap_or_default()
-                    .into(),
-            });
-        }
-    }
-    rows
 }
 
 /// The longest a session's label may run before it is elided.
@@ -2382,14 +2039,6 @@ fn clamp_between(start: i32, length: i32, low: i32, high: i32) -> i32 {
     start.clamp(first, (high - length - FLYOUT_MARGIN).max(first))
 }
 
-/// Whether an agent's own directory exists under the home directory — the
-/// cheapest honest test for "is this agent on this machine at all".
-fn agent_present(dir: &str) -> bool {
-    crate::util::home_dir()
-        .map(|home| home.join(dir).exists())
-        .unwrap_or(false)
-}
-
 /// Where the hand-made Startup shortcut lived, while it existed.
 fn legacy_startup_shortcut() -> Option<PathBuf> {
     let appdata = std::env::var_os("APPDATA")?;
@@ -2413,113 +2062,6 @@ mod tests {
         right: 1920,
         bottom: 1040,
     };
-
-    const CODEX: HookSource = HookSource::Codex;
-
-    const NOW: u64 = 1_787_000_000;
-
-    fn limit(
-        label: &str,
-        percent: f64,
-        resets_at: Option<u64>,
-    ) -> agent_companion_core::usage::UsageLimit {
-        agent_companion_core::usage::UsageLimit {
-            kind: label.to_lowercase(),
-            label: label.to_string(),
-            percent,
-            resets_at,
-        }
-    }
-
-    /// Claude with three windows and Codex with two — an ordinary day for
-    /// someone running both.
-    fn both_agents() -> UsageSnapshot {
-        UsageSnapshot {
-            claude: agent_companion_core::usage::ClaudeLimits {
-                limits: vec![
-                    limit("Session", 8.0, Some(NOW + 7_200)),
-                    limit("Week", 31.0, Some(NOW + 5 * 86_400)),
-                    limit("Fable", 27.0, Some(NOW + 5 * 86_400)),
-                ],
-                fetched_at: Some(NOW),
-            },
-            codex: Some(agent_companion_core::usage::CodexUsage {
-                primary: Some(agent_companion_core::usage::WindowUsage {
-                    used_percent: 7.4,
-                    resets_at: None,
-                    window_minutes: Some(299),
-                }),
-                secondary: Some(agent_companion_core::usage::WindowUsage {
-                    used_percent: 85.0,
-                    resets_at: None,
-                    window_minutes: Some(10_080),
-                }),
-                plan_type: Some("prolite".into()),
-                source: None,
-            }),
-            ..UsageSnapshot::default()
-        }
-    }
-
-    #[test]
-    fn expired_usage_windows_drop_their_reset_labels() {
-        let rows = usage_sections(&both_agents(), &AGENTS, NOW, 0, 50, 20);
-        assert_eq!(rows.len(), 4);
-        assert_eq!(rows.iter().filter(|row| row.heading).count(), 1);
-        assert_eq!(rows.iter().filter(|row| !row.resets.is_empty()).count(), 3);
-        let expired = usage_sections(&both_agents(), &AGENTS, NOW + 6 * 86_400, 0, 50, 20);
-        assert!(expired.iter().all(|row| row.resets.is_empty()));
-    }
-
-    /// The heading carries the number the panel was opened for, and each row
-    /// carries a bar whose length is the number.
-    #[test]
-    fn every_section_leads_with_its_tightest_window() {
-        let rows = usage_sections(&both_agents(), &AGENTS, NOW, 0, 50, 20);
-
-        assert_eq!(rows[0].label, "claude");
-        assert_eq!(rows[0].value, "69%", "the week, not the session");
-        assert_eq!(rows[0].tier, "good");
-
-        assert_eq!(rows[1].label, "Session");
-        assert_eq!(rows[1].value, "92%");
-        assert!((rows[1].fill - 0.92).abs() < 0.001);
-        assert!(rows[1].resets.starts_with("Resets "));
-
-        assert_eq!(rows.len(), 4, "Codex must not appear below its quota card");
-        // And nothing says what plan anybody is on any more.
-        assert!(
-            !rows.iter().any(|row| row.label.contains("plan")),
-            "the plan line was noise in a panel about limits"
-        );
-    }
-
-    #[test]
-    fn a_section_appears_for_a_running_agent_with_nothing_to_report() {
-        let rows = usage_sections(
-            &UsageSnapshot::default(),
-            &[HookSource::Claude],
-            NOW,
-            0,
-            50,
-            20,
-        );
-        assert_eq!(rows.len(), 2);
-        assert!(rows[0].heading && rows[0].label == "claude");
-        assert_eq!(rows[0].value, "");
-        assert_eq!(rows[1].label, "no data");
-
-        // And an idle machine with no readings gets no sections at all; the
-        // panel says "No usage data yet" itself.
-        assert!(usage_sections(&UsageSnapshot::default(), &[], NOW, 0, 50, 20).is_empty());
-    }
-
-    #[test]
-    fn cached_limits_cannot_restore_a_hidden_agent_in_the_details() {
-        let rows = usage_sections(&both_agents(), &[CODEX], NOW, 0, 50, 20);
-        assert!(rows.is_empty(), "Codex quota cards replace legacy bars");
-        assert!(usage_sections(&both_agents(), &[], NOW, 0, 50, 20).is_empty());
-    }
 
     /// The label the panel shows for a session: the project it is in, then what
     /// the agent last said, with the Markdown taken out of it.

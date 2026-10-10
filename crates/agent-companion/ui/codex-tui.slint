@@ -34,12 +34,6 @@ export component CodexTuiWindow inherits Window {
     in property <bool> error;
     in property <string> config-path;
     in property <string> catalog-version;
-    in property <bool> claude-installed;
-    // Human-readable state of the hook wiring, e.g. "8 of 8 hooks installed".
-    in property <string> claude-status: "checking…";
-    // Whether Claude Code's own directory exists on this machine at all. A
-    // machine without it is a normal machine; the row says what it found.
-    in property <bool> claude-present: true;
     in property <bool> codex-installed;
     in property <bool> codex-present: true;
     in property <string> codex-status: "checking…";
@@ -63,8 +57,6 @@ export component CodexTuiWindow inherits Window {
     callback check-updates();
     callback view-release();
 
-    callback install();
-    callback uninstall();
 
     in property <bool> taskbar-enabled: true;
     // What the readout actually managed to do — embedded in the taskbar, or
@@ -81,9 +73,7 @@ export component CodexTuiWindow inherits Window {
     callback set-run-at-login(bool);
     callback open-login-item-settings();
 
-    in property <bool> show-claude: true;
     in property <bool> show-codex: true;
-    // "claude" | "codex", and whether it gets its block in the readout.
     callback set-agent-shown(string, bool);
 
     // Where the percentage-left colour turns; see `usage_cache::left_tier`.
@@ -267,9 +257,6 @@ export component CodexTuiWindow inherits Window {
                     integrations: root.settings-page == 2;
                     dirty: root.dirty;
                     review => { root.settings-page = 0; }
-                    claude-installed: root.claude-installed;
-                    claude-status: root.claude-status;
-                    claude-present: root.claude-present;
                     codex-installed: root.codex-installed;
                     codex-present: root.codex-present;
                     codex-status: root.codex-status;
@@ -278,12 +265,9 @@ export component CodexTuiWindow inherits Window {
                     taskbar-enabled: root.taskbar-enabled;
                     taskbar-status: root.taskbar-status;
                     run-at-login: root.run-at-login;
-                    show-claude: root.show-claude;
                     show-codex: root.show-codex;
                     good-at: root.good-at;
                     warn-at: root.warn-at;
-                    install() => { root.install(); }
-                    uninstall() => { root.uninstall(); }
                     install-codex() => { root.install-codex(); }
                     uninstall-codex() => { root.uninstall-codex(); }
                     set-completion-notifications(enabled) => { root.set-completion-notifications(enabled); }

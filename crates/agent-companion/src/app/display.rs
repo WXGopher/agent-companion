@@ -10,7 +10,6 @@ use agent_companion_core::state::{AgentTasks, STALE_AFTER_SECS};
 use serde::{Deserialize, Serialize};
 
 use super::{AGENTS, config, task_status, ui};
-use crate::usage_cache::UsageSnapshot;
 
 const SAVE_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -61,9 +60,7 @@ impl SavedSession {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 struct Snapshot {
-    claude: AgentState,
     codex: AgentState,
-    usage: UsageSnapshot,
     sessions: Vec<SavedSession>,
     updated_at: u64,
 }
@@ -85,29 +82,24 @@ impl DisplayState {
     }
 
     fn restore(mut snapshot: Snapshot) -> Self {
-        // Earlier versions persisted local Codex log readings. Account query
-        // results are memory-only, so neither restore nor save those readings.
-        let removed_codex = snapshot.usage.codex.take().is_some();
+        let previous_count = snapshot.sessions.len();
+        snapshot
+            .sessions
+            .retain(|session| HookSource::parse(&session.source).is_some());
+        let removed_sessions = previous_count != snapshot.sessions.len();
         Self {
             snapshot,
             live: false,
-            dirty: removed_codex,
+            dirty: removed_sessions,
             last_save: None,
         }
     }
 
-    fn agent(&self, source: HookSource) -> &AgentState {
-        match source {
-            HookSource::Claude => &self.snapshot.claude,
-            HookSource::Codex => &self.snapshot.codex,
-        }
+    fn agent(&self, _source: HookSource) -> &AgentState {
+        &self.snapshot.codex
     }
-
-    fn agent_mut(&mut self, source: HookSource) -> &mut AgentState {
-        match source {
-            HookSource::Claude => &mut self.snapshot.claude,
-            HookSource::Codex => &mut self.snapshot.codex,
-        }
+    fn agent_mut(&mut self, _source: HookSource) -> &mut AgentState {
+        &mut self.snapshot.codex
     }
 
     pub fn is_live(&self) -> bool {
@@ -116,25 +108,6 @@ impl DisplayState {
 
     pub fn visible(&self, source: HookSource) -> bool {
         self.agent(source).visible
-    }
-
-    pub fn visible_agents(&self) -> Vec<HookSource> {
-        AGENTS
-            .into_iter()
-            .filter(|agent| self.visible(*agent))
-            .collect()
-    }
-
-    pub fn usage(&self) -> UsageSnapshot {
-        self.snapshot.usage.clone()
-    }
-
-    pub fn reading_time(&self, now: u64) -> u64 {
-        if self.live {
-            now
-        } else {
-            self.snapshot.updated_at
-        }
     }
 
     pub fn saved_sessions(&self, limit: usize) -> Vec<ui::SessionRow> {
@@ -209,12 +182,10 @@ impl DisplayState {
         self.dirty = true;
     }
 
-    pub fn remember(&mut self, mut usage: UsageSnapshot, sessions: Vec<ui::SessionRow>, now: u64) {
+    pub fn remember(&mut self, sessions: Vec<ui::SessionRow>, now: u64) {
         if !self.live {
             return;
         }
-        usage.codex = None;
-        self.snapshot.usage = usage;
         self.snapshot.sessions = sessions.into_iter().map(SavedSession::from).collect();
         self.snapshot.updated_at = now;
         self.dirty = true;
@@ -260,29 +231,87 @@ fn write_snapshot(path: &Path, snapshot: &Snapshot) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_companion_core::usage::{ClaudeLimits, UsageLimit};
-
-    #[test]
-    fn old_codex_log_quota_is_not_restored_or_saved() {
-        let mut snapshot = previous_display();
-        snapshot.usage.codex = Some(agent_companion_core::usage::parse_codex_rate_limits(
-            &serde_json::json!({"primary": {"used_percent": 25, "window_minutes": 10080}}),
-        ));
-        let mut display = DisplayState::restore(snapshot.clone());
-        assert!(display.usage().codex.is_none());
-        assert_eq!(display.usage().claude, snapshot.usage.claude);
-        assert!(display.dirty);
-        assert!(!display.is_live());
-        assert_eq!(display.snapshot.sessions, snapshot.sessions);
-        display.activate(CODEX, THEN, THEN);
-        display.remember(snapshot.usage, vec![], THEN);
-        assert!(display.snapshot.usage.codex.is_none());
-    }
-
     const THEN: u64 = 1_787_000_000;
-    const CLAUDE: HookSource = HookSource::Claude;
     const CODEX: HookSource = HookSource::Codex;
-
+    fn previous_display() -> Snapshot {
+        Snapshot {
+            codex: AgentState {
+                visible: true,
+                last_seen: Some(THEN),
+                ..Default::default()
+            },
+            sessions: vec![SavedSession {
+                id: "saved".into(),
+                title: "project".into(),
+                detail: "Working".into(),
+                phase: "running".into(),
+                source: "codex".into(),
+            }],
+            updated_at: THEN,
+        }
+    }
+    #[test]
+    fn startup_keeps_saved_tasks_until_new_activity() {
+        let snapshot = previous_display();
+        let mut display = DisplayState::restore(snapshot.clone());
+        display.observe(CODEX, THEN + 10);
+        display.remember(vec![], THEN + 20);
+        assert!(!display.is_live());
+        assert!(display.visible(CODEX));
+        assert_eq!(display.snapshot.sessions, snapshot.sessions);
+        assert_eq!(display.saved_tasks(CODEX).running, 1);
+        assert!(!display.saved_sessions(1)[0].jumpable);
+        display.activate(CODEX, THEN + 30, THEN + 30);
+        display.remember(vec![], THEN + 30);
+        assert!(display.is_live());
+        assert!(display.saved_sessions(1).is_empty());
+    }
+    #[test]
+    fn obsolete_saved_sources_are_removed_without_restoring_quota() {
+        let mut value = serde_json::to_value(previous_display()).unwrap();
+        value["sessions"][0]["source"] = serde_json::json!("unsupported");
+        value["usage"] = serde_json::json!({"codex":{"primary":{"used_percent":25}}});
+        let snapshot: Snapshot = serde_json::from_value(value).unwrap();
+        let display = DisplayState::restore(snapshot);
+        assert!(display.saved_sessions(1).is_empty());
+        assert!(display.dirty);
+        assert!(
+            serde_json::to_value(&display.snapshot)
+                .unwrap()
+                .get("usage")
+                .is_none()
+        );
+    }
+    #[test]
+    fn old_observations_do_not_extend_liveness_or_reactivate_an_ended_session() {
+        let mut display = DisplayState::restore(previous_display());
+        display.observe(CODEX, THEN - 1);
+        assert_eq!(display.agent(CODEX).last_seen, Some(THEN));
+        display.activate(CODEX, THEN, THEN + STALE_AFTER_SECS);
+        assert!(!display.visible(CODEX));
+        display.activate(CODEX, THEN + 1, THEN + 1);
+        assert!(display.visible(CODEX));
+        display.end_agent(CODEX);
+        display.observe(CODEX, THEN + 1);
+        assert!(!display.visible(CODEX));
+        display.activate(CODEX, THEN + 2, THEN + 2);
+        assert!(display.visible(CODEX));
+    }
+    #[test]
+    fn snapshots_replace_atomically_and_invalid_json_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested/display.json");
+        assert!(read_snapshot(&path).is_none());
+        let mut snapshot = previous_display();
+        write_snapshot(&path, &snapshot).unwrap();
+        assert_eq!(read_snapshot(&path), Some(snapshot.clone()));
+        snapshot.sessions.clear();
+        write_snapshot(&path, &snapshot).unwrap();
+        assert_eq!(read_snapshot(&path), Some(snapshot));
+        assert!(!path.with_extension("json.tmp").exists());
+        std::fs::write(&path, b"{broken").unwrap();
+        assert!(read_snapshot(&path).is_none());
+    }
     #[test]
     fn saved_task_status_migrates_failures_and_stops_without_changing_finished_counts() {
         let mut snapshot = previous_display();
@@ -323,135 +352,5 @@ mod tests {
             rows.iter()
                 .all(|row| task_status::is_finished(row.phase.as_str()))
         );
-    }
-
-    fn previous_display() -> Snapshot {
-        Snapshot {
-            claude: AgentState {
-                visible: true,
-                last_seen: Some(THEN),
-                ..Default::default()
-            },
-            usage: UsageSnapshot {
-                claude: ClaudeLimits {
-                    limits: vec![UsageLimit {
-                        kind: "weekly_all".into(),
-                        label: "Week".into(),
-                        percent: 77.0,
-                        resets_at: Some(THEN + 2 * 86_400),
-                    }],
-                    fetched_at: Some(THEN),
-                },
-                ..Default::default()
-            },
-            sessions: vec![SavedSession {
-                id: "previous-session".into(),
-                title: "project".into(),
-                detail: "Working".into(),
-                phase: "running".into(),
-                source: "claude".into(),
-            }],
-            updated_at: THEN,
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn startup_preserves_the_last_display_until_new_activity() {
-        let snapshot = previous_display();
-        let mut display = DisplayState::restore(snapshot.clone());
-        let now = THEN + 7 * 86_400;
-        // Even a routine repaint or a baseline scan cannot replace the saved
-        // reading, expire its reset label, or age its task counts on startup.
-        display.remember(UsageSnapshot::default(), vec![], now);
-        display.observe(CODEX, now - 10);
-        assert!(!display.is_live());
-        assert_eq!(display.visible_agents(), vec![CLAUDE]);
-        assert_eq!(display.usage(), snapshot.usage);
-        assert_eq!(display.reading_time(now), THEN);
-        assert_eq!(display.saved_tasks(CLAUDE).running, 1);
-        let row = &display.saved_sessions(1)[0];
-        assert_eq!(
-            (row.title.as_str(), row.detail.as_str()),
-            ("project", "Working")
-        );
-        assert!(!row.jumpable, "old terminal targets are not restored");
-    }
-
-    #[test]
-    fn activity_expires_other_agents_at_the_boundary_and_can_restore_them() {
-        let mut display = DisplayState::restore(previous_display());
-        let before_expiry = THEN + STALE_AFTER_SECS - 1;
-        display.activate(CODEX, before_expiry, before_expiry);
-        assert_eq!(display.visible_agents(), vec![CLAUDE, CODEX]);
-        // Advancing the clock or reading the display does not hide anything.
-        let expiry = THEN + STALE_AFTER_SECS;
-        assert_eq!(display.reading_time(expiry), expiry);
-        assert!(display.visible(CLAUDE));
-        display.activate(CODEX, expiry, expiry);
-        assert_eq!(display.visible_agents(), vec![CODEX]);
-        // The old quota is kept for later reuse, but does not make Claude live.
-        assert!(!display.usage().claude.is_empty());
-        display.remember(previous_display().usage, vec![], expiry + 1);
-        assert!(!display.visible(CLAUDE));
-        display.activate(CLAUDE, expiry + 2, expiry + 2);
-        assert_eq!(display.visible_agents(), vec![CLAUDE, CODEX]);
-        display.end_agent(CLAUDE);
-        assert_eq!(display.visible_agents(), vec![CODEX]);
-    }
-
-    #[test]
-    fn rescanning_an_old_event_does_not_extend_its_lifetime() {
-        let mut display = DisplayState::restore(previous_display());
-        display.observe(CLAUDE, THEN - 1);
-        display.observe(CLAUDE, THEN);
-        let now = THEN + STALE_AFTER_SECS;
-        display.activate(CODEX, now, now);
-        assert!(!display.visible(CLAUDE));
-        assert_eq!(display.agent(CLAUDE).last_seen, Some(THEN));
-    }
-
-    #[test]
-    fn a_new_hook_keeps_another_recent_agent_visible_after_restart() {
-        let mut display = DisplayState::restore(previous_display());
-        display.activate(CODEX, THEN + 10, THEN + 10);
-        assert!(display.is_live());
-        assert_eq!(display.visible_agents(), vec![CLAUDE, CODEX]);
-    }
-
-    #[test]
-    fn an_ended_agent_stays_hidden_when_old_logs_are_read_again() {
-        let mut display = DisplayState::restore(previous_display());
-        display.activate(CODEX, THEN, THEN);
-        display.end_agent(CODEX);
-        display.observe(CODEX, THEN);
-        display.activate(CLAUDE, THEN + 1, THEN + 1);
-        assert!(!display.visible(CODEX));
-        display.activate(CODEX, THEN + 2, THEN + 2);
-        assert!(display.visible(CODEX));
-    }
-
-    #[test]
-    fn persistence_restores_hidden_agents_readings_and_session_text() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("nested/display.json");
-        assert!(read_snapshot(&path).is_none());
-        let mut snapshot = previous_display();
-        write_snapshot(&path, &snapshot).unwrap();
-        assert_eq!(read_snapshot(&path), Some(snapshot.clone()));
-        // Exercise replacement too: the previous complete snapshot must survive
-        // until the new file is ready.
-        snapshot.claude.visible = false;
-        snapshot.sessions.clear();
-        write_snapshot(&path, &snapshot).unwrap();
-        let restored = DisplayState::restore(read_snapshot(&path).unwrap());
-        assert!(!restored.is_live());
-        assert!(!restored.visible(CLAUDE));
-        assert_eq!(restored.usage(), snapshot.usage);
-        assert!(!path.with_extension("json.tmp").exists());
-        std::fs::write(&path, b"{broken").unwrap();
-        assert!(read_snapshot(&path).is_none());
-        let empty = DisplayState::restore(Snapshot::default());
-        assert!(empty.visible_agents().is_empty());
     }
 }

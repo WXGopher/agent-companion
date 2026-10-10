@@ -13,10 +13,9 @@
 //!
 //! ```text
 //! UserPromptSubmit / SessionStart ──────────────► Running
-//! PreToolUse (tool_name == AskUserQuestion) ────► WaitingForAnswer
-//! PreToolUse (anything else) ───────────────────► Running (activity only)
-//! PermissionRequest (tool_name == AskUserQuestion) ► WaitingForAnswer
-//! PermissionRequest (anything else) ────────────► WaitingForApproval
+//! PreToolUse ──────────────────────────────────► Running (activity only)
+//! PermissionRequest ───────────────────────────► WaitingForApproval
+//! AtollCodexUserInput ──────────────────────────► WaitingForAnswer
 //! PostToolUse (clears the matching pending) ────► Running (once none are left)
 //! a decision Agent Companion sent back ───────────────────► Running
 //! Stop ─────────────────────────────────────────► Completed
@@ -25,14 +24,14 @@
 //! # Why `PreToolUse` is not a request
 //!
 //! `PreToolUse` fires before **every** tool call, including the ones the user's
-//! own permission settings already allow, and it fires before Claude Code has
+//! own permission settings already allow, and it fires before Codex has
 //! decided whether a human needs to be asked at all. A session that treated it
 //! as an approval request would raise a card for every `Read` and hold the
 //! agent for the hook's whole 45-second budget waiting for someone to press a
 //! button nobody knew was there.
 //!
 //! `PermissionRequest` is the event that means "a human is about to be asked".
-//! Its hook budget is a day rather than 45 seconds, which is the protocol saying
+//! Its hook budget is an hour rather than 45 seconds, which is the protocol saying
 //! the same thing.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -58,8 +57,7 @@ pub enum Phase {
     Running,
     /// The agent is blocked on a tool approval Agent Companion can answer.
     WaitingForApproval,
-    /// The agent asked the user a question (`AskUserQuestion`) whose options
-    /// Agent Companion can render directly.
+    /// Codex requested user input through its native app-server protocol.
     WaitingForAnswer,
     /// The turn finished.
     Completed,
@@ -81,7 +79,7 @@ impl Phase {
     }
 }
 
-/// The tool name Claude Code uses when it wants the user to pick an answer.
+/// Label for native Codex question payloads, also understood by older Companion versions.
 pub const ASK_USER_QUESTION: &str = "AskUserQuestion";
 
 /// An approval Agent Companion has seen and not yet resolved.
@@ -90,28 +88,17 @@ pub struct PendingApproval {
     /// How this approval is matched to its `PostToolUse` or its decision. See
     /// [`correlation_key`].
     pub key: String,
-    /// `PreToolUse` or `PermissionRequest`.
+    /// `PermissionRequest` or the native Codex user-input event.
     pub event: String,
     pub tool_name: Option<String>,
     /// The agent's `tool_input`, kept whole so the UI can render whatever the
-    /// tool happens to carry — including `AskUserQuestion`'s options.
+    /// tool happens to carry, including a native Codex input request.
     pub tool_input: Option<Value>,
     /// When the request arrived, in Unix seconds.
     pub requested_at: u64,
 }
 
 impl PendingApproval {
-    /// `tool_input.questions` for an `AskUserQuestion`, so the card can render
-    /// the options without reparsing the payload.
-    pub fn questions(&self) -> Option<&Value> {
-        self.tool_input.as_ref()?.get("questions")
-    }
-
-    /// Whether this approval is a question rather than a tool approval.
-    pub fn is_question(&self) -> bool {
-        self.tool_name.as_deref() == Some(ASK_USER_QUESTION)
-    }
-
     pub fn is_expired(&self, now: u64, ttl_secs: u64) -> bool {
         now.saturating_sub(self.requested_at) >= ttl_secs
     }
@@ -158,7 +145,7 @@ pub struct SessionState {
     pub phase: Phase,
     /// The session's working directory, from whichever payload last carried one.
     pub cwd: Option<String>,
-    /// Path to the session's `.jsonl` transcript, for [`crate::transcript`].
+    /// Path to the session's `.jsonl` transcript, for local session history.
     pub transcript_path: Option<String>,
     /// The name of the most recent event.
     pub last_event: String,
@@ -233,28 +220,20 @@ impl SessionState {
             }
             // `PreToolUse` fires on *every* tool call — including the ones the
             // user's own allow-list already waved through — and it fires before
-            // Claude Code has decided whether to ask anybody anything. It is an
+            // Codex has decided whether to ask anybody anything. It is an
             // activity signal, not a request, and treating it as one is how you
             // end up prompting for every `Read`.
-            //
-            // The one exception is `AskUserQuestion`, whose name alone says the
-            // turn is about to stop for a human.
             events::PRE_TOOL_USE => {
-                if payload.tool_name.as_deref() == Some(ASK_USER_QUESTION) {
-                    self.push_pending(payload, now);
-                    self.phase = Phase::WaitingForAnswer;
-                } else if !self.phase.is_waiting() {
+                if !self.phase.is_waiting() {
                     // A concurrent tool call must not clear a wait the user is
                     // still looking at.
                     self.phase = Phase::Running;
                 }
             }
-            // `PermissionRequest` is the event that means "Claude Code is about
-            // to prompt a human". Its hook budget is a day, because that is how
-            // long a human might take.
+            // Permission prompts and native questions wait for a human response.
             events::PERMISSION_REQUEST | events::CODEX_USER_INPUT => {
                 self.push_pending(payload, now);
-                self.phase = if payload.tool_name.as_deref() == Some(ASK_USER_QUESTION) {
+                self.phase = if event == events::CODEX_USER_INPUT {
                     Phase::WaitingForAnswer
                 } else {
                     Phase::WaitingForApproval
@@ -352,7 +331,7 @@ impl SessionState {
 
 /// How a `PreToolUse` is matched to the `PostToolUse` that settles it.
 ///
-/// Claude Code sends a `tool_use_id` on recent builds; older ones do not. The
+/// Codex sends a `tool_use_id` on recent builds; older ones do not. The
 /// fallback is the tool name, which is right whenever a session does not have
 /// two approvals outstanding for the same tool at once — and when it is wrong,
 /// the cost is one card clearing early, not a stuck session.
@@ -659,45 +638,38 @@ mod tests {
     const T0: u64 = 1_787_000_000;
 
     /// The readout's per-agent task line: pending, running, and done sessions
-    /// are each counted by state, silence past the stale window stops a session
-    /// counting at all, and each agent counts only its own.
+    /// are each counted by state; silence past the stale window stops a session
+    /// counting at all.
     #[test]
     fn tasks_split_one_agents_live_sessions_by_state() {
         let mut table = SessionTable::new();
         table.apply(
             &table_payload("c-run", events::USER_PROMPT_SUBMIT),
-            HookSource::Claude,
+            HookSource::Codex,
             T0,
         );
         table.apply(
             &table_payload("c-done", events::STOP),
-            HookSource::Claude,
+            HookSource::Codex,
             T0,
         );
         let mut waiting = permission_request("Bash", Some("tu-1"));
         waiting.session_id = Some("c-wait".into());
-        table.apply(&waiting, HookSource::Claude, T0);
-        table.apply(
-            &table_payload("x-run", events::USER_PROMPT_SUBMIT),
-            HookSource::Codex,
-            T0,
-        );
-
-        let claude = table.tasks(HookSource::Claude, T0);
+        table.apply(&waiting, HookSource::Codex, T0);
+        let tasks = table.tasks(HookSource::Codex, T0);
         assert_eq!(
-            (claude.pending, claude.running, claude.done),
+            (tasks.pending, tasks.running, tasks.done),
             (1, 1, 1),
             "one of each"
         );
-        assert_eq!(claude.active(), 2);
-        assert_eq!(claude.total(), 3);
+        assert_eq!(tasks.active(), 2);
+        assert_eq!(tasks.total(), 3);
         assert_eq!(table.tasks(HookSource::Codex, T0).running, 1);
         assert_eq!(
-            table.tasks(HookSource::Claude, T0 + 15 * 60).total(),
+            table.tasks(HookSource::Codex, T0 + 15 * 60).total(),
             0,
             "stale"
         );
-        assert_eq!(table.tasks(HookSource::Codex, T0 + 15 * 60).total(), 0);
     }
 
     fn payload(raw: Value) -> HookPayload {
@@ -749,7 +721,7 @@ mod tests {
 
     /// Fold a whole sequence into one session and hand back the result.
     fn run(events: &[(HookPayload, u64)]) -> SessionState {
-        let mut state = SessionState::new("s-1", HookSource::Claude, T0);
+        let mut state = SessionState::new("s-1", HookSource::Codex, T0);
         for (payload, now) in events {
             state.apply(payload, *now);
         }
@@ -843,14 +815,14 @@ mod tests {
     }
 
     #[test]
-    fn ask_user_question_waits_for_an_answer_and_keeps_its_options() {
+    fn native_user_input_waits_for_an_answer_and_keeps_its_options() {
         let questions = json!([{
             "question": "Which database?",
             "options": [{"label": "Postgres"}, {"label": "SQLite"}],
         }]);
         let state = run(&[(
             payload(json!({
-                "hook_event_name": events::PRE_TOOL_USE,
+                "hook_event_name": events::CODEX_USER_INPUT,
                 "session_id": "s-1",
                 "tool_name": ASK_USER_QUESTION,
                 "tool_input": {"questions": questions},
@@ -860,14 +832,15 @@ mod tests {
 
         assert_eq!(state.phase, Phase::WaitingForAnswer);
         let approval = state.current_pending().unwrap();
-        assert!(approval.is_question());
-        assert_eq!(approval.questions().unwrap(), &questions);
+        assert_eq!(approval.event, events::CODEX_USER_INPUT);
+        assert_eq!(
+            approval.tool_input.as_ref().unwrap()["questions"],
+            questions
+        );
     }
 
-    /// The card itself is raised by the `PermissionRequest` that follows, which
-    /// is the one Agent Companion can hold open for as long as the user needs.
     #[test]
-    fn a_question_reaching_us_twice_settles_as_one_pending() {
+    fn repeated_native_questions_settle_as_one_pending() {
         let tool_input = json!({
             "questions": [{"question": "Which database?", "options": [{"label": "Postgres"}]}],
         });
@@ -881,15 +854,28 @@ mod tests {
             }))
         };
         let state = run(&[
-            (raw(events::PRE_TOOL_USE), T0),
-            (raw(events::PERMISSION_REQUEST), T0 + 1),
+            (raw(events::CODEX_USER_INPUT), T0),
+            (raw(events::CODEX_USER_INPUT), T0 + 1),
         ]);
 
         assert_eq!(state.phase, Phase::WaitingForAnswer);
         assert_eq!(state.pending.len(), 1, "the same request, not two");
         let approval = state.current_pending().unwrap();
-        assert_eq!(approval.event, events::PERMISSION_REQUEST);
-        assert!(approval.is_question());
+        assert_eq!(approval.event, events::CODEX_USER_INPUT);
+    }
+
+    #[test]
+    fn tool_names_do_not_turn_hooks_into_native_questions() {
+        let activity = pre_tool_use(ASK_USER_QUESTION, Some("question-tool"));
+        let mut state = run(&[(activity, T0)]);
+        assert_eq!(state.phase, Phase::Running);
+        assert!(state.pending.is_empty());
+        state.apply(
+            &permission_request(ASK_USER_QUESTION, Some("question-tool")),
+            T0 + 1,
+        );
+        assert_eq!(state.phase, Phase::WaitingForApproval);
+        assert_eq!(state.pending.len(), 1);
     }
 
     #[test]
@@ -1076,21 +1062,21 @@ mod tests {
         let id = table
             .apply(
                 &table_payload("s-a", events::SESSION_START),
-                HookSource::Claude,
+                HookSource::Codex,
                 T0,
             )
             .unwrap();
 
         assert_eq!(id, "s-a");
         assert_eq!(table.len(), 1);
-        assert_eq!(table.get("s-a").unwrap().source, HookSource::Claude);
+        assert_eq!(table.get("s-a").unwrap().source, HookSource::Codex);
     }
 
     #[test]
     fn the_table_ignores_a_payload_with_no_session_id() {
         let mut table = SessionTable::new();
         let orphan = payload(json!({"hook_event_name": "Stop"}));
-        assert!(table.apply(&orphan, HookSource::Claude, T0).is_none());
+        assert!(table.apply(&orphan, HookSource::Codex, T0).is_none());
         assert!(table.is_empty());
     }
 
@@ -1099,7 +1085,7 @@ mod tests {
         let mut table = SessionTable::new();
         table.apply(
             &table_payload("s-a", events::SESSION_START),
-            HookSource::Claude,
+            HookSource::Codex,
             T0,
         );
         assert_eq!(table.len(), 1);
@@ -1108,7 +1094,7 @@ mod tests {
             table
                 .apply(
                     &table_payload("s-a", events::SESSION_END),
-                    HookSource::Claude,
+                    HookSource::Codex,
                     T0 + 1
                 )
                 .is_none()
@@ -1121,12 +1107,12 @@ mod tests {
         let mut table = SessionTable::new().with_stale_after(60);
         table.apply(
             &table_payload("s-a", events::SESSION_START),
-            HookSource::Claude,
+            HookSource::Codex,
             T0,
         );
         table.apply(
             &table_payload("s-b", events::SESSION_START),
-            HookSource::Claude,
+            HookSource::Codex,
             T0 + 50,
         );
 
@@ -1141,10 +1127,10 @@ mod tests {
         let mut table = SessionTable::new();
         table.apply(
             &table_payload("s-a", events::USER_PROMPT_SUBMIT),
-            HookSource::Claude,
+            HookSource::Codex,
             T0,
         );
-        table.apply(&table_payload("s-b", events::STOP), HookSource::Claude, T0);
+        table.apply(&table_payload("s-b", events::STOP), HookSource::Codex, T0);
 
         let mut waiting = permission_request("Bash", Some("tu-1"));
         waiting.session_id = Some("s-c".into());
@@ -1164,11 +1150,11 @@ mod tests {
 
         let mut first = permission_request("Bash", Some("tu-1"));
         first.session_id = Some("s-z".into());
-        table.apply(&first, HookSource::Claude, T0);
+        table.apply(&first, HookSource::Codex, T0);
 
         let mut second = permission_request("Read", Some("tu-2"));
         second.session_id = Some("s-a".into());
-        table.apply(&second, HookSource::Claude, T0 + 5);
+        table.apply(&second, HookSource::Codex, T0 + 5);
 
         let waiting = table.waiting();
         assert_eq!(waiting.len(), 2);
@@ -1183,11 +1169,11 @@ mod tests {
 
         let mut a = permission_request("Bash", Some("tu-1"));
         a.session_id = Some("s-a".into());
-        table.apply(&a, HookSource::Claude, T0);
+        table.apply(&a, HookSource::Codex, T0);
 
         let mut b = post_tool_use("Bash", Some("tu-1"));
         b.session_id = Some("s-b".into());
-        table.apply(&b, HookSource::Claude, T0 + 1);
+        table.apply(&b, HookSource::Codex, T0 + 1);
 
         assert_eq!(table.get("s-a").unwrap().phase, Phase::WaitingForApproval);
         assert_eq!(table.get("s-b").unwrap().phase, Phase::Running);
