@@ -260,7 +260,7 @@ fn verify_requirements(path: &Path) -> Result<(), String> {
         return Ok(());
     };
     // Requirements constrain native behavior; they are not a config.toml
-    // override layer. Leave these policies in place for --strict-config to
+    // override layer. Leave these policies in place for the native server to
     // enforce, and still compare the native effective authentication config
     // before sending a usage request. Unknown keys and authentication policy
     // (including allowed_login_methods / allowed_chatgpt_workspaces) fail closed.

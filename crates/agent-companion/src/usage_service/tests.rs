@@ -388,7 +388,54 @@ fn write_identity(home: &Path, second: bool) {
 }
 
 #[test]
-fn strict_worker_supports_the_legacy_native_feature_set() {
+fn usage_reads_tolerate_unknown_user_settings_without_rewriting_configuration() {
+    let directory = tempfile::tempdir().unwrap();
+    let sources = ["codex", "dodex"].map(|id| source(directory.path(), id));
+    let configuration = "windows_wsl_setup_acknowledged = true\nauto_apply_patches = true\nfuture_tui_setting = \"ignored by this native version\"\ncli_auth_credentials_store = \"file\"\n";
+    for source in &sources {
+        fs::write(source.codex_home.join("config.toml"), configuration).unwrap();
+    }
+    let mut service = UsageService::with_settings_path(directory.path().join("usage.json"));
+    let now = agent_companion_core::now_unix_secs();
+    service.sync_sources(sources.to_vec(), now);
+    for source in &sources {
+        service.load_history(&source.instance_id, now);
+    }
+    wait_for(&mut service, |service| {
+        service
+            .snapshots()
+            .iter()
+            .all(|snapshot| !snapshot.limits.loading && !snapshot.history.loading)
+    });
+    for source in sources {
+        let snapshot = service.snapshot(&source.instance_id).unwrap();
+        assert!(
+            snapshot.limits.value.is_some(),
+            "{:?}",
+            snapshot.limits.error
+        );
+        assert!(
+            snapshot.history.value.is_some(),
+            "{:?}",
+            snapshot.history.error
+        );
+        assert_eq!(
+            fs::read_to_string(source.codex_home.join("config.toml")).unwrap(),
+            configuration,
+            "usage queries must preserve the user's configuration"
+        );
+        let requests = fs::read_to_string(source.codex_home.join("requests.log")).unwrap();
+        assert_eq!(requests.matches("account/rateLimits/read").count(), 1);
+        assert_eq!(requests.matches("account/usage/read").count(), 1);
+        assert!(requests.contains("config/read"));
+        assert!(!requests.contains("account/read"));
+        assert!(!requests.contains("thread/"));
+        assert!(!requests.contains("turn/"));
+    }
+}
+
+#[test]
+fn worker_supports_the_legacy_native_feature_set() {
     let directory = tempfile::tempdir().unwrap();
     let source = source(directory.path(), "dodex");
     fs::write(source.codex_home.join("mode"), "legacy-strict").unwrap();

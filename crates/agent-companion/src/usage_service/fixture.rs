@@ -8,6 +8,20 @@ use std::{
 fn main() {
     let home = PathBuf::from(env::var_os("CODEX_HOME").unwrap());
     let arguments: Vec<_> = env::args().collect();
+    // Native Codex accepts these unknown user settings by default, but exits
+    // before initialize when a caller opts into strict configuration loading.
+    let unknown_user_settings = fs::read_to_string(home.join("config.toml"))
+        .unwrap_or_default()
+        .lines()
+        .any(|line| {
+            matches!(
+                line.split('=').next().unwrap_or_default().trim(),
+                "windows_wsl_setup_acknowledged" | "auto_apply_patches" | "future_tui_setting"
+            )
+        });
+    if unknown_user_settings && arguments.iter().any(|arg| arg == "--strict-config") {
+        std::process::exit(2);
+    }
     // Observed on the bundled 0.155 runtime: strict config rejects newer
     // feature keys before the JSON-RPC handshake.
     if fs::read_to_string(home.join("mode")).is_ok_and(|mode| mode == "legacy-strict")

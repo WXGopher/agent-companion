@@ -531,13 +531,13 @@ fn command(source: &Source, executable: &Path) -> io::Result<Command> {
         // control for this owned process without changing persisted settings.
         .env("CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED", "1");
     command.args([
-        // This directly starts our stdio server; it never takes the separate
-        // daemon/proxy subcommand path. Do not inject daemon_auto_start: older
-        // bundled runtimes reject that newer feature under strict config.
+        // Match normal Codex configuration loading so ignored legacy or newer
+        // user settings cannot prevent usage reads. The effective account and
+        // storage configuration is still verified before any account RPC.
+        // This stdio server never takes the daemon/proxy subcommand path.
         "app-server",
         "--listen",
         "stdio://",
-        "--strict-config",
         "-c",
         "analytics.enabled=false",
         "-c",

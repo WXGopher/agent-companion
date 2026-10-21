@@ -1,5 +1,26 @@
 # Windows validation
 
+## v0.3.34 usage configuration compatibility (2026-10-21)
+
+The usage worker forced `--strict-config`, causing native startup to fail on
+unknown user settings that ordinary Codex ignores. The regression reproduces
+the failure with `windows_wsl_setup_acknowledged`, `auto_apply_patches` and a
+synthetic newer setting. It failed against the original worker with the same
+generic unavailable message, then passed with normal native configuration
+loading. Both Codex and Dodex publish quota and history, preserve the original
+configuration, verify effective authentication/storage and issue only the
+expected read-only account calls. All 27 Windows usage-service and identity
+tests pass, including account changes, logout, configuration mismatch and
+managed-requirement rejection.
+
+Separate probes against native Windows Codex 0.162.0 and 0.163.0 used disposable
+homes containing the two obsolete fields. Strict loading rejected startup;
+normal loading completed `initialize` and `config/read`, with unchanged config
+files. These probes used no real account files or model tasks.
+
+Full workspace checks, platform CI and release-archive verification are recorded
+with the release. A new manual macOS desktop check has not been performed.
+
 ## v0.3.33 publication of running command entries (2026-10-09)
 
 This release carries the full independent-TUI migration from public v0.3.30,
