@@ -27,7 +27,7 @@ Windows 只保留任务栏 C / D 读数入口；点击打开面板，右键可�
 
 界面保留同一账号最后成功的额度读数，查询失败后以 `*` 标注；尚无读数时显示 `—`。换号或登出会清除旧读数，额度重置时间到达后等待下次查询，不推算剩余额度。Usage 显示最后成功时间、失败原因和历史 Token 统计。详见[用量查询行为](docs/USAGE_QUERIES.md)。
 
-**v0.3.30 Windows 修复**：任务栏额度悬浮提示使用独立窗口，避免被小尺寸任务栏入口裁切；点击打开面板后立即隐藏，鼠标离开入口前不会再次弹出。提示按显示缩放调整，并保持在屏幕工作区内。详见[版本说明](docs/releases/v0.3.30.md)及 [Windows 验证记录](docs/WINDOWS_VALIDATION.md)。
+**v0.3.34 用量兼容修复**：用量查询沿用 Codex 默认的配置加载方式，旧版遗留或其他版本新增的未知字段不再阻止额度与 Token 历史查询。个人配置保持原样，账号与有效配置仍须通过校验。本版同时包含主分支已合入的 Claude Code 支持移除。详见[版本说明](docs/releases/v0.3.34.md)及 [Windows 验证记录](docs/WINDOWS_VALIDATION.md)。
 
 ### 安装
 
@@ -101,7 +101,7 @@ Subscription usage reuses the existing ChatGPT login from your local Codex TUI, 
 
 The interface retains the last successful quota reading for the same account, marking it with `*` after a failed query and showing `—` before a reading is available. Switching accounts or signing out clears old readings. After a quota reset time, the app waits for the next query instead of estimating the remaining allowance. Usage shows the last success time, failure reason and historical token totals. See [usage query behavior](docs/USAGE_QUERIES.md).
 
-**v0.3.30 Windows fix:** taskbar quota tooltips use a separate window so the small taskbar entry cannot clip them. Opening the panel immediately dismisses the tooltip and prevents it from reappearing until the pointer leaves the entry. Tooltips follow display scaling and stay inside the screen's work area. See the [release notes](docs/releases/v0.3.30.md) and [Windows validation record](docs/WINDOWS_VALIDATION.md).
+**v0.3.34 usage compatibility fix:** usage queries use Codex's normal configuration loading, so ignored legacy or newer unknown settings no longer prevent quota and token-history reads. Personal configuration stays intact, and account ownership and effective configuration are still verified. This release also includes the removal of Claude Code support already merged into the main branch. See the [release notes](docs/releases/v0.3.34.md) and [Windows validation record](docs/WINDOWS_VALIDATION.md).
 
 ### Install
 
