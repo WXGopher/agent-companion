@@ -43,9 +43,13 @@ export component CodexTuiWindow inherits Window {
     in property <int> usage-refresh-minutes: 5;
     in property <string> usage-settings-message;
     callback set-usage-refresh-minutes(string);
+    in property <int> session-retention-hours: 5;
+    callback set-session-retention-hours(int);
 
     in property <bool> completion-notifications: true;
     callback set-completion-notifications(bool);
+    in property <bool> question-notifications: true;
+    callback set-question-notifications(bool);
 
     // The outcome of the last button press, shown along the bottom.
     in property <string> app-message;
@@ -258,6 +262,8 @@ export component CodexTuiWindow inherits Window {
                 AppSettings {
                     usage-refresh-minutes: root.usage-refresh-minutes;
                     set-usage-refresh-minutes(minutes) => { root.set-usage-refresh-minutes(minutes); }
+                    session-retention-hours: root.session-retention-hours;
+                    set-session-retention-hours(hours) => { root.set-session-retention-hours(hours); }
                     visible: root.windows-preferences && (root.settings-page == 1 || root.settings-page == 2);
                     integrations: root.settings-page == 2;
                     dirty: root.dirty;
@@ -266,6 +272,7 @@ export component CodexTuiWindow inherits Window {
                     codex-present: root.codex-present;
                     codex-status: root.codex-status;
                     completion-notifications: root.completion-notifications;
+                    question-notifications: root.question-notifications;
                     app-message: root.app-message;
                     taskbar-enabled: root.taskbar-enabled;
                     taskbar-status: root.taskbar-status;
@@ -280,6 +287,7 @@ export component CodexTuiWindow inherits Window {
                     install-codex() => { root.install-codex(); }
                     uninstall-codex() => { root.uninstall-codex(); }
                     set-completion-notifications(enabled) => { root.set-completion-notifications(enabled); }
+                    set-question-notifications(enabled) => { root.set-question-notifications(enabled); }
                     set-taskbar-enabled(enabled) => { root.set-taskbar-enabled(enabled); }
                     set-taskbar-display(index) => { root.set-taskbar-display(index); }
                     set-run-at-login(enabled) => { root.set-run-at-login(enabled); }

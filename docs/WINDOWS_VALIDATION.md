@@ -1,5 +1,69 @@
 # Windows validation
 
+## Unreleased: inactive session cleanup (2026-10-22)
+
+Taskbar & app settings now offer inactive-session retention from 1–168 hours,
+defaulting to 5 hours since each session's last activity. The Tasks toolbar has
+a Clear inactive button, disabled when there is nothing eligible to remove.
+Cleanup affects Companion's retained display history for Codex and Dodex.
+Current writer activity and live waiting requests are protected. Quiet,
+unconfirmed sessions become Inactive in Finished after the existing 15-minute
+freshness window instead of remaining in the Working count.
+
+Per-session timestamps and dismissal watermarks persist across restarts, so
+refreshing the scanner cannot restore cleared records. New activity revives the
+session. Legacy snapshots get a fixed timestamp during migration; repainting,
+quota refreshes and native question keepalives do not extend their age. The live
+lifecycle tables and notification trackers continue to observe their original
+inputs independently of the retained presentation history.
+
+The locked, offline workspace run passed with 549 passed and 8 explicitly
+ignored; formatting and workspace all-targets Clippy with `-D warnings` passed.
+Regressions cover the exact five-hour boundary, active/wait protection, repeated
+scans and restart after cleanup, account isolation, same-second hook revival,
+keepalive clock release, and replacing an estimated legacy timestamp with an
+older authentic completion without weakening later event ordering.
+
+Real pointer and keyboard input exercised clearing, disabled controls, repeat
+suppression, immediate retention changes, range limits and CLI-draft isolation.
+Software renders at 100%, 150% and 200% were inspected for 380 × 520 and
+380 × 360 task panels plus 820 × 720 and 720 × 640 settings windows. The cleanup
+control, disabled appearance, retention input and explanatory text fit cleanly.
+An optimized Windows test executable was built as `100.0`, and its copied
+artifact's SHA-256 matches the build output.
+
+## Unreleased: Codex/Dodex task ownership (2026-10-22)
+
+The task scanner now checks which instance owns each paginated history row.
+Separate SQLite directories can still contain copied or imported records from
+another `CODEX_HOME`. Previously, a recent foreign `inProgress` row without a
+local writer lock could count as running in both taskbar account blocks.
+Read-only local inspection confirmed this case in the secondary database.
+
+Foreign rollout records are excluded unless a current writer under the monitored
+instance proves that it resumed that history. Copied rollout files do not bypass
+the ownership check. A released local writer retains its stopped state, and a
+cached foreign record cannot hide a new local writer during a database outage.
+The existing fallback for older clients without thread writer locks is preserved.
+
+The regression uses two physically separate databases containing both instances'
+records and checks the scanner, session tables and taskbar chips together. It
+fails against the old scanner because both records are included, then passes
+with the fix for primary-only, secondary-only, both-active and both-idle cases.
+Each account keeps its own quota reading throughout these checks.
+
+The locked, offline workspace test run passed with 538 passed and 8 explicitly
+ignored. This includes the existing external-database legacy-schema regression
+and new coverage for foreign history, local resume/stop transitions and cached
+database failures. Formatting and workspace all-targets Clippy with `-D warnings`
+passed. An optimized Windows executable was built for local testing as `100.0`;
+the copied artifact's SHA-256 matches the build output.
+
+A read-only check of the configured local sources through the production
+scanner returned 3 running Codex sessions and 0 Dodex sessions, with no waiting
+sessions. This check used the scanner directly; taskbar count presentation is
+covered by the integration regression above.
+
 ## Unreleased: Windows one-click update (2026-10-22)
 
 The main task panel in published Windows x64 builds offers **一键更新** when a

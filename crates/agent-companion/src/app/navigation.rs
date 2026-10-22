@@ -115,6 +115,21 @@ impl Plan {
             || win::codex::open_thread(session_id),
         )
     }
+
+    /// A waiting notification returns to the live terminal only. Unlike a
+    /// completion jump, an unresolved Windows Terminal pane is not reported as
+    /// a successful jump merely because its host window could be raised.
+    pub fn activate_terminal(&self, hint: Option<&str>) -> bool {
+        if self.route != Route::Terminal
+            || self.owner.as_ref().is_some_and(|owner| !owner.is_alive())
+        {
+            return false;
+        }
+        match &self.target {
+            Some(target) => win::target::activate(target),
+            None => win::activate_terminal_pane_from(&self.ancestors, hint),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -159,6 +174,19 @@ mod tests {
             Route::Desktop,
             "live owner can resume an old CLI conversation in the App"
         );
+    }
+
+    #[test]
+    fn waiting_notifications_never_navigate_to_the_desktop_or_a_missing_terminal() {
+        for route in [Route::Desktop, Route::Unavailable, Route::Terminal] {
+            let plan = Plan {
+                route,
+                target: None,
+                ancestors: vec![],
+                owner: None,
+            };
+            assert!(!plan.activate_terminal(Some("Which deployment environment should be used?")));
+        }
     }
 
     #[test]

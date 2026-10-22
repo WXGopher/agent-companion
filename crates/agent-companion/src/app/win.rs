@@ -909,6 +909,32 @@ pub fn activate_terminal_from(
     false
 }
 
+/// Return a waiting notification to its own terminal. Windows Terminal needs
+/// a unique current-question match before anything is activated; raising its
+/// window alone cannot identify one of its tabs or split panes.
+pub fn activate_terminal_pane_from(
+    ancestors: &[agent_companion_core::protocol::ProcessRef],
+    hint: Option<&str>,
+) -> bool {
+    let alive = process_exes();
+    for pid in live_candidates(&alive, ancestors, std::process::id()) {
+        let windows = main_windows_of(pid);
+        if windows.is_empty() {
+            continue;
+        }
+        if alive.get(&pid).map(String::as_str) == Some("windowsterminal.exe") {
+            return hint
+                .and_then(|hint| target::from_hint(&windows, hint))
+                .is_some_and(|target| target::activate(&target));
+        }
+        // One window is not one terminal: editors and other hosts can contain
+        // several terminals. Only the classic native console has this direct
+        // window-level identity; unknown hosts remain unresolved.
+        return windows.len() == 1 && is_classic_console(windows[0]) && activate(windows[0]);
+    }
+    false
+}
+
 /// Only a still-matching process can suppress a session's completion toast.
 pub fn terminal_is_foreground(ancestors: &[agent_companion_core::protocol::ProcessRef]) -> bool {
     let Some(foreground) = foreground_window() else {
@@ -919,6 +945,35 @@ pub fn terminal_is_foreground(ancestors: &[agent_companion_core::protocol::Proce
         .into_iter()
         .filter_map(main_window_of)
         .any(|window| within_window(Some(foreground), Some(window)))
+}
+
+/// Suppress a waiting notification only for the pane actually being watched.
+/// This makes no UI changes. Missing or ambiguous question text is insufficient
+/// evidence for Windows Terminal, even when its host window is foreground.
+pub fn terminal_is_foreground_with_hint(
+    ancestors: &[agent_companion_core::protocol::ProcessRef],
+    hint: Option<&str>,
+) -> bool {
+    let Some(foreground) = foreground_window() else {
+        return false;
+    };
+    let alive = process_exes();
+    for pid in live_candidates(&alive, ancestors, std::process::id()) {
+        let windows = main_windows_of(pid);
+        if !windows
+            .iter()
+            .any(|&window| within_window(Some(foreground), Some(window)))
+        {
+            continue;
+        }
+        if alive.get(&pid).map(String::as_str) == Some("windowsterminal.exe") {
+            return hint
+                .and_then(|hint| target::from_hint(&windows, hint))
+                .is_some_and(|target| target::is_foreground(&target));
+        }
+        return windows.len() == 1 && is_classic_console(windows[0]);
+    }
+    false
 }
 
 /// Put the tab whose title matches `hint` in front, via UI Automation.
@@ -1106,6 +1161,24 @@ pub(crate) fn pick_pane(screens: &[String], hint: &str) -> Option<usize> {
     (matches.len() == 1).then(|| matches[0])
 }
 
+/// Questions often share an introductory sentence. Match the complete bounded
+/// question instead of its first 32 characters so two distinct requests in a
+/// split cannot resolve to the wrong shell. The caller's display truncation is
+/// a suffix, so its retained text still matches the longer terminal rendering.
+fn pick_question_pane(screens: &[String], hint: &str) -> Option<usize> {
+    let needle = normalize_pane_text(hint.trim_end().trim_end_matches('…'));
+    if needle.chars().count() < 10 {
+        return None;
+    }
+    let mut matches = screens
+        .iter()
+        .enumerate()
+        .filter(|(_, screen)| screen.contains(&needle))
+        .map(|(index, _)| index);
+    let picked = matches.next()?;
+    matches.next().is_none().then_some(picked)
+}
+
 /// Lowercased, with whitespace and markdown-ish glyphs dropped.
 ///
 /// The transcript stores the message as written; the terminal shows it as
@@ -1234,7 +1307,7 @@ fn process_tree() -> HashMap<u32, Process> {
 
 struct FindMainWindow {
     process: u32,
-    found: HWND,
+    found: Vec<isize>,
 }
 
 unsafe extern "system" fn match_main_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
@@ -1261,15 +1334,21 @@ unsafe extern "system" fn match_main_window(hwnd: HWND, lparam: LPARAM) -> BOOL 
     if unsafe { GetWindowTextW(hwnd, &mut buffer) } <= 0 {
         return BOOL(1);
     }
-    context.found = hwnd;
-    BOOL(0)
+    context.found.push(hwnd.0 as isize);
+    BOOL(1)
 }
 
 /// The visible top-level window a process would call its main one, if any.
 fn main_window_of(pid: u32) -> Option<isize> {
+    main_windows_of(pid).into_iter().next()
+}
+
+/// A host can own multiple windows. Pane matching must consider all of them
+/// instead of relying on their current z-order to identify the session.
+fn main_windows_of(pid: u32) -> Vec<isize> {
     let mut context = FindMainWindow {
         process: pid,
-        found: HWND(std::ptr::null_mut()),
+        found: Vec::new(),
     };
     unsafe {
         let _ = EnumWindows(
@@ -1277,7 +1356,17 @@ fn main_window_of(pid: u32) -> Option<isize> {
             LPARAM(&mut context as *mut _ as isize),
         );
     }
-    (!context.found.0.is_null()).then_some(context.found.0 as isize)
+    context.found
+}
+
+fn is_classic_console(window: isize) -> bool {
+    let mut class = [0u16; 128];
+    let length = unsafe { GetClassNameW(hwnd(window), &mut class) };
+    length > 0 && classic_console_class(&String::from_utf16_lossy(&class[..length as usize]))
+}
+
+fn classic_console_class(class: &str) -> bool {
+    class == "ConsoleWindowClass"
 }
 
 /// Restore if minimized, then bring to the foreground.
@@ -1455,6 +1544,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn only_a_classic_console_can_identify_a_terminal_by_its_window() {
+        assert!(super::classic_console_class("ConsoleWindowClass"));
+        for host in [
+            "CASCADIA_HOSTING_WINDOW_CLASS", // Windows Terminal can contain splits.
+            "Chrome_WidgetWin_1",            // An editor can contain several terminals.
+            "org.wezfurlong.wezterm",        // Other terminal hosts need pane evidence too.
+            "",
+        ] {
+            assert!(!super::classic_console_class(host));
+        }
+    }
+
     fn names(list: &[&str]) -> Vec<String> {
         list.iter().map(|name| name.to_string()).collect()
     }
@@ -1525,6 +1627,59 @@ mod tests {
     fn a_hint_that_normalizes_too_short_is_refused() {
         let screens = screens(&["a b c d e f g h i j k"]);
         assert_eq!(super::pick_pane(&screens, "- a b *c*"), None);
+    }
+
+    #[test]
+    fn current_questions_identify_the_correct_split_after_a_shared_introduction() {
+        let screens = screens(&[
+            "Before I continue with the requested changes, should I deploy to staging?",
+            "Before I continue with the requested changes, should I deploy to production?",
+        ]);
+        // Both requests have the same first 32 normalized characters. The
+        // current question's distinguishing suffix must select the pane.
+        assert_eq!(
+            super::pick_question_pane(
+                &screens,
+                "Before I continue with the requested changes, should I deploy to production?"
+            ),
+            Some(1)
+        );
+        assert_eq!(
+            super::pick_question_pane(
+                &screens,
+                "Before I continue with the requested changes, should I deploy to development?"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn current_question_matching_refuses_ambiguous_missing_and_short_hints() {
+        let question = "Which deployment environment should receive this build?";
+        let screens = screens(&[question, question]);
+        assert_eq!(super::pick_question_pane(&screens, question), None);
+        assert_eq!(
+            super::pick_question_pane(&screens, "Which database migration should I apply?"),
+            None
+        );
+        assert_eq!(super::pick_question_pane(&screens, "Ready?"), None);
+        assert_eq!(super::pick_question_pane(&screens, "*** ..."), None);
+    }
+
+    #[test]
+    fn a_bounded_question_matches_wrapped_terminal_rendering() {
+        let screens = screens(&[
+            "Which **deployment environment** should receive\nthis build? staging or production?",
+            "Which database migration should I apply?",
+        ]);
+        assert_eq!(
+            super::pick_question_pane(
+                &screens,
+                "Which deployment environment should receive this…"
+            ),
+            Some(0)
+        );
+        assert_eq!(super::pick_question_pane(&screens, " … "), None);
     }
 
     #[test]

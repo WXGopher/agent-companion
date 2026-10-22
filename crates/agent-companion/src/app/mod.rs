@@ -118,6 +118,16 @@ fn notification_clicked(session_id: &str) {
     }
 }
 
+fn waiting_notification_clicked(session_id: &str, request_key: &str) {
+    if let Some(app) = APP.with(|slot| slot.borrow().clone()) {
+        app.close_flyout();
+        if let Some(taskbar) = app.host.get().or_else(win::taskbar) {
+            app.show_flyout(taskbar.rect, Anchor::Taskbar, false);
+        }
+        app.jump_waiting(session_id, request_key);
+    }
+}
+
 pub fn run() -> io::Result<()> {
     // `agent-companion` is a console binary so `agent-companion setup` and `agent-companion headless` can
     // print. The app has nothing to say on a terminal, so it lets go of the one
@@ -178,6 +188,7 @@ struct App {
     jump_request: Cell<u64>,
     codex_sessions: sessions::CodexWatcher,
     completions: RefCell<notifications::Tracker>,
+    waiting_notifications: RefCell<notifications::WaitingTracker>,
     notifier: notifications::Notifier,
     /// Hooks that are blocked on us, keyed by session and correlation key.
     /// Holding the handle is what keeps the agent waiting.
@@ -234,6 +245,7 @@ impl App {
             jump_request: Cell::new(0),
             codex_sessions: sessions::CodexWatcher::new(),
             completions: RefCell::new(notifications::Tracker::default()),
+            waiting_notifications: RefCell::new(notifications::WaitingTracker::default()),
             notifier: notifications::Notifier::new(),
             blocked: RefCell::new(HashMap::new()),
             queue: RefCell::new(VecDeque::new()),
@@ -272,6 +284,7 @@ impl App {
             }
         }
         self.poll_secondary();
+        self.notify_waiting(now_unix_secs());
         self.sync_subscription_sources();
         self.watch_the_taskbar();
         self.refresh();
@@ -572,9 +585,20 @@ impl App {
             self.queue.borrow_mut().push_back(card);
         }
 
+        if let Some(id) = payload.session_id.as_deref() {
+            self.display.borrow_mut().mark_activity(source.as_str(), id);
+        }
         self.table.borrow_mut().apply(&payload, source, now);
         self.notify_completions(now);
+        self.notify_waiting(now);
         self.display.borrow_mut().activate(source, now, now);
+        if payload.event_name() == events::SESSION_END
+            && let Some(id) = payload.session_id.as_deref()
+        {
+            self.display
+                .borrow_mut()
+                .end_session(source.as_str(), id, now);
+        }
         if payload.event_name() == events::SESSION_END
             && self.table.borrow().tasks(source, now).total() == 0
         {
@@ -748,6 +772,13 @@ impl App {
                 app.jump(id.as_str());
             }
         });
+
+        let app = Rc::downgrade(self);
+        self.flyout.on_clear_inactive(move || {
+            if let Some(app) = app.upgrade() {
+                app.clear_inactive_sessions();
+            }
+        });
     }
 
     /// Resolve the actual client on a worker, then apply only the latest click.
@@ -770,6 +801,57 @@ impl App {
                     && app.table.borrow().get(&state.session_id).is_some()
                     && plan.activate(&state.session_id, hint.as_deref())
                 {
+                    app.close_flyout();
+                }
+            });
+        });
+    }
+
+    fn jump_waiting(self: &Rc<Self>, session_id: &str, request_key: &str) {
+        let session = if let Some(id) = session_id.strip_prefix("dodex:") {
+            self.secondary_waiting_session(id)
+                .map(|(state, instance)| (state, Some(instance)))
+        } else {
+            self.table
+                .borrow()
+                .get(session_id)
+                .cloned()
+                .map(|state| (state, None))
+        };
+        let Some((state, instance)) = session else {
+            return;
+        };
+        if !notifications::waiting_request_is_pending(&state, request_key) {
+            return;
+        }
+        let hint = notifications::waiting_hint(&state, Some(request_key));
+        let request_key = request_key.to_string();
+        let request = self.jump_request.get().wrapping_add(1);
+        self.jump_request.set(request);
+        std::thread::spawn(move || {
+            let plan = navigation::Plan::resolve(&state);
+            let _ = slint::invoke_from_event_loop(move || {
+                let Some(app) = APP.with(|slot| slot.borrow().clone()) else {
+                    return;
+                };
+                if app.jump_request.get() != request {
+                    return;
+                }
+                let still_waiting = if let Some(instance) = instance {
+                    app.secondary_waiting_session(&state.session_id)
+                        .is_some_and(|(current, active)| {
+                            active == instance
+                                && notifications::waiting_request_is_pending(&current, &request_key)
+                        })
+                } else {
+                    app.table
+                        .borrow()
+                        .get(&state.session_id)
+                        .is_some_and(|current| {
+                            notifications::waiting_request_is_pending(current, &request_key)
+                        })
+                };
+                if still_waiting && plan.activate_terminal(hint.as_deref()) {
                     app.close_flyout();
                 }
             });
@@ -897,6 +979,9 @@ impl App {
         if let Some(state) = self.table.borrow_mut().get_mut(&card.session_id) {
             state.resolve(&card.key);
         }
+        self.display
+            .borrow_mut()
+            .mark_activity("codex", &card.session_id);
         self.blocked
             .borrow_mut()
             .remove(&(card.session_id.clone(), card.key.clone()));
@@ -1008,78 +1093,65 @@ impl App {
     }
 
     fn agent_tasks(&self, source: HookSource) -> AgentTasks {
-        let display = self.display.borrow();
-        if !display.visible(source) {
-            AgentTasks::default()
-        } else if display.is_live() {
-            self.table.borrow().tasks(source, now_unix_secs())
-        } else {
-            display.saved_tasks(source)
-        }
+        self.display
+            .borrow()
+            .tasks(source.as_str(), now_unix_secs())
     }
 
     fn agent_outcomes(&self, source: HookSource) -> task_status::TaskOutcomes {
-        let display = self.display.borrow();
-        if !display.visible(source) {
-            task_status::TaskOutcomes::default()
-        } else if display.is_live() {
-            task_status::outcomes(&self.table.borrow(), source, now_unix_secs())
-        } else {
-            display.saved_outcomes(source)
-        }
+        self.display
+            .borrow()
+            .outcomes(source.as_str(), now_unix_secs())
     }
 
     fn remember_display(&self) {
-        if !self.display.borrow().is_live() {
-            return;
+        let now = now_unix_secs();
+        let mut observations = Vec::new();
+        {
+            let table = self.table.borrow();
+            let available = win::codex::available();
+            observations.extend(table.sessions().map(|state| {
+                display::SessionObservation::new(session_row(state, "codex", available), state)
+            }));
         }
-        let sessions = self.session_rows(usize::MAX);
-        self.display
-            .borrow_mut()
-            .remember(sessions, now_unix_secs());
+        self.append_secondary_observations(&mut observations);
+        let retention = self.config.borrow().session_retention_secs();
+        let mut display = self.display.borrow_mut();
+        display.remember(observations, now);
+        display.expire(now, retention);
     }
 
     /// The session rows, oldest session first so the blocks do not shuffle every
     /// time a phase changes.
     fn session_rows(&self, limit: usize) -> Vec<ui::SessionRow> {
-        let display = self.display.borrow();
-        if !display.is_live() {
-            let available = win::codex::available();
-            let table = self.table.borrow();
-            return display
-                .saved_sessions(limit)
-                .into_iter()
-                .map(|mut row| {
-                    row.jumpable = table
-                        .get(row.id.as_str())
-                        .is_some_and(|state| navigation::can_jump(state, available));
-                    row
-                })
-                .collect();
-        }
+        let available = win::codex::available();
         let table = self.table.borrow();
-        let codex_desktop = win::codex::available();
-        table
-            .sessions()
-            .filter(|state| display.visible(state.source))
-            .take(limit)
-            .map(|state| {
-                let project = state
-                    .cwd
-                    .as_deref()
-                    .map(project_name)
-                    .filter(|name| !name.is_empty());
-                let summary = state.display_name.as_deref();
-                ui::SessionRow {
-                    id: state.session_id.clone().into(),
-                    title: session_title(project.as_deref(), summary, &state.session_id).into(),
-                    detail: describe_session(state).into(),
-                    phase: task_status::phase(state).into(),
-                    source: state.source.as_str().into(),
-                    jumpable: navigation::can_jump(state, codex_desktop),
-                }
+        self.display
+            .borrow()
+            .sessions("codex", limit, now_unix_secs())
+            .into_iter()
+            .map(|mut row| {
+                row.jumpable = table
+                    .get(row.id.as_str())
+                    .is_some_and(|state| navigation::can_jump(state, available));
+                row
             })
             .collect()
+    }
+
+    fn clear_inactive_sessions(self: &Rc<Self>) {
+        self.remember_display();
+        let sources = if self.secondary.borrow().is_some() {
+            &["codex", "dodex"][..]
+        } else {
+            &["codex"][..]
+        };
+        {
+            let mut display = self.display.borrow_mut();
+            display.clear_inactive(sources, now_unix_secs());
+            display.save(true);
+        }
+        self.refresh();
     }
 
     // ---------------------------------------------------------- housekeeping
@@ -1095,6 +1167,7 @@ impl App {
         }
         let now = now_unix_secs();
         self.poll_secondary();
+        self.remember_display();
         self.sync_subscription_sources();
         self.subscription.borrow_mut().tick(now);
         self.sync_visible_history_source();
@@ -1120,6 +1193,12 @@ impl App {
                 if let Some(pending) = state.pending.iter_mut().find(|pending| &pending.key == key)
                 {
                     if pending.event == events::CODEX_USER_INPUT {
+                        self.display.borrow_mut().mark_keepalive(
+                            "codex",
+                            session,
+                            state.last_seen,
+                            now,
+                        );
                         pending.requested_at = now;
                         state.last_seen = now;
                     }
@@ -1137,6 +1216,7 @@ impl App {
         let before = self.table.borrow().counts(now);
         self.table.borrow_mut().sweep(now);
         let after = self.table.borrow().counts(now);
+        self.notify_waiting(now);
 
         if self.current_is_stale() {
             self.dismiss();
@@ -1157,6 +1237,7 @@ impl App {
         let update = self.codex_sessions.poll(&mut self.table.borrow_mut());
         if update.changed {
             self.notify_completions(now_unix_secs());
+            self.notify_waiting(now_unix_secs());
         }
         if let Some(at) = update.last_seen {
             self.display.borrow_mut().observe(HookSource::Codex, at);
@@ -1194,6 +1275,33 @@ impl App {
                 });
         for notice in notices {
             self.notifier.send(notice);
+        }
+    }
+
+    fn notify_waiting(&self, now: u64) {
+        let enabled = self.config.borrow().question_notifications;
+        let watching_panel = self.flyout_open.get() && !self.flyout_peek.get();
+        let updates = self.waiting_notifications.borrow_mut().observe(
+            &self.table.borrow(),
+            now,
+            enabled,
+            |session| {
+                (watching_panel && self.display.borrow().visible(session.source))
+                    || session.terminal.as_ref().is_some_and(|terminal| {
+                        win::target::from_meta(terminal)
+                            .map(|target| win::target::is_foreground(&target))
+                            .unwrap_or_else(|| {
+                                let hint = notifications::waiting_hint(session, None);
+                                win::terminal_is_foreground_with_hint(
+                                    &terminal.ancestors,
+                                    hint.as_deref(),
+                                )
+                            })
+                    })
+            },
+        );
+        for update in updates {
+            self.notifier.send_waiting(update);
         }
     }
 
@@ -1638,6 +1746,16 @@ impl App {
                 .filter(|row| task_status::is_finished(row.phase.as_str()))
                 .count() as i32,
         );
+        let sources = if self.secondary.borrow().is_some() {
+            &["codex", "dodex"][..]
+        } else {
+            &["codex"][..]
+        };
+        self.flyout.set_inactive_count(
+            self.display
+                .borrow()
+                .inactive_count(sources, now_unix_secs()) as i32,
+        );
         if self.flyout_peek.get() {
             rows.retain(|row| {
                 matches!(
@@ -1756,6 +1874,32 @@ impl App {
                     config.completion_notifications = enabled;
                     config.save();
                 }
+                app.refresh_app_preferences();
+            }
+        });
+        let app = Rc::downgrade(self);
+        window.on_set_question_notifications(move |enabled| {
+            if let Some(app) = app.upgrade() {
+                {
+                    let mut config = app.config.borrow_mut();
+                    config.question_notifications = enabled;
+                    config.save();
+                }
+                app.notify_waiting(now_unix_secs());
+                app.poll_secondary();
+                app.refresh_app_preferences();
+            }
+        });
+        let app = Rc::downgrade(self);
+        window.on_set_session_retention_hours(move |hours| {
+            if let Some(app) = app.upgrade() {
+                {
+                    let mut config = app.config.borrow_mut();
+                    config.session_retention_hours = hours.clamp(1, 168);
+                    config.save();
+                }
+                app.refresh();
+                app.display.borrow_mut().save(true);
                 app.refresh_app_preferences();
             }
         });
@@ -1890,6 +2034,8 @@ impl App {
             window.set_good_at(config.taskbar.good_at as i32);
             window.set_warn_at(config.taskbar.warn_at as i32);
             window.set_completion_notifications(config.completion_notifications);
+            window.set_question_notifications(config.question_notifications);
+            window.set_session_retention_hours(config.session_retention_hours());
         }
     }
 
@@ -2074,6 +2220,35 @@ fn describe_session(state: &agent_companion_core::state::SessionState) -> String
             "Waiting for an answer · Open in Codex".into()
         }
         _ => describe_phase(state.phase, state.current_tool()),
+    }
+}
+
+fn session_row(
+    state: &agent_companion_core::state::SessionState,
+    account: &str,
+    desktop_available: bool,
+) -> ui::SessionRow {
+    let project = state
+        .cwd
+        .as_deref()
+        .map(project_name)
+        .filter(|name| !name.is_empty());
+    ui::SessionRow {
+        id: if account == "dodex" {
+            format!("dodex:{}", state.session_id).into()
+        } else {
+            state.session_id.clone().into()
+        },
+        title: session_title(
+            project.as_deref(),
+            state.display_name.as_deref(),
+            &state.session_id,
+        )
+        .into(),
+        detail: describe_session(state).into(),
+        phase: task_status::phase(state).into(),
+        source: account.into(),
+        jumpable: navigation::can_jump(state, desktop_available),
     }
 }
 

@@ -3,7 +3,7 @@
 //! Missing or incompatible databases leave rollout observation in charge.
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
@@ -21,6 +21,8 @@ use crate::state::{CodexActivity, CodexClient, Phase, SessionState};
 struct Snapshot {
     sessions: Vec<SessionState>,
     archived: HashSet<String>,
+    /// Shared history may contain rows belonging to another CODEX_HOME.
+    foreign: HashSet<String>,
 }
 
 #[derive(Default)]
@@ -68,7 +70,13 @@ impl Cache {
             self.retained.clear();
             self.source = Some(source);
         }
-        if let Ok(snapshot) = read_with_database_home(home, database_home, now) {
+        let local_rollouts = sessions
+            .iter()
+            .map(|session| session.session_id.clone())
+            .collect();
+        if let Ok(snapshot) =
+            read_with_database_home(home, database_home, now, &local_rollouts, &self.retained)
+        {
             self.retained.extend(
                 snapshot
                     .sessions
@@ -85,6 +93,11 @@ impl Cache {
             return;
         }
         let mut snapshot = snapshot.clone();
+        // During a DB outage a new native resume may acquire a local writer.
+        // Cached ownership exclusions must not hide its newer local rollout.
+        snapshot
+            .foreign
+            .retain(|id| writer_alive(home, id) != Some(true));
         // A retained database result cannot retain proof that a process lives.
         for state in &mut snapshot.sessions {
             if state.observed_alive {
@@ -104,7 +117,10 @@ impl Cache {
 }
 
 fn merge_snapshot(snapshot: Snapshot, sessions: &mut Vec<SessionState>) {
-    sessions.retain(|session| !snapshot.archived.contains(&session.session_id));
+    sessions.retain(|session| {
+        !snapshot.archived.contains(&session.session_id)
+            && !snapshot.foreign.contains(&session.session_id)
+    });
     for mut incoming in snapshot.sessions {
         if let Some(index) = sessions
             .iter()
@@ -176,6 +192,9 @@ fn merge_snapshot(snapshot: Snapshot, sessions: &mut Vec<SessionState>) {
                 && same_turn(old, &incoming)
             {
                 incoming.phase = old.phase;
+                incoming.observed_questions = old.observed_questions.clone();
+                incoming.codex_rollout_offset = old.codex_rollout_offset;
+                incoming.codex_rollout_path = old.codex_rollout_path.clone();
             }
             sessions[index] = incoming;
         } else {
@@ -186,22 +205,37 @@ fn merge_snapshot(snapshot: Snapshot, sessions: &mut Vec<SessionState>) {
 
 #[cfg(test)]
 fn read(home: &Path, now: u64) -> rusqlite::Result<Snapshot> {
-    read_with_database_home(home, home, now)
+    read_with_database_home(home, home, now, &HashSet::new(), &HashSet::new())
 }
 
 fn read_with_database_home(
     home: &Path,
     database_home: &Path,
     now: u64,
+    local_rollouts: &HashSet<String>,
+    previously_owned: &HashSet<String>,
 ) -> rusqlite::Result<Snapshot> {
     let state = read_only(&database_home.join("state_5.sqlite"))?;
     let history = read_only(&database_home.join("thread_history_1.sqlite"))?;
-    let mut threads = state.prepare(
-        "SELECT id, cwd, COALESCE(NULLIF(name, ''), title), archived, source
+    // Older compatible schemas do not expose rollout_path. They can still
+    // supplement this home's logs/locks, but an external SQLite directory by
+    // itself is not evidence that every row belongs to this instance.
+    let has_rollout_path = state
+        .prepare("PRAGMA table_info(threads)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<HashSet<_>, _>>()?
+        .contains("rollout_path");
+    let rollout_column = if has_rollout_path {
+        "rollout_path"
+    } else {
+        "NULL"
+    };
+    let mut threads = state.prepare(&format!(
+        "SELECT id, cwd, COALESCE(NULLIF(name, ''), title), archived, source, {rollout_column}
          FROM threads
          WHERE history_mode = 'paginated' AND source IN ('cli', 'vscode', 'appServer')
-         ORDER BY updated_at DESC LIMIT 256",
-    )?;
+         ORDER BY updated_at DESC LIMIT 256"
+    ))?;
     let mut turns = history.prepare(
         "SELECT turn_id, status, started_at, completed_at
          FROM thread_turns WHERE thread_id = ?1 ORDER BY rollout_ordinal DESC LIMIT 1",
@@ -212,6 +246,7 @@ fn read_with_database_home(
     let mut snapshot = Snapshot {
         sessions: Vec::new(),
         archived: HashSet::new(),
+        foreign: HashSet::new(),
     };
     let mut rows = threads.query([])?;
     while let Some(row) = rows.next()? {
@@ -219,6 +254,32 @@ fn read_with_database_home(
         // The ID also names a writer lock. Never turn stored data into a path.
         if !valid_thread_id(&id) {
             continue;
+        }
+        let writer = writer_alive(home, &id);
+        let rollout_path: Option<String> = row.get(5)?;
+        let owner = rollout_path
+            .as_deref()
+            .filter(|path| !path.is_empty())
+            .map(Path::new)
+            .filter(|path| path.is_absolute())
+            .map(|path| path_within_home(path, home));
+        if writer != Some(true) {
+            if owner == Some(false) && !(writer == Some(false) && previously_owned.contains(&id)) {
+                // Do not leave a copied rollout behind as a running fallback
+                // after identifying its database row as another home's task.
+                snapshot.foreign.insert(id);
+                continue;
+            }
+            // A previously observed local writer may be resuming history with
+            // a foreign saved path. Keep its released-lock terminal evidence
+            // so reacquiring that lock cannot revive the unchanged old turn.
+            if owner.is_none()
+                && !path_within_home(database_home, home)
+                && !local_rollouts.contains(&id)
+                && !(writer == Some(false) && previously_owned.contains(&id))
+            {
+                continue;
+            }
         }
         if row.get::<_, bool>(3)? {
             snapshot.archived.insert(id);
@@ -272,7 +333,7 @@ fn read_with_database_home(
         session.cwd = row.get(1)?;
         session.display_name = row.get(2)?;
         if phase == Phase::Running {
-            match writer_alive(home, &id) {
+            match writer {
                 Some(true) => session.observed_alive = true,
                 Some(false) => {
                     session.phase = Phase::Completed;
@@ -285,6 +346,46 @@ fn read_with_database_home(
         snapshot.sessions.push(session);
     }
     Ok(snapshot)
+}
+
+fn path_within_home(path: &Path, home: &Path) -> bool {
+    fn resolved(path: &Path) -> Option<PathBuf> {
+        if !path.is_absolute()
+            || path
+                .components()
+                .any(|part| matches!(part, Component::ParentDir))
+        {
+            return None;
+        }
+        // A rollout may have been deleted while its DB row remains. Resolve
+        // the nearest existing parent too, so directory aliases keep their
+        // actual ownership even when the leaf is missing.
+        path.ancestors().find_map(|parent| {
+            std::fs::canonicalize(parent)
+                .ok()
+                .map(|root| root.join(path.strip_prefix(parent).expect("path ancestor")))
+        })
+    }
+    let (Some(path), Some(home)) = (resolved(path), resolved(home)) else {
+        return false;
+    };
+    #[cfg(windows)]
+    {
+        let key = |path: &Path| {
+            path.to_string_lossy()
+                .replace('/', "\\")
+                .trim_start_matches(r"\\?\")
+                .trim_end_matches('\\')
+                .to_lowercase()
+        };
+        let path = key(&path);
+        let home = key(&home);
+        path == home || path.starts_with(&(home + "\\"))
+    }
+    #[cfg(not(windows))]
+    {
+        path.starts_with(home)
+    }
 }
 
 #[cfg(test)]

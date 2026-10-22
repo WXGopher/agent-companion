@@ -118,6 +118,7 @@ pub struct Secondary {
     watcher: sessions::CodexWatcher,
     table: SessionTable,
     completions: notifications::Tracker,
+    waiting_notifications: notifications::WaitingTracker,
 }
 
 impl Secondary {
@@ -127,8 +128,24 @@ impl Secondary {
             instance,
             table: SessionTable::new(),
             completions: notifications::Tracker::default(),
+            waiting_notifications: notifications::WaitingTracker::default(),
         }
     }
+}
+
+fn secondary_waiting_update(
+    mut update: notifications::WaitingUpdate,
+) -> notifications::WaitingUpdate {
+    match &mut update {
+        notifications::WaitingUpdate::Show(notice) => {
+            notice.session_id = format!("dodex:{}", notice.session_id);
+            notice.title = notice.title.replacen("Codex", "Dodex", 1);
+        }
+        notifications::WaitingUpdate::Clear { session_id, .. } => {
+            *session_id = format!("dodex:{session_id}");
+        }
+    }
+    update
 }
 
 impl App {
@@ -139,13 +156,13 @@ impl App {
             tasks: self.agent_tasks(HookSource::Codex),
             outcomes: self.agent_outcomes(HookSource::Codex),
         }];
-        if let Some(secondary) = self.secondary.borrow().as_ref() {
+        if self.secondary.borrow().is_some() {
             let now = now_unix_secs();
             readouts.push(InstanceReadout {
                 source: taskbar::ChipSource::Dodex,
                 snapshot: self.subscription_snapshot("dodex"),
-                tasks: secondary.table.tasks(HookSource::Codex, now),
-                outcomes: task_status::outcomes(&secondary.table, HookSource::Codex, now),
+                tasks: self.display.borrow().tasks("dodex", now),
+                outcomes: self.display.borrow().outcomes("dodex", now),
             });
         }
         readouts
@@ -162,12 +179,22 @@ impl App {
         self.secondary
             .borrow()
             .as_ref()
-            .map(|s| s.table.tasks(HookSource::Codex, now_unix_secs()))
+            .map(|_| self.display.borrow().tasks("dodex", now_unix_secs()))
     }
     pub(super) fn poll_secondary(&self) {
         let active = tui_deployment::active_instance();
         let mut secondary = self.secondary.borrow_mut();
         if secondary.as_ref().map(|s| &s.instance) != active.as_ref() {
+            if let Some(previous) = secondary.as_mut() {
+                for update in previous.waiting_notifications.observe(
+                    &SessionTable::new(),
+                    now_unix_secs(),
+                    false,
+                    |_| false,
+                ) {
+                    self.notifier.send_waiting(secondary_waiting_update(update));
+                }
+            }
             *secondary = active.map(Secondary::new);
             if secondary.is_none() {
                 self.usage_navigation.borrow_mut().remove_secondary();
@@ -192,6 +219,53 @@ impl App {
             notice.title = notice.title.replacen("Codex", "Dodex", 1);
             self.notifier.send(notice);
         }
+        let updates = secondary.waiting_notifications.observe(
+            &secondary.table,
+            now,
+            self.config.borrow().question_notifications,
+            |session| {
+                (self.flyout_open.get() && !self.flyout_peek.get())
+                    || session.terminal.as_ref().is_some_and(|terminal| {
+                        win::target::from_meta(terminal)
+                            .map(|target| win::target::is_foreground(&target))
+                            .unwrap_or_else(|| {
+                                let hint = notifications::waiting_hint(session, None);
+                                win::terminal_is_foreground_with_hint(
+                                    &terminal.ancestors,
+                                    hint.as_deref(),
+                                )
+                            })
+                    })
+            },
+        );
+        for update in updates {
+            self.notifier.send_waiting(secondary_waiting_update(update));
+        }
+    }
+
+    pub(super) fn secondary_waiting_session(
+        &self,
+        id: &str,
+    ) -> Option<(agent_companion_core::state::SessionState, InstanceConfig)> {
+        let secondary = self.secondary.borrow();
+        let secondary = secondary.as_ref()?;
+        if tui_deployment::active_instance().as_ref() != Some(&secondary.instance) {
+            return None;
+        }
+        Some((secondary.table.get(id)?.clone(), secondary.instance.clone()))
+    }
+
+    pub(super) fn append_secondary_observations(
+        &self,
+        rows: &mut Vec<display::SessionObservation>,
+    ) {
+        let secondary = self.secondary.borrow();
+        let Some(secondary) = secondary.as_ref() else {
+            return;
+        };
+        rows.extend(secondary.table.sessions().map(|state| {
+            display::SessionObservation::new(session_row(state, "dodex", true), state)
+        }));
     }
 
     pub(super) fn append_secondary_rows(&self, rows: &mut Vec<ui::SessionRow>) {
@@ -202,22 +276,22 @@ impl App {
         let Some(secondary) = secondary.as_ref() else {
             return;
         };
-        rows.extend(secondary.table.sessions().map(|state| {
-            let project = state.cwd.as_deref().map(project_name);
-            ui::SessionRow {
-                id: format!("dodex:{}", state.session_id).into(),
-                title: session_title(
-                    project.as_deref(),
-                    state.display_name.as_deref(),
-                    &state.session_id,
-                )
-                .into(),
-                detail: format!("Dodex · {}", describe_session(state)).into(),
-                phase: task_status::phase(state).into(),
-                source: "dodex".into(),
-                jumpable: navigation::can_jump(state, true),
-            }
-        }));
+        rows.extend(
+            self.display
+                .borrow()
+                .sessions("dodex", usize::MAX, now_unix_secs())
+                .into_iter()
+                .map(|mut row| {
+                    row.detail = format!("Dodex · {}", row.detail).into();
+                    row.jumpable = row
+                        .id
+                        .as_str()
+                        .strip_prefix("dodex:")
+                        .and_then(|id| secondary.table.get(id))
+                        .is_some_and(|state| navigation::can_jump(state, true));
+                    row
+                }),
+        );
     }
 
     pub(super) fn instance_quotas(&self) -> Vec<ui::UsageRow> {

@@ -15,11 +15,14 @@ use std::time::SystemTime;
 use serde_json::Value;
 
 use crate::protocol::HookSource;
-use crate::state::{CodexActivity, CodexClient, Phase, STALE_AFTER_SECS, SessionState};
+use crate::state::{
+    CodexActivity, CodexClient, ObservedQuestion, Phase, STALE_AFTER_SECS, SessionState,
+};
 use crate::usage::parse_iso8601;
 
 const READ_BUDGET: u64 = 4 * 1024 * 1024;
 const FILES_PER_SCAN: usize = 32;
+const QUESTION_PROMPT_CHARS: usize = 240;
 
 #[cfg(feature = "desktop-history")]
 mod desktop;
@@ -31,13 +34,14 @@ struct Events {
     phase: Option<Phase>,
     last_seen: u64,
     activity_at: u128,
+    activity_offset: u64,
     started_at: Option<u128>,
     excluded: bool,
-    questions: HashSet<String>,
+    questions: Vec<ObservedQuestion>,
 }
 
 impl Events {
-    fn push(&mut self, line: &[u8]) -> bool {
+    fn push(&mut self, line: &[u8], offset: u64) -> bool {
         let Ok(record) = serde_json::from_slice::<Value>(line) else {
             return false;
         };
@@ -77,24 +81,45 @@ impl Events {
                     )
                     && let Some(call) = call
                 {
-                    self.questions.insert(call.to_string());
+                    self.questions.retain(|question| question.key != call);
+                    self.questions.push(ObservedQuestion {
+                        key: call.to_string(),
+                        prompt: question_prompt(&payload["arguments"]),
+                        requested_at: at,
+                    });
                     self.phase = Some(Phase::WaitingForAnswer);
                     self.last_seen = self.last_seen.max(at);
                     self.activity_at = activity_at.unwrap();
+                    self.activity_offset = offset;
                     if let Some(session) = &mut self.session {
                         session.last_event = "request_user_input".into();
                     }
                 } else if payload["type"].as_str() == Some("function_call_output")
                     && let Some(call) = call
-                    && self.questions.remove(call)
+                    && self.questions.iter().any(|question| question.key == call)
                 {
+                    self.questions.retain(|question| question.key != call);
                     if self.questions.is_empty() && self.phase == Some(Phase::WaitingForAnswer) {
                         self.phase = Some(Phase::Running);
                     }
                     self.last_seen = self.last_seen.max(at);
                     self.activity_at = activity_at.unwrap();
+                    self.activity_offset = offset;
                     if let Some(session) = &mut self.session {
                         session.last_event = "user_input_answered".into();
+                    }
+                } else if payload["type"].as_str() == Some("message")
+                    && payload["role"].as_str() == Some("assistant")
+                    && (matches!(payload["phase"].as_str(), Some("final" | "final_answer"))
+                        || payload["end_turn"].as_bool() == Some(true))
+                {
+                    self.questions.clear();
+                    self.phase = Some(Phase::Completed);
+                    self.last_seen = self.last_seen.max(at);
+                    self.activity_at = activity_at.unwrap();
+                    self.activity_offset = offset;
+                    if let Some(session) = &mut self.session {
+                        session.last_event = "agent_message".into();
                     }
                 }
             }
@@ -189,9 +214,13 @@ impl Events {
                             self.phase = Some(Phase::Running);
                             self.turn = turn.map(str::to_string);
                         }
-                        if payload["phase"].as_str() == Some("final")
-                            || payload["item"]["phase"].as_str() == Some("final")
+                        if matches!(payload["phase"].as_str(), Some("final" | "final_answer"))
+                            || matches!(
+                                payload["item"]["phase"].as_str(),
+                                Some("final" | "final_answer")
+                            )
                         {
+                            self.questions.clear();
                             self.phase = Some(Phase::Completed);
                         }
                     }
@@ -201,6 +230,7 @@ impl Events {
                 }
                 self.last_seen = self.last_seen.max(timestamp);
                 self.activity_at = activity_at.unwrap();
+                self.activity_offset = offset;
                 if let Some(session) = &mut self.session {
                     session.last_event = kind.to_string();
                 }
@@ -217,14 +247,69 @@ impl Events {
         let mut session = self.session.clone()?;
         session.phase = self.phase?;
         session.last_seen = self.last_seen;
+        session.observed_questions = self.questions.clone();
         session.codex_activity = Some(CodexActivity {
             turn: self.turn.clone(),
             at: self.activity_at,
             started_at: self.started_at,
         });
+        session.codex_rollout_offset = Some(self.activity_offset);
+        session.codex_rollout_path = Some(path.to_string_lossy().into_owned());
         session.transcript_path = Some(path.to_string_lossy().into_owned());
         Some(session)
     }
+}
+
+fn question_prompt(arguments: &Value) -> Option<String> {
+    if let Some(raw) = arguments.as_str() {
+        return question_prompt(&serde_json::from_str::<Value>(raw).ok()?);
+    }
+    // Unknown flag values are treated as secret as well: a malformed privacy
+    // flag is no reason to copy a question into a desktop notification.
+    let secret = |value: &Value| {
+        ["isSecret", "is_secret"].iter().any(|key| {
+            value
+                .get(key)
+                .is_some_and(|flag| flag.as_bool() != Some(false))
+        })
+    };
+    if secret(arguments) {
+        return None;
+    }
+    arguments.get("questions")?.as_array()?.iter().find_map(|question| {
+        if secret(question) {
+            return None;
+        }
+        let raw = question.get("question")?.as_str()?;
+        let mut prompt = String::new();
+        let mut count = 0;
+        let mut space = false;
+        for character in raw.chars() {
+            // Discard directional formatting and collapse controls/whitespace
+            // so untrusted previews stay a bounded, readable single line.
+            if matches!(character, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') {
+                continue;
+            }
+            if character.is_whitespace() || character.is_control() {
+                space = !prompt.is_empty();
+                continue;
+            }
+            if space {
+                if count + 1 >= QUESTION_PROMPT_CHARS {
+                    break;
+                }
+                prompt.push(' ');
+                count += 1;
+                space = false;
+            }
+            prompt.push(character);
+            count += 1;
+            if count == QUESTION_PROMPT_CHARS {
+                break;
+            }
+        }
+        (!prompt.is_empty()).then_some(prompt)
+    })
 }
 
 #[derive(Default)]
@@ -262,7 +347,7 @@ impl Cursor {
             let mut reader = BufReader::new((&mut *file).take(budget));
             let mut line = Vec::new();
             reader.read_until(b'\n', &mut line)?;
-            self.events.push(&line);
+            self.events.push(&line, 0);
             budget = reader.get_ref().limit();
             self.offset = length - budget;
             self.skipping_line = true;
@@ -283,7 +368,7 @@ impl Cursor {
                 self.skipping_line = !terminated;
                 continue;
             }
-            if !terminated && !self.events.push(&line) {
+            if !terminated && !self.events.push(&line, self.offset) {
                 // Retry a half-written JSON record on the next scan. A record
                 // larger than the read budget is skipped until its newline.
                 if self.offset + read as u64 - start >= budget {
@@ -293,7 +378,7 @@ impl Cursor {
                 break;
             }
             if terminated {
-                self.events.push(&line);
+                self.events.push(&line, self.offset);
             }
             self.offset += read as u64;
         }
@@ -441,6 +526,7 @@ impl SessionCache {
                 session.last_event = stopped.event.clone();
                 session.last_seen = stopped.last_seen;
                 session.codex_activity = Some(stopped.activity.clone());
+                session.observed_questions.clear();
                 return;
             }
             self.stopped.remove(&session.session_id);
@@ -457,6 +543,7 @@ impl SessionCache {
             }
         }
         if session.phase == Phase::Completed {
+            session.observed_questions.clear();
             self.stopped.insert(
                 session.session_id.clone(),
                 Stopped {
