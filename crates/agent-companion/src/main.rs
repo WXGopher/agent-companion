@@ -38,6 +38,8 @@ mod tui_deployment;
 mod update_service;
 #[cfg(any(target_os = "macos", windows))]
 mod usage_service;
+#[cfg(windows)]
+mod windows_update;
 
 pub mod ui {
     slint::include_modules!();
@@ -130,6 +132,13 @@ fn attach_parent_console() {
 }
 
 fn main() -> ExitCode {
+    // A copied updater helper must never parse the ordinary CLI or claim the
+    // app's pipe. Dispatch it before console attachment and every GUI path.
+    #[cfg(windows)]
+    if let Some(code) = windows_update::try_run_helper() {
+        return code;
+    }
+
     // Only the subcommands belong on a terminal. The bare app must never
     // attach: launched from a shell-adjacent parent (a scripted start, a
     // hotkey runner), attaching would spill its startup banner into whatever

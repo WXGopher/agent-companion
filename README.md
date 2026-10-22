@@ -6,12 +6,12 @@
 
 在 Windows 任务栏或 macOS 菜单栏查看 Codex 的任务状态与订阅用量。
 
-Windows 只保留任务栏 C / D 读数入口；点击打开面板，右键可打开设置、Dodex 或退出。本地编译默认显示版本 `100.0`，关闭 Companion 更新检查和新版提示，详见[构建说明](docs/RELEASING.md)。
+Windows 只保留任务栏 C / D 读数入口；点击打开面板，右键可打开设置、Dodex 或退出。本地编译默认显示版本 `100.0`，关闭 Companion 更新检查、新版提示和一键更新，详见[构建说明](docs/RELEASING.md)。
 
 ### 主要功能
 
 - **会话接力 CLI**：`acomp resume` 按当前目录搜索 Codex / Dodex 原会话，保留历史和设置，并选择本次使用的额度账号。通过 `agent-companion install-cli` 安装命令；macOS 需要受支持的原生 CLI 与登录方式，Windows 暂不支持恢复启动。详见[接力用法与兼容性](docs/RESUME.md)。
-- **更新提示**：主动打开面板时在后台检查 GitHub 正式发布版本，每 24 小时最多检查一次，重启后仍复用本地记录。发现更高版本时显示版本号，点击“查看更新”打开对应 Release 页面。检查不阻塞面板；断网或检查失败时静默保留已有提示，不自动下载或安装。
+- **更新提示**：主动打开面板时在后台检查 GitHub 正式发布版本，每 24 小时最多检查一次，重启后仍复用本地记录。Windows 正式发布版发现新版后，点击主面板的 **一键更新** 即可下载对应的 Windows ZIP、校验并更新当前解压安装目录，随后自动重启 Companion。面板显示下载进度、校验与重启状态；关闭面板后下载继续。失败时点击 **错误详情** 可滚动查看完整说明，处理后点击 **重试更新**。只有显式点击才会下载和安装，不更新 Codex / Dodex TUI。macOS 仍通过 **查看更新** 打开 Release 页面。
   设置窗口提供 **检查更新** 按钮，可立即检查最新正式版。按钮下方显示检查进度和结果；发现新版后，点击 **查看 GitHub Release** 打开发布页面。检查失败可重试；不会自动下载、安装或打开浏览器。
 - **任务状态**：查看运行中、待处理和已结束的任务，点击返回对应对话或终端。
 - **Tasks / Usage**：切换任务与用量，查看剩余额度、重置时间、累计 Token 和最近七个有记录日期的用量柱状图。
@@ -82,12 +82,12 @@ macOS 从菜单栏打开任务／用量面板，设置位于面板底部；重�
 
 See Codex tasks and subscription usage in the Windows taskbar or macOS menu bar.
 
-Windows uses only the C / D taskbar readout: click for the panel, or right-click for Settings, Dodex and Quit. Local builds show version `100.0` and disable Companion release checks and update notices. See [build instructions](docs/RELEASING.md).
+Windows uses only the C / D taskbar readout: click for the panel, or right-click for Settings, Dodex and Quit. Local builds show version `100.0` and disable Companion release checks, update notices and one-click updates. See [build instructions](docs/RELEASING.md).
 
 ### Features
 
 - **Session handoff CLI**: `acomp resume` finds original Codex / Dodex sessions in the current directory, preserves history and settings, and lets you choose the quota account for this run. Install commands with `agent-companion install-cli`. macOS requires a supported native CLI and login method; Windows resume launch is not supported. See [resume usage and compatibility](docs/RESUME.md).
-- **Update notifications**: opening the panel checks for a newer stable GitHub release in the background, at most once every 24 hours across restarts. Updates link to their release page; the app does not download or install them automatically.
+- **Update notifications**: opening the panel checks for a newer stable GitHub release in the background, at most once every 24 hours across restarts. In published Windows builds, select **一键更新** (One-click update) in the main panel to download and verify the Windows ZIP, update the current extracted installation, and restart Companion automatically. The panel shows download, verification and restart progress; downloads continue with the panel closed. On failure, select **错误详情** (Error details) to read and scroll through the complete explanation, then select **重试更新** (Retry update). Downloading and installation require that explicit click and do not update Codex or Dodex TUI. macOS continues to open the release page through its update link.
   Use **检查更新** (Check for updates) in Settings to check the latest stable release immediately. Progress and results appear below the button. When a newer version is available, select **查看 GitHub Release** to open its release page. Failed checks can be retried; checking never automatically downloads, installs, or opens the browser.
 - **Tasks**: track running, waiting and finished tasks, then jump back to the conversation or terminal.
 - **Tasks / Usage**: switch to remaining quota, reset times, lifetime tokens and a bar chart of the last seven reported days.

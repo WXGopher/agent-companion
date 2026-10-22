@@ -50,6 +50,8 @@ agent-companion-core = { workspace = true, features = ["server"] }
 futures-util = { version = "0.3", features = ["sink"] }
 tokio-tungstenite = "0.28"
 windows.workspace = true
+url = "2.5"
+zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.9.4"
