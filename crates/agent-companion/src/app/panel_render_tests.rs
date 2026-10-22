@@ -632,6 +632,7 @@ fn codex_tui_editor_renders_and_applies_only_explicit_actions(
         "the checkbox must repaint when the draft deselects it"
     );
     let draft = editor.window.get_preview();
+    #[cfg(windows)]
     taskbar_display_picker_renders_and_saves_only_user_choices(
         &editor.window,
         &window,
@@ -831,6 +832,7 @@ fn codex_tui_editor_renders_and_applies_only_explicit_actions(
     editor.window.hide().unwrap();
 }
 
+#[cfg(windows)]
 fn taskbar_display_picker_renders_and_saves_only_user_choices(
     settings_window: &super::ui::CodexTuiWindow,
     window: &MinimalSoftwareWindow,
