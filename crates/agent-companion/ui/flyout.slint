@@ -154,6 +154,15 @@ export component FlyoutWindow inherits Window {
     in property <bool> dual-enabled;
     in property <bool> secondary-selected;
     in property <string> update-version;
+    in property <string> update-action-label: "查看更新";
+    in property <bool> update-action-available: true;
+    in property <bool> update-busy;
+    in property <string> update-message;
+    in property <bool> update-failed;
+    in property <bool> update-progress-visible;
+    in property <float> update-progress;
+    in-out property <bool> update-details-open;
+    in-out property <length> update-details-scroll-y;
     callback select-instance(bool);
     callback expand();
     callback jump(string);
@@ -188,8 +197,8 @@ export component FlyoutWindow inherits Window {
             HorizontalLayout {
                 height: 30px;
                 spacing: 6px;
-                PanelButton { label: "Tasks"; selected: !root.usage-page; clicked => { root.usage-page = false; root.select-page(false); } }
-                PanelButton { label: "Usage"; selected: root.usage-page; clicked => { root.usage-page = true; root.select-page(true); } }
+                PanelButton { label: "Tasks"; selected: !root.usage-page; clicked => { root.update-details-open = false; root.usage-page = false; root.select-page(false); } }
+                PanelButton { label: "Usage"; selected: root.usage-page; clicked => { root.update-details-open = false; root.usage-page = true; root.select-page(true); } }
                 Rectangle { horizontal-stretch: 1; }
                 Text { text: "Agent Companion"; color: Theme.faint; font-size: 10px; vertical-alignment: center; }
             }
@@ -199,7 +208,7 @@ export component FlyoutWindow inherits Window {
             Rectangle {
                 vertical-stretch: 1;
                 VerticalLayout {
-                    visible: !root.usage-page;
+                    visible: !root.usage-page && !root.update-details-open;
                     spacing: 10px;
                     HorizontalLayout {
                         height: 28px;
@@ -249,7 +258,7 @@ export component FlyoutWindow inherits Window {
                     }
                 }
                 VerticalLayout {
-                    visible: root.usage-page;
+                    visible: root.usage-page && !root.update-details-open;
                     spacing: 10px;
                     if root.dual-enabled: HorizontalLayout {
                         height: 28px;
@@ -272,8 +281,56 @@ export component FlyoutWindow inherits Window {
                         }
                     }
                 }
+                if root.update-details-open: error-scroll := ScrollView {
+                    viewport-width: self.visible-width;
+                    viewport-y <=> root.update-details-scroll-y;
+                    horizontal-scrollbar-policy: always-off;
+                    VerticalLayout {
+                        alignment: start;
+                        padding-right: 4px;
+                        Text {
+                            width: error-scroll.visible-width - 4px;
+                            text: root.update-message;
+                            color: Theme.text;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                            accessible-label: "完整更新错误：" + root.update-message;
+                        }
+                    }
+                }
             }
             Rectangle { height: 1px; background: Theme.hairline; }
+            if root.update-message != "": VerticalLayout {
+                spacing: 6px;
+                HorizontalLayout {
+                    spacing: 6px;
+                    Text {
+                        text: root.update-message;
+                        color: root.update-failed ? Theme.spent : Theme.dim;
+                        font-size: 11px;
+                        height: 32px;
+                        wrap: word-wrap;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    if root.update-failed: PanelButton {
+                        label: root.update-details-open ? "收起错误" : "错误详情";
+                        horizontal-stretch: 0;
+                        clicked => { root.update-details-open = !root.update-details-open; }
+                    }
+                }
+                if root.update-progress-visible: Rectangle {
+                    height: 3px;
+                    border-radius: 2px;
+                    background: Theme.soft;
+                    Rectangle {
+                        width: parent.width * clamp(root.update-progress, 0, 1);
+                        height: parent.height;
+                        border-radius: 2px;
+                        background: Theme.codex;
+                    }
+                }
+            }
             HorizontalLayout {
                 height: 28px;
                 spacing: 6px;
@@ -285,7 +342,7 @@ export component FlyoutWindow inherits Window {
                     horizontal-stretch: 1;
                     overflow: elide;
                 }
-                if root.update-version != "": PanelButton { label: "查看更新"; selected: true; horizontal-stretch: 0; clicked => { root.view-update(); } }
+                if root.update-version != "" || root.update-message != "": PanelButton { label: root.update-action-label; available: root.update-action-available && !root.update-busy; selected: true; horizontal-stretch: 0; clicked => { root.view-update(); } }
                 PanelButton { label: "Settings"; horizontal-stretch: 0; clicked => { root.settings(); } }
             }
         }

@@ -1,6 +1,12 @@
 # Release process
 
-Local builds default to version `100.0` in the app and `acomp`, including `cargo build --release`. They never check for Companion releases or display cached update notices. To build a distributable using the workspace version and enable release checks, set `AGENT_COMPANION_RELEASE_BUILD=1` for the build and packaging commands. CI and Release workflows set this explicitly. The workspace version remains the published release version.
+Local builds default to version `100.0` in the app and `acomp`, including `cargo build --release`. They never check for Companion releases, display cached update notices or enable Windows one-click updates. To build a distributable using the workspace version and enable release checks and updates, set `AGENT_COMPANION_RELEASE_BUILD=1` for the build and packaging commands. CI and Release workflows set this explicitly. The workspace version remains the published release version.
+
+Published Windows x64 builds offer **一键更新** in the main task panel after detecting a newer stable release. Only a click downloads the matching official ZIP and `SHA256SUMS.txt`; the updater verifies the archive and stages its package files before restarting the current installation. The extracted installation directory must be writable. Download and preparation errors remain in the panel; **错误详情** opens their complete scrollable explanation, and **重试更新** retries. Settings keeps its read-only check and GitHub Release link, and macOS keeps its release-page update behavior. Codex and Dodex TUI installations remain separately updated.
+
+Reported replacement or startup failures trigger rollback. A hard crash or power loss is not repaired automatically; the transaction journal, backups and copied helper are retained for manual recovery. Successful updates may also retain the helper staging directory and backups of old files that are still in use.
+
+Before publishing an updater change, exercise success and recovery in a disposable extracted-installation directory. Check the restarted version and package hashes, verify a failed replacement or startup restores a runnable prior version, and confirm another Companion process is never shut down by an updater restart. Record these checks separately from synthetic controller/render tests and manual desktop acceptance.
 
 1. Set the workspace version in `Cargo.toml` / `Cargo.lock`, update the bilingual README and add `docs/releases/v<version>.md`. Record completed and unverified manual scenarios in the platform documentation.
 2. Require successful Windows MSVC and macOS arm64 CI on the final PR revision. Merge it, then tag the merged revision as `v<version>`; never overwrite a published tag.

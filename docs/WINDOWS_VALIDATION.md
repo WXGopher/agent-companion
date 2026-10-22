@@ -64,6 +64,66 @@ scanner returned 3 running Codex sessions and 0 Dodex sessions, with no waiting
 sessions. This check used the scanner directly; taskbar count presentation is
 covered by the integration regression above.
 
+## Unreleased: Windows one-click update (2026-10-22)
+
+The main task panel in published Windows x64 builds offers **一键更新** when a
+newer stable release has been detected. An explicit click starts the download;
+rendering, opening Settings and background release checks do not install an
+update. The panel displays download bytes and percentage when the server
+provides a length, followed by verification, preparation and restart states.
+Busy actions reject repeated clicks. Errors remain visible; **错误详情** opens the
+complete explanation in the panel's scrollable viewport, with Retry and Settings
+kept visible below. The existing Settings release-page link
+and macOS behavior remain available.
+
+The housekeeping timer consumes helper readiness even when the panel is closed.
+It exits only the local app's event loop after the helper owns the original
+process handle and has initialized its update plan. The restarted app must bind
+its pipe and handle its first event-loop turn before acknowledging startup. An
+updater restart refuses an occupied pipe instead of sending another instance a
+Shutdown request. Default local builds remain `100.0` and disable release checks,
+cached notices and one-click updates.
+
+Reported replacement or startup failures trigger rollback. A hard crash or power
+loss has no automatic repair: the transaction journal, backups and copied helper
+are retained for manual recovery. Successful updates may also retain the helper
+staging directory and backups of old files that are still in use.
+
+Offline regressions exercise controller start/rejection/retry, known and unknown
+download lengths, duplicate guards, hidden-panel readiness and a single restart
+dispatch. Synthetic Slint renders deliver real pointer events to the update and
+retry buttons, check disabled busy phases, and open complete failure details
+on Tasks and Usage at 1×, 1.25×, 1.5× and 2× scale in full and narrow panels.
+These checks use synthetic release/progress values and test-owned windows.
+Long errors are scrolled to their final line using pointer input, and collapsing
+details or retrying preserves the selected Tasks/Usage page and its scroll state.
+
+| Completed Windows check | Result |
+| --- | --- |
+| Default-local workspace tests, locked and offline | 564 passed, 0 failed, 9 ignored |
+| Workspace formatting and diff whitespace | Passed |
+| Default-local workspace all-target Clippy, warnings denied | Passed |
+| Release-build workspace all-target Clippy, warnings denied | Passed in 10.28 seconds |
+| Release-build updater unit group | 39 passed, 0 failed, 0 ignored in 1.97 seconds |
+| Optimized Windows workspace build, locked and offline | Passed in 3 minutes 57 seconds |
+| Optimized app and `acomp` version checks | Both report `0.3.34` |
+| Explicit release-build native helper fixture | 1 passed in 16.22 seconds |
+
+The workspace count includes shared modules exercised in multiple binaries.
+Its 39 updater unit tests, two main-panel update tests and default helper
+integration result of one passed/one ignored are included above, not additional
+unique cases.
+The release-build updater run repeats the same 39-case group under release
+configuration; it is not another set of unique tests.
+
+The explicit release-build fixture launches a copy of the real app in headless
+mode and its hidden helper against a complete temporary package. A controlled
+replacement-executable probe sends the native startup acknowledgement. The
+fixture verifies successful replacement/restart and rollback after startup
+failure. It does not verify the actual updated GUI or the user's installed app.
+A published-release download and manual physical-desktop acceptance have not
+been performed.
+
 ## Unreleased: taskbar display selection (2026-10-22)
 
 Windows Settings → Taskbar & app → Taskbar display offers a default follow-primary

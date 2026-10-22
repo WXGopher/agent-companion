@@ -28,6 +28,7 @@
 mod bridge;
 mod card;
 mod cardview;
+mod companion_update;
 use crate::codex_tui;
 pub(crate) mod config;
 mod display;
@@ -143,6 +144,11 @@ pub fn run() -> io::Result<()> {
     let app = App::new(bridge)?;
     APP.with(|slot| *slot.borrow_mut() = Some(Rc::clone(&app)));
     app.start();
+    // Acknowledge an updater restart only after the pipe and GUI exist and the
+    // event loop has actually begun handling work. Startup failure leaves the
+    // helper free to restore the previous installation.
+    slint::invoke_from_event_loop(crate::windows_update::acknowledge_startup)
+        .map_err(io::Error::other)?;
 
     // Keep monitoring even when the settings, panel and cards are closed.
     let result = slint::run_event_loop_until_quit().map_err(io::Error::other);
@@ -194,6 +200,7 @@ struct App {
     touched: Cell<bool>,
     subscription: RefCell<crate::usage_service::UsageService>,
     updates: crate::update_service::UpdateService,
+    companion_update: companion_update::Controller,
     usage_navigation: RefCell<subscription::Navigation>,
     secondary: RefCell<Option<instances::Secondary>>,
     launching_dodex: Cell<bool>,
@@ -246,6 +253,7 @@ impl App {
             touched: Cell::new(false),
             subscription: RefCell::new(crate::usage_service::UsageService::new()),
             updates: crate::update_service::UpdateService::new(),
+            companion_update: companion_update::Controller::new(),
             usage_navigation: RefCell::new(subscription::Navigation::default()),
             secondary: RefCell::new(None),
             launching_dodex: Cell::new(false),
@@ -749,7 +757,7 @@ impl App {
         let app = Rc::downgrade(self);
         self.flyout.on_view_update(move || {
             if let Some(app) = app.upgrade() {
-                app.open_release();
+                app.start_companion_update();
             }
         });
         let app = Rc::downgrade(self);
@@ -1149,6 +1157,14 @@ impl App {
     // ---------------------------------------------------------- housekeeping
 
     fn housekeeping(self: &Rc<Self>) {
+        // This runs even with every window hidden. The helper's readiness is
+        // consumed once and only this process leaves its event loop; a general
+        // pipe Shutdown could close a different Companion instance.
+        if self.companion_update.take_restart_ready()
+            && let Err(error) = slint::quit_event_loop()
+        {
+            self.companion_update.restart_failed(&error.to_string());
+        }
         let now = now_unix_secs();
         self.poll_secondary();
         self.remember_display();
@@ -1769,30 +1785,17 @@ impl App {
     /// Painting only reads the cached result; requests belong to a full panel
     /// opening or the explicit settings action. Keep the last known version.
     fn render_update(&self) {
-        let update = self.updates.snapshot();
-        let version = if update.release_url.is_some() {
-            update.latest_version.as_deref().unwrap_or_default()
-        } else {
-            ""
-        };
-        self.flyout
-            .set_update_version(version.trim_start_matches('v').into());
+        self.companion_update
+            .presentation(&self.updates.snapshot())
+            .apply(&self.flyout);
     }
 
-    fn open_release(&self) {
+    fn start_companion_update(&self) {
         if self.flyout_peek.get() {
             return;
         }
-        // The shared service supplies only a validated release URL for this
-        // repository. UI text and quota data never become a shell target.
-        let Some(url) = self.updates.snapshot().release_url else {
-            return;
-        };
-        if crate::settings_update::open_release(&url).is_ok() {
-            self.close_flyout();
-        } else {
-            crate::util::debug_log("could not open the Agent Companion release page");
-        }
+        self.companion_update.start(&self.updates.snapshot());
+        self.render_update();
     }
 
     fn place_flyout(&self, anchor: Rect, from: Anchor) {

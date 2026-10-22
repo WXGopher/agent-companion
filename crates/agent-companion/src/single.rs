@@ -42,32 +42,47 @@ pub struct Bound {
 ///
 /// Must be called inside a tokio runtime, because binding is tokio's.
 pub async fn bind_taking_over() -> io::Result<Bound> {
-    let taken = match crate::headless::bind() {
+    let (server, replaced) = bind_with_policy(
+        !crate::windows_update::is_update_restart(),
+        crate::headless::bind,
+        ask_the_incumbent_to_stand_down,
+    )
+    .await?;
+    Ok(Bound { server, replaced })
+}
+
+async fn bind_with_policy<T>(
+    allow_takeover: bool,
+    mut bind: impl FnMut() -> io::Result<T>,
+    stand_down: impl FnOnce(),
+) -> io::Result<(T, bool)> {
+    let taken = match bind() {
         Ok(server) => {
-            return Ok(Bound {
-                server,
-                replaced: false,
-            });
+            return Ok((server, false));
         }
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => error,
         // A failure that is not "somebody has it" is not ours to resolve.
         Err(error) => return Err(error),
     };
 
+    // An updater restart belongs to one exact old process. If a different
+    // Companion acquired the pipe meanwhile, fail and let the update helper
+    // recover; never ask that unrelated process to shut down.
+    if !allow_takeover {
+        return Err(taken);
+    }
+
     // Sent even if the write fails: an incumbent that is already on its way out
     // has nothing to receive and the retry below will find the name free
     // regardless. The only thing worth reporting is the deadline expiring.
-    ask_the_incumbent_to_stand_down();
+    stand_down();
 
     let deadline = Instant::now() + TAKEOVER_BUDGET;
     loop {
         tokio::time::sleep(RETRY).await;
-        match crate::headless::bind() {
+        match bind() {
             Ok(server) => {
-                return Ok(Bound {
-                    server,
-                    replaced: true,
-                });
+                return Ok((server, true));
             }
             Err(error) if error.kind() != io::ErrorKind::AlreadyExists => return Err(error),
             Err(_) if Instant::now() < deadline => continue,
@@ -115,6 +130,61 @@ fn ask_the_incumbent_to_stand_down() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn updater_restart_never_asks_an_incumbent_to_quit_or_retries_its_pipe() {
+        let attempts = std::cell::Cell::new(0);
+        let shutdowns = std::cell::Cell::new(0);
+        let result: io::Result<((), bool)> = bind_with_policy(
+            false,
+            || {
+                attempts.set(attempts.get() + 1);
+                Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "test-owned incumbent",
+                ))
+            },
+            || shutdowns.set(shutdowns.get() + 1),
+        )
+        .await;
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(attempts.get(), 1);
+        assert_eq!(shutdowns.get(), 0);
+    }
+
+    #[tokio::test]
+    async fn updater_restart_can_claim_a_free_pipe_without_takeover() {
+        let result = bind_with_policy(false, || Ok(42), || panic!("unexpected Shutdown"))
+            .await
+            .unwrap();
+        assert_eq!(result, (42, false));
+    }
+
+    #[tokio::test]
+    async fn ordinary_launch_retains_single_takeover_and_waits_for_the_pipe() {
+        let attempts = std::cell::Cell::new(0);
+        let shutdowns = std::cell::Cell::new(0);
+        let result = bind_with_policy(
+            true,
+            || {
+                attempts.set(attempts.get() + 1);
+                if attempts.get() == 1 {
+                    Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "test-owned incumbent",
+                    ))
+                } else {
+                    Ok(42)
+                }
+            },
+            || shutdowns.set(shutdowns.get() + 1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, (42, true));
+        assert_eq!(attempts.get(), 2);
+        assert_eq!(shutdowns.get(), 1);
+    }
 
     /// The budget is a user-facing number: it is how long someone stares at
     /// nothing after double-clicking the shortcut.
