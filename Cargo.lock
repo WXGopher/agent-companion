@@ -145,6 +145,7 @@ dependencies = [
  "libc",
  "objc2-app-kit 0.2.2",
  "roxmltree",
+ "rusqlite",
  "semver",
  "serde",
  "serde_json",

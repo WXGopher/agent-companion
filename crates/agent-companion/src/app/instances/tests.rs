@@ -106,6 +106,140 @@ fn both_accounts_keep_their_own_allowance_tasks_and_outcomes() {
 }
 
 #[test]
+fn contaminated_account_databases_keep_taskbar_activity_and_quota_separate() {
+    use agent_companion_core::codex::SessionCache;
+    use rusqlite::{Connection, params};
+    use std::fs::{self, File};
+
+    const PRIMARY_ID: &str = "01a08965-575f-7870-b001-3698447df18c";
+    const SECONDARY_ID: &str = "01a08965-575f-7870-b001-3698447df18d";
+    let home = |id: &str, active: bool| {
+        let home = tempfile::tempdir().unwrap();
+        fs::create_dir(home.path().join("sessions")).unwrap();
+        let locks = home.path().join("thread-writer-locks");
+        fs::create_dir(&locks).unwrap();
+        File::create(locks.join(".coordination.lock")).unwrap();
+        let writer = active.then(|| {
+            let writer = File::create(locks.join(format!("{id}.lock"))).unwrap();
+            writer.lock().unwrap();
+            writer
+        });
+        (home, writer)
+    };
+    let mut scheduler = Scheduler::new(5);
+    for query in scheduler.sync_sources(vec![source("codex"), source("dodex")], NOW) {
+        let left = if query.source.instance_id == "codex" {
+            56
+        } else {
+            95
+        };
+        scheduler.complete(&query, Ok(allowance(left, NOW + 600)), NOW, 10);
+    }
+    for (primary_active, secondary_active) in
+        [(true, false), (false, true), (true, true), (false, false)]
+    {
+        let (primary_home, _primary_writer) = home(PRIMARY_ID, primary_active);
+        let (secondary_home, _secondary_writer) = home(SECONDARY_ID, secondary_active);
+        // These are different physical databases, as in the reported bug.
+        // Each contains a foreign home's rows as well as its own history;
+        // simply separating the SQLite directory cannot separate task counts.
+        for database_home in [primary_home.path(), secondary_home.path()] {
+            let state = Connection::open(database_home.join("state_5.sqlite")).unwrap();
+            state
+                .execute_batch(
+                    "CREATE TABLE threads (id TEXT, cwd TEXT, name TEXT, title TEXT,
+                     archived INTEGER, source TEXT, history_mode TEXT, updated_at INTEGER,
+                     rollout_path TEXT);",
+                )
+                .unwrap();
+            let history = Connection::open(database_home.join("thread_history_1.sqlite")).unwrap();
+            history
+                .execute_batch(
+                    "CREATE TABLE thread_turns (thread_id TEXT, turn_id TEXT,
+                     rollout_ordinal INTEGER, status TEXT, started_at INTEGER, completed_at INTEGER);
+                     CREATE TABLE thread_items (thread_id TEXT, turn_id TEXT, created_at_ms INTEGER);",
+                )
+                .unwrap();
+            for (id, owner, active) in [
+                (PRIMARY_ID, primary_home.path(), primary_active),
+                (SECONDARY_ID, secondary_home.path(), secondary_active),
+            ] {
+                let rollout = owner.join("sessions").join(format!("rollout-{id}.jsonl"));
+                state
+                    .execute(
+                        "INSERT INTO threads (id, name, archived, source, history_mode,
+                         updated_at, rollout_path) VALUES (?1, 'Fixture task', 0, 'cli',
+                         'paginated', ?2, ?3)",
+                        params![id, NOW as i64, rollout.to_string_lossy()],
+                    )
+                    .unwrap();
+                history
+                    .execute(
+                        "INSERT INTO thread_turns VALUES (?1, 'turn', 1, ?2, ?3, ?4)",
+                        params![
+                            id,
+                            if active { "inProgress" } else { "completed" },
+                            (NOW - 10) as i64,
+                            (!active).then_some((NOW - 1) as i64),
+                        ],
+                    )
+                    .unwrap();
+            }
+        }
+        let mut primary = SessionTable::new();
+        let mut secondary = SessionTable::new();
+        for (home, own_id, table) in [
+            (primary_home.path(), PRIMARY_ID, &mut primary),
+            (secondary_home.path(), SECONDARY_ID, &mut secondary),
+        ] {
+            let observed = SessionCache::default().scan(home, NOW).unwrap();
+            assert_eq!(observed.len(), 1);
+            assert_eq!(observed[0].session_id, own_id);
+            table.sync_observed(HookSource::Codex, observed, NOW);
+        }
+        let readouts = [
+            readout(&scheduler, Codex, &primary),
+            readout(&scheduler, Dodex, &secondary),
+        ];
+        let mut chips = Vec::new();
+        // Refreshing replaces both blocks; it cannot copy or accumulate one
+        // account's task line into the other account's allowance block.
+        for _ in 0..2 {
+            append_readout_chips(&mut chips, &readouts, true, 50, 20);
+            assert_eq!(chips.len(), 2);
+            for (chip, source, quota, active) in [
+                (&chips[0], Codex, "56%", primary_active),
+                (&chips[1], Dodex, "95%", secondary_active),
+            ] {
+                assert_eq!(chip.agent, Some(source));
+                assert_eq!(chip.value, quota);
+                assert_eq!(
+                    chip.tasks,
+                    AgentTasks {
+                        pending: 0,
+                        running: usize::from(active),
+                        done: usize::from(!active),
+                    }
+                );
+                assert_eq!(chip.outcomes, task_status::TaskOutcomes::default());
+            }
+        }
+        for (home, id, active) in [
+            (primary_home.path(), PRIMARY_ID, primary_active),
+            (secondary_home.path(), SECONDARY_ID, secondary_active),
+        ] {
+            assert_eq!(
+                home.join("thread-writer-locks")
+                    .join(format!("{id}.lock"))
+                    .exists(),
+                active,
+                "monitoring must not create a writer lock for closed historical sessions"
+            );
+        }
+    }
+}
+
+#[test]
 fn loading_signed_out_and_failed_refresh_states_never_borrow_the_other_account() {
     let mut scheduler = Scheduler::new(5);
     let queries = scheduler.sync_sources(vec![source("codex"), source("dodex")], NOW);

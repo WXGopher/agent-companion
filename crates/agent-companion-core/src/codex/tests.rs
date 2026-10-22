@@ -895,6 +895,16 @@ fn reacquiring_a_writer_requires_new_activity_to_revive_a_disconnected_turn() {
 fn writer_probe_defers_during_coordination_and_never_creates_lock_files() {
     const ID: &str = "01a08965-575f-7870-b001-3698447df18c";
     let (dir, _, writer) = rollout_with_writer();
+    let absent_id = "02a08965-575f-7870-b001-3698447df18c";
+    // A persisted coordinator may belong to a newer client than the one
+    // currently running. Missing per-thread files remain unknown for legacy
+    // clients instead of manufacturing a disconnect from that file alone.
+    assert_eq!(writer_alive(dir.path(), absent_id), None);
+    assert!(
+        !dir.path()
+            .join(format!("thread-writer-locks/{absent_id}.lock"))
+            .exists()
+    );
     let coordination_path = dir.path().join("thread-writer-locks/.coordination.lock");
     let coordination = File::open(&coordination_path).unwrap();
     coordination.lock().unwrap();

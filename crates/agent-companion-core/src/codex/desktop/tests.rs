@@ -127,6 +127,237 @@ impl Fixture {
     fn scan(&self, now: u64) -> Vec<SessionState> {
         SessionCache::default().scan(self.dir.path(), now).unwrap()
     }
+
+    fn rollout_path(&self, path: &Path) {
+        self.state
+            .execute("ALTER TABLE threads ADD COLUMN rollout_path TEXT", [])
+            .unwrap();
+        self.state
+            .execute(
+                "UPDATE threads SET rollout_path = ?1",
+                [path.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+    }
+}
+
+fn rollout(home: &Path, id: &str) -> std::path::PathBuf {
+    let directory = home.join("sessions");
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join(format!("rollout-{id}.jsonl"));
+    let metadata = serde_json::json!({"timestamp":"2026-09-05T00:00:00Z", "type":"session_meta",
+        "payload":{"id":id, "source":"cli"}});
+    let started = serde_json::json!({"timestamp":"2026-09-05T00:00:01Z", "type":"event_msg",
+        "payload":{"type":"task_started", "turn_id":"turn-1"}});
+    std::fs::write(&path, format!("{metadata}\n{started}\n")).unwrap();
+    path
+}
+
+fn writer(home: &Path, id: &str) -> File {
+    let locks = home.join("thread-writer-locks");
+    std::fs::create_dir_all(&locks).unwrap();
+    File::create(locks.join(".coordination.lock")).unwrap();
+    let file = File::create(locks.join(format!("{id}.lock"))).unwrap();
+    file.lock().unwrap();
+    file
+}
+
+#[test]
+fn foreign_history_is_excluded_from_shared_and_independent_instance_databases() {
+    const FOREIGN_ID: &str = "02a08965-575f-7870-b001-3698447df18c";
+    let primary = Fixture::new();
+    let secondary = Fixture::new();
+    let path = rollout(primary.dir.path(), ID);
+    primary.rollout_path(&path);
+    secondary.rollout_path(&path);
+    let other_path = primary.dir.path().join("sessions/rollout-other.jsonl");
+    secondary
+        .state
+        .execute(
+            "INSERT INTO threads VALUES (?1, '/synthetic', '', '', 0, 'cli', 'paginated', ?2, ?3)",
+            (
+                FOREIGN_ID,
+                NOW as i64,
+                other_path.to_string_lossy().as_ref(),
+            ),
+        )
+        .unwrap();
+    secondary
+        .history
+        .execute(
+            "INSERT INTO thread_turns VALUES (?1, 'other-turn', 1, 'inProgress', ?2, NULL)",
+            (FOREIGN_ID, (NOW - 8) as i64),
+        )
+        .unwrap();
+    let _writer = writer(primary.dir.path(), ID);
+    let locks = secondary.dir.path().join("thread-writer-locks");
+    std::fs::create_dir(&locks).unwrap();
+    File::create(locks.join(".coordination.lock")).unwrap();
+    // Copied logs must not survive as a fallback after the history row proves
+    // that they originated in the other instance.
+    let copy = rollout(secondary.dir.path(), ID);
+    assert_ne!(copy, path);
+    let mut primary_table = crate::state::SessionTable::new();
+    primary_table.sync_observed(HookSource::Codex, primary.scan(NOW), NOW);
+    assert_eq!(primary_table.tasks(HookSource::Codex, NOW).running, 1);
+    let mut cache = SessionCache::default();
+    for database in [primary.dir.path(), secondary.dir.path()] {
+        let sessions = cache
+            .scan_with_database_home(secondary.dir.path(), database, NOW)
+            .unwrap();
+        assert!(
+            sessions.is_empty(),
+            "foreign history was attributed to the secondary instance"
+        );
+        let mut table = crate::state::SessionTable::new();
+        table.sync_observed(HookSource::Codex, sessions, NOW);
+        assert_eq!(table.tasks(HookSource::Codex, NOW).running, 0);
+    }
+    assert!(
+        !locks.join(format!("{ID}.lock")).exists(),
+        "read-only ownership checks created a thread lock"
+    );
+}
+
+#[test]
+fn a_local_writer_resuming_foreign_history_keeps_disconnect_tombstones() {
+    let fixture = Fixture::new();
+    fixture.rollout_path(&fixture.dir.path().join("sessions/old-rollout.jsonl"));
+    let home = tempfile::tempdir().unwrap();
+    let writer = writer(home.path(), ID);
+    let mut cache = SessionCache::default();
+    let active = cache
+        .scan_with_database_home(home.path(), fixture.dir.path(), NOW)
+        .unwrap();
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].phase, Phase::Running);
+    assert!(active[0].observed_alive);
+    drop(writer);
+    let stopped = cache
+        .scan_with_database_home(home.path(), fixture.dir.path(), NOW + 1)
+        .unwrap();
+    assert_eq!(stopped[0].phase, Phase::Completed);
+    assert_eq!(stopped[0].last_event, "session_disconnected");
+    let writer = File::open(home.path().join(format!("thread-writer-locks/{ID}.lock"))).unwrap();
+    writer.lock().unwrap();
+    assert_eq!(
+        cache
+            .scan_with_database_home(home.path(), fixture.dir.path(), NOW + 2)
+            .unwrap()[0]
+            .phase,
+        Phase::Completed
+    );
+    fixture
+        .history
+        .execute(
+            "UPDATE thread_turns SET turn_id='new-turn', started_at=?1",
+            [(NOW + 2) as i64],
+        )
+        .unwrap();
+    assert_eq!(
+        cache
+            .scan_with_database_home(home.path(), fixture.dir.path(), NOW + 3)
+            .unwrap()[0]
+            .phase,
+        Phase::Running
+    );
+}
+
+#[test]
+fn cached_foreign_history_does_not_hide_a_new_local_writer_during_database_failure() {
+    let fixture = Fixture::new();
+    fixture.rollout_path(&fixture.dir.path().join("sessions/old-rollout.jsonl"));
+    let now = crate::usage::parse_iso8601("2026-09-05T00:00:02Z").unwrap();
+    fixture
+        .history
+        .execute("UPDATE thread_turns SET started_at=?1", [(now - 1) as i64])
+        .unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let mut cache = SessionCache::default();
+    assert!(
+        cache
+            .scan_with_database_home(home.path(), fixture.dir.path(), now)
+            .unwrap()
+            .is_empty()
+    );
+    fixture
+        .history
+        .execute("DROP TABLE thread_turns", [])
+        .unwrap();
+    let path = rollout(home.path(), ID);
+    let _writer = writer(home.path(), ID);
+    let sessions = cache
+        .scan_with_database_home(home.path(), fixture.dir.path(), now + 1)
+        .unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].session_id, ID);
+    assert_eq!(sessions[0].phase, Phase::Running);
+    assert!(sessions[0].observed_alive);
+    assert_eq!(sessions[0].transcript_path.as_deref(), path.to_str());
+}
+
+#[test]
+fn missing_thread_locks_keep_the_legacy_fallback_for_owned_history() {
+    let fixture = Fixture::new();
+    fixture.rollout_path(&rollout(fixture.dir.path(), ID));
+    let locks = fixture.dir.path().join("thread-writer-locks");
+    std::fs::create_dir(&locks).unwrap();
+    File::create(locks.join(".coordination.lock")).unwrap();
+    let sessions = fixture.scan(NOW);
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].phase, Phase::Running);
+    assert!(!sessions[0].observed_alive);
+    assert!(!locks.join(format!("{ID}.lock")).exists());
+}
+
+#[test]
+fn external_legacy_history_requires_a_local_rollout_or_writer() {
+    let fixture = Fixture::new();
+    let home = tempfile::tempdir().unwrap();
+    let mut cache = SessionCache::default();
+    assert!(
+        cache
+            .scan_with_database_home(home.path(), fixture.dir.path(), NOW)
+            .unwrap()
+            .is_empty()
+    );
+    rollout(home.path(), ID);
+    let sessions = cache
+        .scan_with_database_home(home.path(), fixture.dir.path(), NOW + 1)
+        .unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].session_id, ID);
+}
+
+#[test]
+fn rollout_ownership_resolves_missing_leaves_and_checks_home_boundaries() {
+    let fixture = tempfile::tempdir().unwrap();
+    let home = fixture.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    assert!(path_within_home(
+        &home.join("sessions/missing.jsonl"),
+        &home
+    ));
+    assert!(!path_within_home(
+        &fixture
+            .path()
+            .join("codex-secondary/sessions/missing.jsonl"),
+        &home
+    ));
+    assert!(!path_within_home(
+        &home.join("../codex-secondary/missing.jsonl"),
+        &home
+    ));
+    #[cfg(windows)]
+    assert!(path_within_home(
+        &PathBuf::from(
+            home.join("sessions/missing.jsonl")
+                .to_string_lossy()
+                .to_uppercase()
+                .replace('\\', "/")
+        ),
+        &home
+    ));
 }
 
 #[test]
