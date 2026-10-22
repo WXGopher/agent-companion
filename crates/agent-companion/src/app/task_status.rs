@@ -1,6 +1,9 @@
 //! Presentation outcomes are separate from the lifecycle's terminal phase.
+#[cfg(test)]
 use agent_companion_core::protocol::HookSource;
-use agent_companion_core::state::{Phase, STALE_AFTER_SECS, SessionState, SessionTable};
+use agent_companion_core::state::{Phase, SessionState};
+#[cfg(test)]
+use agent_companion_core::state::{STALE_AFTER_SECS, SessionTable};
 
 /// Unsuccessful or unclassified display outcomes cannot establish that every
 /// task completed successfully. Lifecycle counters remain unchanged.
@@ -39,6 +42,7 @@ pub fn is_finished(phase: &str) -> bool {
 
 /// Both app-owned tables use the default stale window. Match the existing
 /// task-count filter without changing core lifecycle or notification behavior.
+#[cfg(test)]
 pub fn outcomes(table: &SessionTable, source: HookSource, now: u64) -> TaskOutcomes {
     TaskOutcomes::from_phases(
         table

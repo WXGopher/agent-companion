@@ -156,13 +156,13 @@ impl App {
             tasks: self.agent_tasks(HookSource::Codex),
             outcomes: self.agent_outcomes(HookSource::Codex),
         }];
-        if let Some(secondary) = self.secondary.borrow().as_ref() {
+        if self.secondary.borrow().is_some() {
             let now = now_unix_secs();
             readouts.push(InstanceReadout {
                 source: taskbar::ChipSource::Dodex,
                 snapshot: self.subscription_snapshot("dodex"),
-                tasks: secondary.table.tasks(HookSource::Codex, now),
-                outcomes: task_status::outcomes(&secondary.table, HookSource::Codex, now),
+                tasks: self.display.borrow().tasks("dodex", now),
+                outcomes: self.display.borrow().outcomes("dodex", now),
             });
         }
         readouts
@@ -179,7 +179,7 @@ impl App {
         self.secondary
             .borrow()
             .as_ref()
-            .map(|s| s.table.tasks(HookSource::Codex, now_unix_secs()))
+            .map(|_| self.display.borrow().tasks("dodex", now_unix_secs()))
     }
     pub(super) fn poll_secondary(&self) {
         let active = tui_deployment::active_instance();
@@ -255,6 +255,19 @@ impl App {
         Some((secondary.table.get(id)?.clone(), secondary.instance.clone()))
     }
 
+    pub(super) fn append_secondary_observations(
+        &self,
+        rows: &mut Vec<display::SessionObservation>,
+    ) {
+        let secondary = self.secondary.borrow();
+        let Some(secondary) = secondary.as_ref() else {
+            return;
+        };
+        rows.extend(secondary.table.sessions().map(|state| {
+            display::SessionObservation::new(session_row(state, "dodex", true), state)
+        }));
+    }
+
     pub(super) fn append_secondary_rows(&self, rows: &mut Vec<ui::SessionRow>) {
         for row in rows.iter_mut().filter(|r| r.source == "codex") {
             row.detail = format!("Codex · {}", row.detail).into();
@@ -263,22 +276,22 @@ impl App {
         let Some(secondary) = secondary.as_ref() else {
             return;
         };
-        rows.extend(secondary.table.sessions().map(|state| {
-            let project = state.cwd.as_deref().map(project_name);
-            ui::SessionRow {
-                id: format!("dodex:{}", state.session_id).into(),
-                title: session_title(
-                    project.as_deref(),
-                    state.display_name.as_deref(),
-                    &state.session_id,
-                )
-                .into(),
-                detail: format!("Dodex · {}", describe_session(state)).into(),
-                phase: task_status::phase(state).into(),
-                source: "dodex".into(),
-                jumpable: navigation::can_jump(state, true),
-            }
-        }));
+        rows.extend(
+            self.display
+                .borrow()
+                .sessions("dodex", usize::MAX, now_unix_secs())
+                .into_iter()
+                .map(|mut row| {
+                    row.detail = format!("Dodex · {}", row.detail).into();
+                    row.jumpable = row
+                        .id
+                        .as_str()
+                        .strip_prefix("dodex:")
+                        .and_then(|id| secondary.table.get(id))
+                        .is_some_and(|state| navigation::can_jump(state, true));
+                    row
+                }),
+        );
     }
 
     pub(super) fn instance_quotas(&self) -> Vec<ui::UsageRow> {

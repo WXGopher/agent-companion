@@ -55,6 +55,37 @@ component TaskbarDisplaySelector inherits Rectangle {
     }
 }
 
+component SessionRetentionSetting inherits Rectangle {
+    in property <int> hours: 5;
+    callback edited(int);
+    changed hours => { control.value = root.hours; }
+
+    VerticalLayout {
+        spacing: 9px;
+        HorizontalLayout {
+            spacing: 10px;
+            Text { text: "Remove inactive sessions after"; color: SettingsColors.text; font-size: 12px; font-weight: 600; vertical-alignment: center; }
+            control := SpinBox {
+                minimum: 1;
+                maximum: 168;
+                value: root.hours;
+                horizontal-stretch: 0;
+                accessible-label: "Remove inactive sessions after, in hours";
+                Tooltip { text: @markdown("1–168 hours. Changes save automatically."); }
+                edited(value) => { root.edited(value); self.value = root.hours; }
+            }
+            Text { text: root.hours == 1 ? "hour" : "hours"; color: SettingsColors.secondary; font-size: 11px; vertical-alignment: center; }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        Text {
+            text: "Keeps live tasks and sessions waiting for you. Removes Companion entries only.";
+            color: SettingsColors.secondary;
+            font-size: 11px;
+            wrap: word-wrap;
+        }
+    }
+}
+
 export component AppSettings inherits Rectangle {
     in property <bool> integrations;
     in property <bool> dirty;
@@ -100,6 +131,8 @@ export component AppSettings inherits Rectangle {
 
     in property <int> usage-refresh-minutes: 5;
     callback set-usage-refresh-minutes(string);
+    in property <int> session-retention-hours: 5;
+    callback set-session-retention-hours(int);
 
 
     VerticalLayout {
@@ -117,6 +150,15 @@ export component AppSettings inherits Rectangle {
             VerticalLayout {
                 alignment: start;
                 spacing: 14px;
+                if !root.integrations: SettingsCard {
+                    VerticalLayout {
+                        padding: 18px;
+                        SessionRetentionSetting {
+                            hours: root.session-retention-hours;
+                            edited(hours) => { root.set-session-retention-hours(hours); }
+                        }
+                    }
+                }
                 if !root.integrations: SettingsCard {
                     VerticalLayout {
                         padding: 18px;

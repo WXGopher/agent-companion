@@ -45,6 +45,8 @@ Windows 只保留任务栏 C / D 读数入口；点击打开面板，右键可�
 
 **Windows 显示屏幕**：右键任务栏读数 → **Settings… → Taskbar & app → Taskbar display**。默认 **Follow primary display**；也可指定已连接的屏幕，选择后立即生效并保存。指定屏幕断开或没有任务栏时暂用主屏，恢复可用后自动切回。
 
+**Windows 任务清理**：在 **Settings → Taskbar & app → Remove inactive sessions after** 设置不活动会话的保留时长，默认 5 小时，可选 1–168 小时。Tasks 页的 **Clear inactive** 可一键清理不活动记录；仍在运行和等待回答的会话继续保留。清理只移除 Companion 列表记录，有新活动时会重新显示。
+
 **Windows TUI 双开**：右键任务栏读数 → **Settings… → TUI 双开 → 安装 Dodex TUI**。也可从解压目录运行：
 
 ```powershell
@@ -120,6 +122,8 @@ The interface retains the last successful quota reading for the same account, ma
 Use `/hooks` in Codex to review and trust the configuration, then start a new session. For question cards and precise terminal navigation, launch Codex through `agent-companion-codex.exe` in the same folder.
 
 **Windows display selection**: right-click the taskbar readout → **Settings… → Taskbar & app → Taskbar display**. **Follow primary display** is the default. Choose a connected display to apply and save the selection immediately. If that display disconnects or has no taskbar, the readout temporarily uses the primary display and returns when the selected taskbar becomes available.
+
+**Windows task cleanup**: **Settings → Taskbar & app → Remove inactive sessions after** controls retention since each session's last activity, from 1–168 hours (default 5). Use **Clear inactive** on the Tasks page for immediate cleanup. Live tasks and sessions waiting for you stay visible. Cleanup removes Companion list entries; new activity makes a cleared session visible again.
 
 **Windows TUI instances**: Settings → **TUI 双开 → 安装 Dodex TUI**, or run `agent-companion.exe dodex-tui --install` from the extracted release. Use `--repair` to complete or repair an installation. The console entries live in `%LOCALAPPDATA%\AgentCompanion\bin`; reopen your terminal after PATH registration. Run `dodex login`, `dodex resume`, `dodex exec`, or `dodex update`. No desktop App is required. Existing secondary profiles remain in place. Arguments, terminal interaction, working directories and exit codes are native. `dodex app` reports that desktop duplication has been removed. [TUI guide](docs/macos-dual-instance.md)
 

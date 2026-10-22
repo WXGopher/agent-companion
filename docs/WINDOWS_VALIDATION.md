@@ -1,5 +1,37 @@
 # Windows validation
 
+## Unreleased: inactive session cleanup (2026-10-22)
+
+Taskbar & app settings now offer inactive-session retention from 1–168 hours,
+defaulting to 5 hours since each session's last activity. The Tasks toolbar has
+a Clear inactive button, disabled when there is nothing eligible to remove.
+Cleanup affects Companion's retained display history for Codex and Dodex.
+Current writer activity and live waiting requests are protected. Quiet,
+unconfirmed sessions become Inactive in Finished after the existing 15-minute
+freshness window instead of remaining in the Working count.
+
+Per-session timestamps and dismissal watermarks persist across restarts, so
+refreshing the scanner cannot restore cleared records. New activity revives the
+session. Legacy snapshots get a fixed timestamp during migration; repainting,
+quota refreshes and native question keepalives do not extend their age. The live
+lifecycle tables and notification trackers continue to observe their original
+inputs independently of the retained presentation history.
+
+The locked, offline workspace run passed with 549 passed and 8 explicitly
+ignored; formatting and workspace all-targets Clippy with `-D warnings` passed.
+Regressions cover the exact five-hour boundary, active/wait protection, repeated
+scans and restart after cleanup, account isolation, same-second hook revival,
+keepalive clock release, and replacing an estimated legacy timestamp with an
+older authentic completion without weakening later event ordering.
+
+Real pointer and keyboard input exercised clearing, disabled controls, repeat
+suppression, immediate retention changes, range limits and CLI-draft isolation.
+Software renders at 100%, 150% and 200% were inspected for 380 × 520 and
+380 × 360 task panels plus 820 × 720 and 720 × 640 settings windows. The cleanup
+control, disabled appearance, retention input and explanatory text fit cleanly.
+An optimized Windows test executable was built as `100.0`, and its copied
+artifact's SHA-256 matches the build output.
+
 ## Unreleased: Codex/Dodex task ownership (2026-10-22)
 
 The task scanner now checks which instance owns each paginated history row.

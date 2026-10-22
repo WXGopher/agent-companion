@@ -43,6 +43,8 @@ export component CodexTuiWindow inherits Window {
     in property <int> usage-refresh-minutes: 5;
     in property <string> usage-settings-message;
     callback set-usage-refresh-minutes(string);
+    in property <int> session-retention-hours: 5;
+    callback set-session-retention-hours(int);
 
     in property <bool> completion-notifications: true;
     callback set-completion-notifications(bool);
@@ -260,6 +262,8 @@ export component CodexTuiWindow inherits Window {
                 AppSettings {
                     usage-refresh-minutes: root.usage-refresh-minutes;
                     set-usage-refresh-minutes(minutes) => { root.set-usage-refresh-minutes(minutes); }
+                    session-retention-hours: root.session-retention-hours;
+                    set-session-retention-hours(hours) => { root.set-session-retention-hours(hours); }
                     visible: root.windows-preferences && (root.settings-page == 1 || root.settings-page == 2);
                     integrations: root.settings-page == 2;
                     dirty: root.dirty;

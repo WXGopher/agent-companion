@@ -7,22 +7,40 @@ component PanelButton inherits FocusScope {
     in property <bool> selected;
     in property <bool> available: true;
     callback clicked();
+    private property <string> held-key;
     height: 28px;
     min-width: 64px;
     enabled: root.available;
     accessible-role: button;
     accessible-label: root.label;
+    accessible-enabled: root.available;
+    accessible-action-default => { if root.available { root.clicked(); } }
+    changed available => { if !root.available { root.held-key = ""; } }
+    changed has-focus => { if !root.has-focus { root.held-key = ""; } }
     key-pressed(event) => {
-        if (event.text == " " || event.text == "\n") && root.available {
-            root.clicked();
+        if (event.text == Key.Space || event.text == Key.Return) && root.available {
+            if !event.repeat && root.held-key == "" {
+                root.held-key = event.text;
+                if event.text == Key.Return { root.clicked(); }
+            }
+            return accept;
+        }
+        return reject;
+    }
+    key-released(event) => {
+        if (event.text == Key.Space || event.text == Key.Return) && root.available {
+            if root.held-key == event.text {
+                root.held-key = "";
+                if event.text == Key.Space { root.clicked(); }
+            }
             return accept;
         }
         return reject;
     }
     Rectangle {
         border-radius: 7px;
-        background: root.selected ? Theme.soft-hot : touch.has-hover ? Theme.soft : transparent;
-        border-width: root.has-focus ? 1px : 0px;
+        background: root.selected ? Theme.soft-hot : root.available && touch.has-hover ? Theme.soft : transparent;
+        border-width: root.available && root.has-focus ? 1px : 0px;
         border-color: Theme.plenty;
         opacity: root.available ? 1 : 0.45;
         Text { text: root.label; color: root.selected ? Theme.text : Theme.dim; font-size: 11px; font-weight: root.selected ? 600 : 400; horizontal-alignment: center; vertical-alignment: center; }
@@ -124,6 +142,7 @@ export component FlyoutWindow inherits Window {
     in property <int> waiting-total;
     in property <int> active-count;
     in property <int> finished-count;
+    in property <int> inactive-count;
     in-out property <bool> finished;
     in-out property <bool> usage-page;
     in-out property <length> task-scroll-y;
@@ -140,6 +159,7 @@ export component FlyoutWindow inherits Window {
     callback jump(string);
     callback select-page(bool);
     callback select-tasks(bool);
+    callback clear-inactive();
     callback refresh-usage();
     callback settings();
     callback view-update();
@@ -187,6 +207,18 @@ export component FlyoutWindow inherits Window {
                         PanelButton { label: "Active · " + root.active-count; selected: !root.finished; clicked => { root.finished = false; root.task-scroll-y = 0px; root.select-tasks(false); } }
                         PanelButton { label: "Finished · " + root.finished-count; selected: root.finished; clicked => { root.finished = true; root.task-scroll-y = 0px; root.select-tasks(true); } }
                         Rectangle { horizontal-stretch: 1; }
+                        PanelButton {
+                            label: "Clear inactive";
+                            min-width: 96px;
+                            horizontal-stretch: 0;
+                            available: root.inactive-count > 0;
+                            Tooltip {
+                                text: root.inactive-count > 0
+                                    ? @markdown("Clear \{root.inactive-count} inactive \{root.inactive-count == 1 ? "session" : "sessions"} from Companion. Keeps live tasks and sessions waiting for you.")
+                                    : @markdown("No inactive sessions to clear.");
+                            }
+                            clicked => { root.clear-inactive(); }
+                        }
                     }
                     ScrollView {
                         viewport-width: self.visible-width;

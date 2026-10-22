@@ -130,6 +130,15 @@ fn click_control(window: &MinimalSoftwareWindow, label: &str, role: AccessibleRo
 }
 
 fn control_value(window: &MinimalSoftwareWindow, label: &str, role: AccessibleRole) -> String {
+    control_property(window, label, role, AccessibleStringProperty::Value)
+}
+
+fn control_property(
+    window: &MinimalSoftwareWindow,
+    label: &str,
+    role: AccessibleRole,
+    property: AccessibleStringProperty,
+) -> String {
     let root = ItemRc::new_root(WindowInner::from_pub(window.window()).component());
     let mut pending = vec![root];
     while let Some(item) = pending.pop() {
@@ -146,7 +155,7 @@ fn control_value(window: &MinimalSoftwareWindow, label: &str, role: AccessibleRo
                 .is_some_and(|value| value == label)
         {
             return item
-                .accessible_string_property(AccessibleStringProperty::Value)
+                .accessible_string_property(property)
                 .unwrap_or_default()
                 .to_string();
         }
@@ -158,6 +167,253 @@ fn key(window: &MinimalSoftwareWindow, key: slint::platform::Key) {
     let text: slint::SharedString = key.into();
     window.dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
     window.dispatch_event(WindowEvent::KeyReleased { text });
+}
+
+#[test]
+#[cfg(windows)]
+fn inactive_session_cleanup_controls_render_and_accept_real_input() {
+    let windows = Rc::new(RefCell::new(Vec::new()));
+    slint::platform::set_platform(Box::new(TestPlatform(windows.clone()))).unwrap();
+    let panel = super::ui::FlyoutWindow::new().unwrap();
+    panel.set_active_count(20);
+    panel.set_finished_count(2);
+    panel.set_sessions(ModelRc::new(VecModel::from(
+        (0..20)
+            .map(|n| super::ui::SessionRow {
+                id: format!("session-{n}").into(),
+                title: "atoll · Update companion settings".into(),
+                detail: if n == 0 {
+                    "Waiting for approval · run tests".into()
+                } else {
+                    "Working · review changes".into()
+                },
+                phase: if n == 0 {
+                    "waitingForApproval"
+                } else {
+                    "running"
+                }
+                .into(),
+                source: "codex".into(),
+                jumpable: true,
+            })
+            .collect::<Vec<_>>(),
+    )));
+    let cleared = Rc::new(std::cell::Cell::new(0));
+    panel.on_clear_inactive({
+        let cleared = cleared.clone();
+        move || cleared.set(cleared.get() + 1)
+    });
+    let jumped = Rc::new(std::cell::Cell::new(0));
+    panel.on_jump({
+        let jumped = jumped.clone();
+        move |_| jumped.set(jumped.get() + 1)
+    });
+    panel.show().unwrap();
+    let window = windows.borrow().last().unwrap().clone();
+    for scale in [1.0, 1.5, 2.0] {
+        window.dispatch_event(WindowEvent::ScaleFactorChanged {
+            scale_factor: scale,
+        });
+        for height in [super::DETAIL_HEIGHT, 360.0] {
+            panel
+                .window()
+                .set_size(slint::LogicalSize::new(super::DETAIL_WIDTH, height));
+            panel.set_finished(false);
+            panel.set_inactive_count(7);
+            panel.set_task_scroll_y(-120.0);
+            draw(&window, &format!("cleanup-tasks-{height}-{scale}"));
+            let clear = control_bounds(&window, "Clear inactive", AccessibleRole::Button);
+            let finished = control_bounds(&window, "Finished · 2", AccessibleRole::Button);
+            assert!(
+                clear.x >= finished.x + finished.width,
+                "cleanup must fit beside the task tabs"
+            );
+            let before = cleared.get();
+            click_control(&window, "Clear inactive", AccessibleRole::Button);
+            assert_eq!(cleared.get(), before + 1);
+            assert_eq!(jumped.get(), 0, "cleanup must not activate a task row");
+            assert!(!panel.get_usage_page() && !panel.get_finished());
+            assert_eq!(panel.get_task_scroll_y(), -120.0);
+            assert!(
+                panel.window().is_visible(),
+                "cleanup must leave the panel open"
+            );
+
+            panel.set_inactive_count(0);
+            draw(&window, &format!("cleanup-tasks-empty-{height}-{scale}"));
+            assert_eq!(
+                control_property(
+                    &window,
+                    "Clear inactive",
+                    AccessibleRole::Button,
+                    AccessibleStringProperty::Enabled
+                ),
+                "false"
+            );
+            click_control(&window, "Clear inactive", AccessibleRole::Button);
+            key(&window, slint::platform::Key::Return);
+            assert_eq!(
+                cleared.get(),
+                before + 1,
+                "disabled cleanup must ignore input"
+            );
+
+            panel.set_inactive_count(2);
+            click_control(&window, "Finished · 2", AccessibleRole::Button);
+            key(&window, slint::platform::Key::Tab);
+            let before = cleared.get();
+            for _ in 0..2 {
+                window.dispatch_event(WindowEvent::KeyPressed { text: " ".into() });
+            }
+            assert_eq!(cleared.get(), before, "Space activates on release");
+            window.dispatch_event(WindowEvent::KeyReleased { text: " ".into() });
+            assert_eq!(
+                cleared.get(),
+                before + 1,
+                "Tab must reach cleanup; held Space activates once"
+            );
+            let enter: slint::SharedString = slint::platform::Key::Return.into();
+            for _ in 0..2 {
+                window.dispatch_event(WindowEvent::KeyPressed {
+                    text: enter.clone(),
+                });
+            }
+            window.dispatch_event(WindowEvent::KeyReleased { text: enter });
+            assert_eq!(cleared.get(), before + 2, "held Enter activates once");
+            window.dispatch_event(WindowEvent::KeyPressed { text: " ".into() });
+            panel.set_inactive_count(0);
+            window.dispatch_event(WindowEvent::KeyReleased { text: " ".into() });
+            assert_eq!(cleared.get(), before + 2, "disabling cancels a held key");
+            assert!(panel.get_finished() && !panel.get_usage_page());
+            assert_eq!(jumped.get(), 0);
+        }
+    }
+    panel.hide().unwrap();
+    session_retention_setting_renders_and_saves_user_edits(&windows);
+}
+
+#[cfg(windows)]
+fn session_retention_setting_renders_and_saves_user_edits(
+    windows: &Rc<RefCell<Vec<Rc<MinimalSoftwareWindow>>>>,
+) {
+    let settings = super::ui::CodexTuiWindow::new().unwrap();
+    settings.set_windows_preferences(true);
+    settings.set_settings_page(1);
+    settings.set_dirty(true);
+    settings.set_preview("Keep the unapplied CLI draft".into());
+    let edits = Rc::new(RefCell::new(Vec::new()));
+    settings.on_set_session_retention_hours({
+        let edits = edits.clone();
+        let weak = settings.as_weak();
+        move |hours| {
+            edits.borrow_mut().push(hours);
+            weak.upgrade().unwrap().set_session_retention_hours(hours);
+        }
+    });
+    settings.show().unwrap();
+    let window = windows.borrow().last().unwrap().clone();
+    let label = "Remove inactive sessions after, in hours";
+    assert_eq!(settings.get_session_retention_hours(), 5);
+    assert!(edits.borrow().is_empty(), "opening Settings must not save");
+    for scale in [1.0, 1.5, 2.0] {
+        window.dispatch_event(WindowEvent::ScaleFactorChanged {
+            scale_factor: scale,
+        });
+        for (width, height) in [(820.0, 720.0), (720.0, 640.0)] {
+            settings
+                .window()
+                .set_size(slint::LogicalSize::new(width, height));
+            settings.set_session_retention_hours(5);
+            draw(&window, &format!("cleanup-settings-{width}-{scale}"));
+            let bounds = control_bounds(&window, label, AccessibleRole::Spinbox);
+            assert_eq!(control_value(&window, label, AccessibleRole::Spinbox), "5");
+            assert_eq!(
+                control_property(
+                    &window,
+                    label,
+                    AccessibleRole::Spinbox,
+                    AccessibleStringProperty::ValueMinimum
+                ),
+                "1"
+            );
+            assert_eq!(
+                control_property(
+                    &window,
+                    label,
+                    AccessibleRole::Spinbox,
+                    AccessibleStringProperty::ValueMaximum
+                ),
+                "168"
+            );
+            let before = edits.borrow().len();
+            // Exercise the actual Fluent increment/decrement buttons.
+            click(
+                &window,
+                bounds.x + bounds.width - 44.0,
+                bounds.y + bounds.height / 2.0,
+            );
+            assert_eq!(settings.get_session_retention_hours(), 6);
+            click(
+                &window,
+                bounds.x + bounds.width - 16.0,
+                bounds.y + bounds.height / 2.0,
+            );
+            assert_eq!(settings.get_session_retention_hours(), 5);
+            assert_eq!(
+                edits.borrow().len(),
+                before + 2,
+                "each edit saves immediately"
+            );
+
+            click(&window, bounds.x + 18.0, bounds.y + bounds.height / 2.0);
+            let control: slint::SharedString = slint::platform::Key::Control.into();
+            window.dispatch_event(WindowEvent::KeyPressed {
+                text: control.clone(),
+            });
+            window.dispatch_event(WindowEvent::KeyPressed { text: "a".into() });
+            window.dispatch_event(WindowEvent::KeyReleased { text: "a".into() });
+            window.dispatch_event(WindowEvent::KeyReleased { text: control });
+            window.dispatch_event(WindowEvent::KeyPressed { text: "24".into() });
+            window.dispatch_event(WindowEvent::KeyReleased { text: "24".into() });
+            assert_eq!(
+                settings.get_session_retention_hours(),
+                24,
+                "keyboard edits save without Apply"
+            );
+
+            settings.set_session_retention_hours(168);
+            let before = edits.borrow().len();
+            click(
+                &window,
+                bounds.x + bounds.width - 44.0,
+                bounds.y + bounds.height / 2.0,
+            );
+            assert_eq!(
+                edits.borrow().len(),
+                before,
+                "upper bound rejects increment"
+            );
+            assert_eq!(
+                control_value(&window, label, AccessibleRole::Spinbox),
+                "168"
+            );
+            settings.set_session_retention_hours(1);
+            click(
+                &window,
+                bounds.x + bounds.width - 16.0,
+                bounds.y + bounds.height / 2.0,
+            );
+            assert_eq!(
+                edits.borrow().len(),
+                before,
+                "lower bound rejects decrement"
+            );
+            assert_eq!(control_value(&window, label, AccessibleRole::Spinbox), "1");
+            assert!(settings.get_dirty());
+            assert_eq!(settings.get_preview(), "Keep the unapplied CLI draft");
+        }
+    }
+    settings.hide().unwrap();
 }
 
 fn checked_blue_pixels(

@@ -57,6 +57,9 @@ pub struct Config {
     pub card: CardConfig,
     pub completion_notifications: bool,
     pub question_notifications: bool,
+    /// Retain inactive display rows for this many hours. This does not remove
+    /// the agent's session logs or affect a live turn.
+    pub session_retention_hours: i32,
     /// Unknown keys are preserved on rewrite rather than silently dropped, so
     /// a config written by any other version of Agent Companion — older or newer —
     /// survives a run of this one with its own settings intact.
@@ -127,12 +130,21 @@ impl Default for Config {
             card: CardConfig::default(),
             completion_notifications: true,
             question_notifications: true,
+            session_retention_hours: 5,
             extra: serde_json::Map::new(),
         }
     }
 }
 
 impl Config {
+    pub fn session_retention_hours(&self) -> i32 {
+        self.session_retention_hours.clamp(1, 168)
+    }
+
+    pub fn session_retention_secs(&self) -> u64 {
+        self.session_retention_hours() as u64 * 60 * 60
+    }
+
     /// Read the config, or hand back the defaults for anything that goes wrong —
     /// a missing file, a truncated write, a hand-edit that broke the JSON.
     pub fn load() -> Self {
@@ -190,6 +202,22 @@ mod tests {
         assert_eq!(config.card.y, None);
         // Only half a position is no position at all.
         assert_eq!(config.card_position(), None);
+        assert_eq!(config.session_retention_hours(), 5);
+    }
+
+    #[test]
+    fn session_retention_round_trips_and_bounds_hand_edited_values() {
+        let mut config: Config =
+            serde_json::from_str(r#"{"questionNotifications":false}"#).unwrap();
+        assert_eq!(config.session_retention_secs(), 5 * 60 * 60);
+        config.session_retention_hours = 12;
+        let back: Config = serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+        assert_eq!(back.session_retention_hours(), 12);
+        assert!(!back.question_notifications);
+        config.session_retention_hours = -1;
+        assert_eq!(config.session_retention_hours(), 1);
+        config.session_retention_hours = i32::MAX;
+        assert_eq!(config.session_retention_hours(), 168);
     }
 
     #[test]
