@@ -16,7 +16,7 @@ Windows 只保留任务栏 C / D 读数入口；点击打开面板，右键可�
 - **任务状态**：查看运行中、待处理和已结束的任务，点击返回对应对话或终端。
 - **Tasks / Usage**：切换任务与用量，查看剩余额度、重置时间、累计 Token 和最近七个有记录日期的用量柱状图。
 - **状态栏定制**：选择 Codex CLI 状态栏组件，实时预览并保存。
-- **Windows 集成**：任务栏分别显示 Codex（`C`）和 Dodex（`D`）的每周剩余额度；支持任务完成通知、开机启动，以及可选的工具审批和提问卡片。
+- **Windows 集成**：默认在主显示器的任务栏分别显示 Codex（`C`）和 Dodex（`D`）的每周剩余额度，切换主显示器后自动跟随；支持任务完成通知、开机启动，以及可选的工具审批和提问卡片。
 - **macOS 入口**：菜单栏显示每周剩余额度，Codex 在上、Dodex 在下；有历史读数的实例在闲置时继续显示，仅最近一次额度查询失败时旧值带 `*`，悬停可查看最后成功时间和失败原因。尚无读数时显示 `—` 和对应任务状态；点击弹出任务／用量面板，设置从面板底部打开。
 - **任务状态标记**：分别显示 Codex／Dodex 状态：蓝色呼吸表示进行中，黄色表示待确认／待输入或失败，绿色仅表示所有任务均完成，灰色表示无任务或停止、暂停、未知等状态。混合任务优先显示等待，其次显示运行。macOS 菜单栏与 Windows 任务栏使用相同颜色含义。
 - **macOS 面板**：顶部显示 Agent Companion、当前版本和正在运行的任务数。点击底部的太阳／月亮按钮切换亮色／暗色主题，Tasks 和 Usage 同步更新；重启后保留主题选择，默认使用暗色。
@@ -90,7 +90,7 @@ Windows uses only the C / D taskbar readout: click for the panel, or right-click
 - **Tasks**: track running, waiting and finished tasks, then jump back to the conversation or terminal.
 - **Tasks / Usage**: switch to remaining quota, reset times, lifetime tokens and a bar chart of the last seven reported days.
 - **Status bar editor**: choose Codex CLI components with a live preview.
-- **Windows integration**: separate taskbar readings for Codex (`C`) and Dodex (`D`) weekly quota remaining, completion notifications, startup settings, and optional tool approvals and question cards.
+- **Windows integration**: separate readings for Codex (`C`) and Dodex (`D`) weekly quota remaining on the primary display's taskbar by default, following changes to the primary display; completion notifications, startup settings, and optional tool approvals and question cards.
 - **macOS menu bar**: the menu bar shows weekly quota remaining, with Codex above Dodex. Instances with a previous reading stay visible while idle; the previous value carries `*` only after a failed quota query, with the last success time and error on hover. Before a reading is available, its row shows `—` and the task status; click it for tasks and usage. The menu bar is the only macOS entry; open Settings from the popup footer.
 - **Task status marks**: Codex / Dodex each show breathing blue for running tasks, yellow for approval/input or failure, green only when every task completed, and gray for no tasks, stopped, paused or unknown states. Waiting takes priority over running in mixed groups. The macOS menu bar and Windows taskbar use the same color meanings.
 - **macOS panel**: the header shows Agent Companion, its current version and the number of running tasks. Use the sun / moon button at the bottom to switch light / dark themes across Tasks and Usage. Your theme choice is saved across restarts; dark is the default.

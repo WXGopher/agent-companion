@@ -316,14 +316,14 @@ impl App {
         }
     }
 
-    /// Keep the readout attached to whatever taskbar currently exists.
+    /// Keep the readout attached to the primary display's current taskbar.
     ///
     /// Explorer restarts — on a crash, on a settings change, on an update — and
-    /// takes `Shell_TrayWnd` with it. Our window survives the loss of its
+    /// takes the shell taskbars with it. Our window survives the loss of its
     /// parent, orphaned and invisible, and the only way back is to notice and
     /// re-adopt. Polling rather than listening for `TaskbarCreated`: the
     /// broadcast needs a window procedure of our own, which Slint owns, and this
-    /// costs one `FindWindow` per tick.
+    /// also lets us follow changes to Windows' primary display.
     fn watch_the_taskbar(&self) {
         if !self.bar.is_shown() {
             return;

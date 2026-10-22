@@ -1,5 +1,44 @@
 # Windows validation
 
+## Unreleased: primary-display taskbar (2026-10-22)
+
+The Windows readout now enumerates both `Shell_TrayWnd` and
+`Shell_SecondaryTrayWnd` and selects the taskbar whose monitor Windows marks as
+primary. The existing 500 ms watcher refreshes this selection, so changing the
+primary display or recreating shell taskbars does not require restarting
+Companion. A recognized taskbar on a known secondary monitor is not selected;
+the classic main-taskbar fallback applies only when its monitor query fails.
+
+Five synthetic regression tests cover class/enumeration order, primary-display
+changes, recreated handles, negative coordinates, thin auto-hidden bars,
+invalid candidates and monitor-query fallback. A sixth, read-only native test
+found the current Windows taskbar and independently confirmed its monitor
+against the primary display at `(0, 0)`. All six passed; the native check was
+executed rather than skipped.
+
+The Windows application test suite passed with 201 passed and 5 explicitly
+ignored, including these six checks. Workspace all-targets Clippy with
+`-D warnings`, `cargo fmt --all --check`, the locked Windows application build
+and `git diff --check` passed. The local development executable is
+`target/debug/agent-companion.exe`.
+
+An optimized local workspace build was subsequently installed over the existing
+0.3.33 installation, with the previous executables and application settings
+backed up. The old app exited through its normal pipe shutdown request. All
+four installed Companion executables match the optimized build's SHA-256
+hashes; the installed application and `acomp` both report local version `100.0`,
+and one application process is running from the installed location.
+
+Read-only native window inspection reproduced the issue before replacement:
+the old visible readout was embedded in `Shell_TrayWnd` on a non-primary
+monitor. After restarting the installed build, its visible readout is embedded
+in `Shell_SecondaryTrayWnd` on the verified primary monitor, with its rectangle
+inside the taskbar. The inspection did not change the display configuration.
+
+Live primary-display switching, monitor hot-plugging and mixed-DPI reparenting
+remain manual acceptance scenarios; the synthetic snapshots and native lookup
+do not establish those interactions.
+
 ## v0.3.34 usage configuration compatibility (2026-10-21)
 
 The usage worker forced `--strict-config`, causing native startup to fail on

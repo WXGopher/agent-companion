@@ -7,8 +7,8 @@ use std::collections::HashMap;
 
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
-    HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, RDW_INVALIDATE, RDW_NOERASE,
-    RedrawWindow, ScreenToClient,
+    GetMonitorInfoW, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
+    MonitorFromWindow, RDW_INVALIDATE, RDW_NOERASE, RedrawWindow, ScreenToClient,
 };
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
@@ -34,6 +34,8 @@ pub use tooltip::UsageTooltip;
 
 #[cfg(test)]
 mod readout_tests;
+#[cfg(test)]
+mod taskbar_tests;
 
 /// A screen rectangle in physical pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -333,7 +335,7 @@ pub fn keep_on_top(handle: isize) {
 // ------------------------------------------------------------- the taskbar
 //
 // Agent Companion's usage readout lives *inside* the taskbar rather than beside it: it is
-// reparented into `Shell_TrayWnd`, which is how TrafficMonitor and its like put
+// reparented into a shell taskbar, which is how TrafficMonitor and its like put
 // a readout in the empty run of the task list. Being a child of the taskbar is
 // what makes it follow the taskbar's z-order, its auto-hide, and its monitor —
 // none of which a topmost strip pretending to be attached can do.
@@ -347,6 +349,9 @@ pub fn keep_on_top(handle: isize) {
 /// The classic taskbar's window class. Windows 11's own taskbar keeps it, and
 /// so do the shell replacements that restore the Windows 10 layout.
 const TASKBAR_CLASS: &str = "Shell_TrayWnd";
+/// Additional taskbars use this class. The class alone does not tell us which
+/// monitor Windows currently considers primary.
+const SECONDARY_TASKBAR_CLASS: &str = "Shell_SecondaryTrayWnd";
 /// The notification area inside it — the clock, the tray icons. Agent Companion's readout
 /// parks clear of this, in the empty stretch the task list leaves.
 const NOTIFY_CLASS: &str = "TrayNotifyWnd";
@@ -355,10 +360,88 @@ fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-fn find_window(class: &str) -> Option<HWND> {
-    let class = wide(class);
-    let window = unsafe { FindWindowW(PCWSTR(class.as_ptr()), PCWSTR::null()) }.ok()?;
-    (!window.is_invalid()).then_some(window)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskbarClass {
+    Main,
+    Secondary,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TaskbarCandidate {
+    handle: isize,
+    class: TaskbarClass,
+    rect: Option<Rect>,
+    is_primary: Option<bool>,
+}
+
+/// Select from a fresh shell snapshot; neither class nor enumeration order is
+/// a substitute for Windows' primary-monitor flag.
+fn select_taskbar(candidates: &[TaskbarCandidate]) -> Option<(isize, Rect)> {
+    let mut fallback = None;
+    for candidate in candidates {
+        let Some(rect) = candidate.rect else {
+            continue;
+        };
+        // Zero-size bars can appear while Explorer restarts or auto-hides.
+        if candidate.handle == 0 || rect.right <= rect.left || rect.bottom <= rect.top {
+            continue;
+        }
+        if candidate.is_primary == Some(true) {
+            return Some((candidate.handle, rect));
+        }
+        // Preserve the old main-taskbar behavior if the monitor API fails,
+        // without knowingly attaching to a non-primary monitor.
+        if candidate.class == TaskbarClass::Main && candidate.is_primary.is_none() {
+            fallback.get_or_insert((candidate.handle, rect));
+        }
+    }
+    fallback
+}
+
+fn taskbar_class(window: HWND) -> Option<TaskbarClass> {
+    let mut buffer = [0u16; 256];
+    let length = unsafe { GetClassNameW(window, &mut buffer) };
+    let name = &buffer[..length as usize];
+    if name.iter().copied().eq(TASKBAR_CLASS.encode_utf16()) {
+        Some(TaskbarClass::Main)
+    } else if name
+        .iter()
+        .copied()
+        .eq(SECONDARY_TASKBAR_CLASS.encode_utf16())
+    {
+        Some(TaskbarClass::Secondary)
+    } else {
+        None
+    }
+}
+
+fn taskbar_is_on_primary_monitor(window: HWND) -> Option<bool> {
+    // An auto-hidden bar can lie just outside its display. Use the nearest
+    // monitor instead of treating every off-screen bar as primary.
+    let monitor = unsafe { MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST) };
+    if monitor.is_invalid() {
+        return None;
+    }
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    unsafe { GetMonitorInfoW(monitor, &mut info) }
+        .as_bool()
+        .then_some(info.dwFlags & MONITORINFOF_PRIMARY != 0)
+}
+
+unsafe extern "system" fn collect_taskbar(window: HWND, lparam: LPARAM) -> BOOL {
+    if let Some(class) = taskbar_class(window) {
+        let candidates = unsafe { &mut *(lparam.0 as *mut Vec<TaskbarCandidate>) };
+        candidates.push(TaskbarCandidate {
+            handle: window.0 as isize,
+            class,
+            rect: rect_of(window),
+            is_primary: taskbar_is_on_primary_monitor(window),
+        });
+    }
+    BOOL(1)
 }
 
 fn find_child(parent: HWND, class: &str) -> Option<HWND> {
@@ -392,15 +475,19 @@ pub struct Taskbar {
     pub notify: Rect,
 }
 
-/// Find the taskbar and the notification area inside it.
+/// Find the taskbar on Windows' current primary monitor and its notification
+/// area. Called afresh so display changes and Explorer restarts are picked up.
 pub fn taskbar() -> Option<Taskbar> {
-    let handle = find_window(TASKBAR_CLASS)?;
-    let rect = rect_of(handle)?;
-    // A taskbar with no width or height is one that is auto-hidden or mid-
-    // restart; placing anything against it would be placing it at nowhere.
-    if rect.right <= rect.left || rect.bottom <= rect.top {
-        return None;
+    let mut candidates = Vec::<TaskbarCandidate>::new();
+    unsafe {
+        EnumWindows(
+            Some(collect_taskbar),
+            LPARAM(&mut candidates as *mut _ as isize),
+        )
     }
+    .ok()?;
+    let (handle, rect) = select_taskbar(&candidates)?;
+    let handle = hwnd(handle);
     let notify = find_child(handle, NOTIFY_CLASS)
         .and_then(rect_of)
         .unwrap_or(Rect {
