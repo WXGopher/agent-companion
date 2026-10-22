@@ -27,7 +27,7 @@ Windows 只保留任务栏 C / D 读数入口；点击打开面板，右键可�
 
 界面保留同一账号最后成功的额度读数，查询失败后以 `*` 标注；尚无读数时显示 `—`。换号或登出会清除旧读数，额度重置时间到达后等待下次查询，不推算剩余额度。Usage 显示最后成功时间、失败原因和历史 Token 统计。详见[用量查询行为](docs/USAGE_QUERIES.md)。
 
-**v0.3.34 用量兼容修复**：用量查询沿用 Codex 默认的配置加载方式，旧版遗留或其他版本新增的未知字段不再阻止额度与 Token 历史查询。个人配置保持原样，账号与有效配置仍须通过校验。本版同时包含主分支已合入的 Claude Code 支持移除。详见[版本说明](docs/releases/v0.3.34.md)及 [Windows 验证记录](docs/WINDOWS_VALIDATION.md)。
+**v0.3.35 Windows 任务与更新**：新增 TUI 提问／审批通知和原终端 tab/pane 定位，修复 Codex 与 Dodex 的活动归属。任务记录默认保留至最后活动后 5 小时，可调整为 1–168 小时，或用 **Clear inactive** 立即清理；运行中和等待回答的会话继续保留。任务栏读数可指定屏幕，公开 Windows 版本支持面板内一键下载、校验更新并重启。详见[版本说明](docs/releases/v0.3.35.md)及 [Windows 验证记录](docs/WINDOWS_VALIDATION.md)。
 
 ### 安装
 
@@ -78,7 +78,7 @@ macOS 从菜单栏打开任务／用量面板，设置位于面板底部；重�
 
 **双开隔离与停用**：安装不会复制主账号认证、个人配置或 AGENTS 指令。高级设置保留显式配置同步；账号接力继续通过 `acomp resume` 操作。关闭监控不退出 TUI，也不删除账号数据。旧 App 部署记录只用于迁移，成功后归档；修复可重复运行，失败后保留原数据并报告原因。
 
-**升级**：先退出旧程序及设置窗口，再替换文件；已安装 Windows hooks 的用户需重新执行安装命令。Codex 配置、账号和双开环境会保留。
+**升级**：支持一键更新的公开 Windows 版本可在主面板点击 **一键更新**。手动升级时，先退出旧程序及设置窗口，再替换文件；已安装 Windows hooks 的用户需重新执行安装命令。Codex 配置、账号和双开环境会保留。
 
 ## English
 
@@ -105,7 +105,7 @@ Subscription usage reuses the existing ChatGPT login from your local Codex TUI, 
 
 The interface retains the last successful quota reading for the same account, marking it with `*` after a failed query and showing `—` before a reading is available. Switching accounts or signing out clears old readings. After a quota reset time, the app waits for the next query instead of estimating the remaining allowance. Usage shows the last success time, failure reason and historical token totals. See [usage query behavior](docs/USAGE_QUERIES.md).
 
-**v0.3.34 usage compatibility fix:** usage queries use Codex's normal configuration loading, so ignored legacy or newer unknown settings no longer prevent quota and token-history reads. Personal configuration stays intact, and account ownership and effective configuration are still verified. This release also includes the removal of Claude Code support already merged into the main branch. See the [release notes](docs/releases/v0.3.34.md) and [Windows validation record](docs/WINDOWS_VALIDATION.md).
+**v0.3.35 Windows tasks and updates:** adds TUI question/approval notifications and navigation to the original terminal tab/pane, and fixes Codex/Dodex activity ownership. Task history defaults to 5 hours since last activity, configurable from 1–168 hours, with **Clear inactive** for immediate cleanup; live tasks and sessions waiting for you stay visible. Choose a taskbar display in Settings, and use one-click download, verification and restart in published Windows builds. See the [release notes](docs/releases/v0.3.35.md) and [Windows validation record](docs/WINDOWS_VALIDATION.md).
 
 ### Install
 
@@ -144,7 +144,7 @@ On macOS, open tasks and usage from the menu bar, with Settings in the popup foo
 
 **Isolation and disabling**: installation does not copy primary credentials, personal settings or AGENTS instructions. Advanced settings retain explicit configuration synchronization, and `acomp resume` retains account handoff. Disabling monitoring leaves the TUIs and their data usable. Desktop deployment records are used only for migration, then archived after successful publication. Repair is repeatable and preserves existing data after failures.
 
-**Upgrade**: quit the old app and its Settings window, then replace the files. If you installed Windows hooks, rerun the installation command. Codex configuration, accounts and the second-instance environment are retained.
+**Upgrade**: published Windows builds with updater support offer **一键更新** (One-click update) in the main panel. For manual upgrades, quit the old app and its Settings window, then replace the files. If you installed Windows hooks, rerun the installation command. Codex configuration, accounts and the second-instance environment are retained.
 
 ## 截图 / Screenshots
 
