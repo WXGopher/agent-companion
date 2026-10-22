@@ -11,6 +11,19 @@ fn event(second: u64, kind: &str, turn: &str) -> Value {
         "payload": {"type": kind, "turn_id": turn}})
 }
 
+fn response(second: u64, payload: Value) -> Value {
+    json!({"timestamp": format!("2026-09-05T00:00:{second:02}Z"),
+        "type": "response_item", "payload": payload})
+}
+
+fn question(second: u64, name: &str, key: &str, arguments: Value) -> Value {
+    response(
+        second,
+        json!({"type":"function_call", "name":name,
+        "call_id":key, "arguments":arguments}),
+    )
+}
+
 fn append(path: &Path, rows: &[Value]) {
     let mut file = fs::OpenOptions::new().append(true).open(path).unwrap();
     for row in rows {
@@ -315,6 +328,221 @@ fn native_questions_wait_for_the_matching_answer_without_creating_approval_reque
         cache.scan(dir.path(), now(11)).unwrap()[0].phase,
         Phase::Completed
     );
+}
+
+#[test]
+fn observed_questions_replace_retries_and_resolve_each_call_independently() {
+    let (dir, path) = fixture(json!("cli"));
+    append(
+        &path,
+        &[
+            event(1, "task_started", "turn"),
+            question(
+                2,
+                "request_user_input",
+                "q1",
+                json!(json!({"questions":[{"question":"Original question?"}]}).to_string()),
+            ),
+        ],
+    );
+    let mut cache = SessionCache::default();
+    let original = cache.scan(dir.path(), now(2)).unwrap();
+    assert_eq!(
+        original[0].observed_questions[0].prompt.as_deref(),
+        Some("Original question?")
+    );
+    append(
+        &path,
+        &[
+            question(
+                3,
+                "functions.request_user_input",
+                "q1",
+                json!({
+            "questions":[{"question":"  Updated\nquestion?\t"}]}),
+            ),
+            question(
+                4,
+                "request_user_input",
+                "q2",
+                json!({"questions":[
+            {"question":"Private password?", "isSecret":true},
+            {"question":"Public choice?", "is_secret":false}]}),
+            ),
+        ],
+    );
+    let waiting = cache.scan(dir.path(), now(4)).unwrap();
+    assert_eq!(waiting[0].phase, Phase::WaitingForAnswer);
+    assert!(waiting[0].pending.is_empty());
+    assert_eq!(
+        waiting[0].observed_questions,
+        vec![
+            ObservedQuestion {
+                key: "q1".into(),
+                prompt: Some("Updated question?".into()),
+                requested_at: now(3)
+            },
+            ObservedQuestion {
+                key: "q2".into(),
+                prompt: Some("Public choice?".into()),
+                requested_at: now(4)
+            },
+        ]
+    );
+    append(
+        &path,
+        &[response(
+            5,
+            json!({"type":"function_call_output", "call_id":"q1"}),
+        )],
+    );
+    let partial = cache.scan(dir.path(), now(5)).unwrap();
+    assert_eq!(partial[0].phase, Phase::WaitingForAnswer);
+    assert_eq!(partial[0].observed_questions.len(), 1);
+    assert_eq!(partial[0].observed_questions[0].key, "q2");
+    append(
+        &path,
+        &[response(
+            6,
+            json!({"type":"function_call_output", "call_id":"q2"}),
+        )],
+    );
+    let answered = cache.scan(dir.path(), now(6)).unwrap();
+    assert_eq!(answered[0].phase, Phase::Running);
+    assert!(answered[0].observed_questions.is_empty());
+}
+
+#[test]
+fn malformed_or_private_questions_retain_identity_without_exposing_contents() {
+    let (dir, path) = fixture(json!("cli"));
+    append(&path, &[event(1, "task_started", "turn")]);
+    for (index, arguments) in [
+        json!("{not valid JSON"),
+        Value::Null,
+        json!({"questions":null}),
+        json!({"questions":[{"question":"Secret", "is_secret":true}]}),
+        json!({"questions":[{"question":"Unknown privacy", "isSecret":"true"}]}),
+        json!({"isSecret":true, "questions":[{"question":"Secret request"}]}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        append(
+            &path,
+            &[question(
+                2,
+                "request_user_input",
+                &format!("q{index}"),
+                arguments,
+            )],
+        );
+    }
+    let sessions = SessionCache::default().scan(dir.path(), now(3)).unwrap();
+    assert_eq!(sessions[0].phase, Phase::WaitingForAnswer);
+    assert_eq!(sessions[0].observed_questions.len(), 6);
+    for (index, question) in sessions[0].observed_questions.iter().enumerate() {
+        assert_eq!(question.key, format!("q{index}"));
+        assert_eq!(question.prompt, None);
+        assert_eq!(question.requested_at, now(2));
+    }
+    let prompt = question_prompt(&json!({"questions":[{
+        "question":format!("\n\u{202e}选择\0\t{}", "界".repeat(1000))
+    }]}))
+    .unwrap();
+    assert_eq!(prompt.chars().count(), QUESTION_PROMPT_CHARS);
+    assert!(prompt.starts_with("选择 "));
+    assert!(!prompt.chars().any(char::is_control));
+    assert!(!prompt.contains('\u{202e}'));
+}
+
+#[test]
+fn turn_boundaries_and_final_assistant_messages_clear_question_metadata() {
+    let mut final_event = event(3, "agent_message", "turn");
+    final_event["payload"]["phase"] = json!("final");
+    let mut final_item = event(3, "item_completed", "turn");
+    final_item["payload"]["item"] = json!({"phase":"final_answer"});
+    for (boundary, phase) in [
+        (event(3, "task_started", "next-turn"), Phase::Running),
+        (event(3, "user_message", "turn"), Phase::Running),
+        (event(3, "task_complete", "turn"), Phase::Completed),
+        (event(3, "turn_aborted", "turn"), Phase::Completed),
+        (final_event, Phase::Completed),
+        (final_item, Phase::Completed),
+        (
+            response(
+                3,
+                json!({"type":"message", "role":"assistant", "phase":"final_answer"}),
+            ),
+            Phase::Completed,
+        ),
+        (
+            response(
+                3,
+                json!({"type":"message", "role":"assistant", "end_turn":true}),
+            ),
+            Phase::Completed,
+        ),
+    ] {
+        let (dir, path) = fixture(json!("cli"));
+        append(
+            &path,
+            &[
+                event(1, "task_started", "turn"),
+                question(
+                    2,
+                    "request_user_input",
+                    "q",
+                    json!({"questions":[{"question":"Choose?"}]}),
+                ),
+                boundary,
+            ],
+        );
+        let mut cache = SessionCache::default();
+        let sessions = cache.scan(dir.path(), now(4)).unwrap();
+        assert_eq!(sessions[0].phase, phase);
+        assert!(sessions[0].observed_questions.is_empty());
+        assert!(sessions[0].pending.is_empty());
+    }
+}
+
+#[test]
+fn same_second_observations_do_not_restore_answered_questions_or_drop_later_calls() {
+    use crate::state::SessionTable;
+    let (dir, path) = fixture(json!("cli"));
+    append(
+        &path,
+        &[
+            event(1, "task_started", "turn"),
+            question(2, "request_user_input", "q1", Value::Null),
+        ],
+    );
+    let mut cache = SessionCache::default();
+    let old = cache.scan(dir.path(), now(3)).unwrap();
+    let mut table = SessionTable::new();
+    assert!(table.sync_observed(HookSource::Codex, old.clone(), now(3)));
+    append(
+        &path,
+        &[response(
+            2,
+            json!({"type":"function_call_output", "call_id":"q1"}),
+        )],
+    );
+    let answered = cache.scan(dir.path(), now(3)).unwrap();
+    assert!(table.sync_observed(HookSource::Codex, answered, now(3)));
+    assert!(!table.sync_observed(HookSource::Codex, old, now(3)));
+    assert!(table.get("s-1").unwrap().observed_questions.is_empty());
+    append(
+        &path,
+        &[question(2, "request_user_input", "q2", Value::Null)],
+    );
+    assert!(table.sync_observed(
+        HookSource::Codex,
+        cache.scan(dir.path(), now(3)).unwrap(),
+        now(3)
+    ));
+    let state = table.get("s-1").unwrap();
+    assert_eq!(state.phase, Phase::WaitingForAnswer);
+    assert_eq!(state.observed_questions[0].key, "q2");
 }
 
 #[test]

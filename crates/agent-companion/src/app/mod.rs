@@ -114,6 +114,16 @@ fn notification_clicked(session_id: &str) {
     }
 }
 
+fn waiting_notification_clicked(session_id: &str, request_key: &str) {
+    if let Some(app) = APP.with(|slot| slot.borrow().clone()) {
+        app.close_flyout();
+        if let Some(taskbar) = app.host.get().or_else(win::taskbar) {
+            app.show_flyout(taskbar.rect, Anchor::Taskbar, false);
+        }
+        app.jump_waiting(session_id, request_key);
+    }
+}
+
 pub fn run() -> io::Result<()> {
     // `agent-companion` is a console binary so `agent-companion setup` and `agent-companion headless` can
     // print. The app has nothing to say on a terminal, so it lets go of the one
@@ -167,6 +177,7 @@ struct App {
     jump_request: Cell<u64>,
     codex_sessions: sessions::CodexWatcher,
     completions: RefCell<notifications::Tracker>,
+    waiting_notifications: RefCell<notifications::WaitingTracker>,
     notifier: notifications::Notifier,
     /// Hooks that are blocked on us, keyed by session and correlation key.
     /// Holding the handle is what keeps the agent waiting.
@@ -218,6 +229,7 @@ impl App {
             jump_request: Cell::new(0),
             codex_sessions: sessions::CodexWatcher::new(),
             completions: RefCell::new(notifications::Tracker::default()),
+            waiting_notifications: RefCell::new(notifications::WaitingTracker::default()),
             notifier: notifications::Notifier::new(),
             blocked: RefCell::new(HashMap::new()),
             queue: RefCell::new(VecDeque::new()),
@@ -255,6 +267,7 @@ impl App {
             }
         }
         self.poll_secondary();
+        self.notify_waiting(now_unix_secs());
         self.sync_subscription_sources();
         self.refresh();
         self.migrate_login_launch();
@@ -539,6 +552,7 @@ impl App {
 
         self.table.borrow_mut().apply(&payload, source, now);
         self.notify_completions(now);
+        self.notify_waiting(now);
         self.display.borrow_mut().activate(source, now, now);
         if payload.event_name() == events::SESSION_END
             && self.table.borrow().tasks(source, now).total() == 0
@@ -735,6 +749,57 @@ impl App {
                     && app.table.borrow().get(&state.session_id).is_some()
                     && plan.activate(&state.session_id, hint.as_deref())
                 {
+                    app.close_flyout();
+                }
+            });
+        });
+    }
+
+    fn jump_waiting(self: &Rc<Self>, session_id: &str, request_key: &str) {
+        let session = if let Some(id) = session_id.strip_prefix("dodex:") {
+            self.secondary_waiting_session(id)
+                .map(|(state, instance)| (state, Some(instance)))
+        } else {
+            self.table
+                .borrow()
+                .get(session_id)
+                .cloned()
+                .map(|state| (state, None))
+        };
+        let Some((state, instance)) = session else {
+            return;
+        };
+        if !notifications::waiting_request_is_pending(&state, request_key) {
+            return;
+        }
+        let hint = notifications::waiting_hint(&state, Some(request_key));
+        let request_key = request_key.to_string();
+        let request = self.jump_request.get().wrapping_add(1);
+        self.jump_request.set(request);
+        std::thread::spawn(move || {
+            let plan = navigation::Plan::resolve(&state);
+            let _ = slint::invoke_from_event_loop(move || {
+                let Some(app) = APP.with(|slot| slot.borrow().clone()) else {
+                    return;
+                };
+                if app.jump_request.get() != request {
+                    return;
+                }
+                let still_waiting = if let Some(instance) = instance {
+                    app.secondary_waiting_session(&state.session_id)
+                        .is_some_and(|(current, active)| {
+                            active == instance
+                                && notifications::waiting_request_is_pending(&current, &request_key)
+                        })
+                } else {
+                    app.table
+                        .borrow()
+                        .get(&state.session_id)
+                        .is_some_and(|current| {
+                            notifications::waiting_request_is_pending(current, &request_key)
+                        })
+                };
+                if still_waiting && plan.activate_terminal(hint.as_deref()) {
                     app.close_flyout();
                 }
             });
@@ -1093,6 +1158,7 @@ impl App {
         let before = self.table.borrow().counts(now);
         self.table.borrow_mut().sweep(now);
         let after = self.table.borrow().counts(now);
+        self.notify_waiting(now);
 
         if self.current_is_stale() {
             self.dismiss();
@@ -1113,6 +1179,7 @@ impl App {
         let update = self.codex_sessions.poll(&mut self.table.borrow_mut());
         if update.changed {
             self.notify_completions(now_unix_secs());
+            self.notify_waiting(now_unix_secs());
         }
         if let Some(at) = update.last_seen {
             self.display.borrow_mut().observe(HookSource::Codex, at);
@@ -1150,6 +1217,33 @@ impl App {
                 });
         for notice in notices {
             self.notifier.send(notice);
+        }
+    }
+
+    fn notify_waiting(&self, now: u64) {
+        let enabled = self.config.borrow().question_notifications;
+        let watching_panel = self.flyout_open.get() && !self.flyout_peek.get();
+        let updates = self.waiting_notifications.borrow_mut().observe(
+            &self.table.borrow(),
+            now,
+            enabled,
+            |session| {
+                (watching_panel && self.display.borrow().visible(session.source))
+                    || session.terminal.as_ref().is_some_and(|terminal| {
+                        win::target::from_meta(terminal)
+                            .map(|target| win::target::is_foreground(&target))
+                            .unwrap_or_else(|| {
+                                let hint = notifications::waiting_hint(session, None);
+                                win::terminal_is_foreground_with_hint(
+                                    &terminal.ancestors,
+                                    hint.as_deref(),
+                                )
+                            })
+                    })
+            },
+        );
+        for update in updates {
+            self.notifier.send_waiting(update);
         }
     }
 
@@ -1728,6 +1822,19 @@ impl App {
             }
         });
         let app = Rc::downgrade(self);
+        window.on_set_question_notifications(move |enabled| {
+            if let Some(app) = app.upgrade() {
+                {
+                    let mut config = app.config.borrow_mut();
+                    config.question_notifications = enabled;
+                    config.save();
+                }
+                app.notify_waiting(now_unix_secs());
+                app.poll_secondary();
+                app.refresh_app_preferences();
+            }
+        });
+        let app = Rc::downgrade(self);
         window.on_set_taskbar_enabled(move |enabled| {
             if let Some(app) = app.upgrade() {
                 app.set_taskbar_enabled(enabled);
@@ -1807,6 +1914,7 @@ impl App {
             window.set_good_at(config.taskbar.good_at as i32);
             window.set_warn_at(config.taskbar.warn_at as i32);
             window.set_completion_notifications(config.completion_notifications);
+            window.set_question_notifications(config.question_notifications);
         }
     }
 

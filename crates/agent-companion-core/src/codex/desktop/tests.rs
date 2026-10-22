@@ -1,8 +1,56 @@
 use super::*;
 use crate::codex::SessionCache;
+use crate::state::ObservedQuestion;
 
 const ID: &str = "01a08965-575f-7870-b001-3698447df18c";
 const NOW: u64 = 1_789_025_000;
+
+#[test]
+fn in_progress_history_preserves_rollout_question_metadata_until_completion() {
+    let fixture = Fixture::new();
+    fixture
+        .history
+        .execute(
+            "INSERT INTO thread_items VALUES (?1, 'turn-1', ?2)",
+            (ID, (NOW * 1000) as i64),
+        )
+        .unwrap();
+    let mut rollout = SessionState::new(ID, HookSource::Codex, NOW - 10);
+    rollout.phase = Phase::WaitingForAnswer;
+    rollout.last_seen = NOW - 1;
+    rollout.transcript_path = Some("C:/synthetic/rollout.jsonl".into());
+    rollout.codex_activity = Some(CodexActivity {
+        turn: Some("turn-1".into()),
+        at: u128::from(NOW - 1) * 1_000_000_000,
+        started_at: Some(u128::from(NOW - 10) * 1_000_000_000),
+    });
+    rollout.codex_rollout_offset = Some(240);
+    rollout.codex_rollout_path = rollout.transcript_path.clone();
+    rollout.observed_questions = vec![ObservedQuestion {
+        key: "call".into(),
+        prompt: Some("Choose?".into()),
+        requested_at: NOW - 1,
+    }];
+    let mut sessions = vec![rollout.clone()];
+    Cache::default().merge(fixture.dir.path(), NOW, &mut sessions);
+    assert_eq!(sessions[0].phase, Phase::WaitingForAnswer);
+    assert_eq!(sessions[0].observed_questions, rollout.observed_questions);
+    assert_eq!(
+        sessions[0].codex_rollout_offset,
+        rollout.codex_rollout_offset
+    );
+    assert_eq!(sessions[0].codex_rollout_path, rollout.codex_rollout_path);
+    fixture
+        .history
+        .execute(
+            "UPDATE thread_turns SET status='completed', completed_at=?1",
+            [NOW as i64],
+        )
+        .unwrap();
+    Cache::default().merge(fixture.dir.path(), NOW + 1, &mut sessions);
+    assert_eq!(sessions[0].phase, Phase::Completed);
+    assert!(sessions[0].observed_questions.is_empty());
+}
 
 #[test]
 fn history_merge_keeps_the_cli_rollout_needed_to_find_its_terminal() {

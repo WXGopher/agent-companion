@@ -104,6 +104,20 @@ impl PendingApproval {
     }
 }
 
+/// A question observed in a Codex rollout, without a live reply channel.
+///
+/// This is notification metadata only. It must never become an actionable
+/// [`PendingApproval`] merely because a rollout contains a tool call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedQuestion {
+    /// The rollout's `call_id`, used to match its eventual tool output.
+    pub key: String,
+    /// A bounded, single-line preview of the first non-secret question.
+    pub prompt: Option<String>,
+    /// When Codex requested input, in Unix seconds.
+    pub requested_at: u64,
+}
+
 /// The Codex client identified by session metadata, not merely the agent name.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum CodexClient {
@@ -156,12 +170,22 @@ pub struct SessionState {
     /// A current Codex writer lock proves a quiet turn is still attached.
     pub observed_alive: bool,
     pub(crate) codex_activity: Option<CodexActivity>,
+    /// Break timestamp ties using the activity's position in the same rollout.
+    pub(crate) codex_rollout_offset: Option<u64>,
+    /// The scanner's path spelling, independent of hook navigation metadata.
+    pub(crate) codex_rollout_path: Option<String>,
     /// The desktop's saved conversation name, when available.
     pub display_name: Option<String>,
     /// Terminal metadata the hook injected, for "jump back to the session".
     pub terminal: Option<TerminalMeta>,
     /// Unresolved approvals, oldest first.
     pub pending: Vec<PendingApproval>,
+    /// Unanswered rollout questions, separate from requests we can answer.
+    pub observed_questions: Vec<ObservedQuestion>,
+    /// A native reply can arrive before its rollout output is written.
+    dismissed_observed_questions: BTreeSet<String>,
+    /// A hook's new turn invalidates older rollout question evidence.
+    observed_questions_since: Option<u64>,
 }
 
 impl SessionState {
@@ -179,9 +203,14 @@ impl SessionState {
             first_seen: now,
             observed_alive: false,
             codex_activity: None,
+            codex_rollout_offset: None,
+            codex_rollout_path: None,
             display_name: None,
             terminal: None,
             pending: Vec::new(),
+            observed_questions: Vec::new(),
+            dismissed_observed_questions: BTreeSet::new(),
+            observed_questions_since: None,
         }
     }
 
@@ -216,6 +245,9 @@ impl SessionState {
             events::SESSION_START | events::USER_PROMPT_SUBMIT => {
                 // A new turn invalidates anything left over from the last one.
                 self.pending.clear();
+                self.observed_questions.clear();
+                self.dismissed_observed_questions.clear();
+                self.observed_questions_since = Some(now);
                 self.phase = Phase::Running;
             }
             // `PreToolUse` fires on *every* tool call — including the ones the
@@ -249,6 +281,7 @@ impl SessionState {
             }
             events::STOP | events::INTERRUPT => {
                 self.pending.clear();
+                self.observed_questions.clear();
                 self.phase = Phase::Completed;
             }
             // `Notification` and anything we do not model refresh `last_seen`
@@ -264,14 +297,24 @@ impl SessionState {
     ///
     /// Returns whether anything was actually removed.
     pub fn resolve(&mut self, key: &str) -> bool {
+        let observed_keys: Vec<_> = self
+            .pending
+            .iter()
+            .filter(|approval| approval.key == key)
+            .filter_map(observed_key)
+            .map(str::to_string)
+            .collect();
         let before = self.pending.len();
         self.pending.retain(|approval| approval.key != key);
         let removed = self.pending.len() != before;
+        for key in observed_keys {
+            self.dismiss_observed_question(&key);
+        }
 
         // Only a resolution that emptied the queue ends the wait; a session with
         // two approvals outstanding is still waiting after the first one lands.
         if removed && self.pending.is_empty() && self.phase.is_waiting() {
-            self.phase = Phase::Running;
+            self.phase = self.phase_without_pending();
         }
         removed
     }
@@ -283,8 +326,11 @@ impl SessionState {
             return None;
         }
         let approval = self.pending.remove(0);
+        if let Some(key) = observed_key(&approval) {
+            self.dismiss_observed_question(key);
+        }
         if self.pending.is_empty() && self.phase.is_waiting() {
-            self.phase = Phase::Running;
+            self.phase = self.phase_without_pending();
         }
         Some(approval)
     }
@@ -306,12 +352,36 @@ impl SessionState {
 
     /// Drop approvals older than `ttl_secs`, leaving the phase consistent.
     pub fn prune_pending(&mut self, now: u64, ttl_secs: u64) {
+        let observed_keys: Vec<_> = self
+            .pending
+            .iter()
+            .filter(|approval| approval.is_expired(now, ttl_secs))
+            .filter_map(observed_key)
+            .map(str::to_string)
+            .collect();
         let before = self.pending.len();
         self.pending
             .retain(|approval| !approval.is_expired(now, ttl_secs));
+        for key in observed_keys {
+            self.dismiss_observed_question(&key);
+        }
         if self.pending.len() != before && self.pending.is_empty() && self.phase.is_waiting() {
             // The agent's own hook timed out and it prompted in the terminal.
-            self.phase = Phase::Running;
+            self.phase = self.phase_without_pending();
+        }
+    }
+
+    fn dismiss_observed_question(&mut self, key: &str) {
+        self.observed_questions
+            .retain(|question| question.key != key);
+        self.dismissed_observed_questions.insert(key.to_string());
+    }
+
+    fn phase_without_pending(&self) -> Phase {
+        if self.observed_questions.is_empty() {
+            Phase::Running
+        } else {
+            Phase::WaitingForAnswer
         }
     }
 
@@ -327,6 +397,37 @@ impl SessionState {
             requested_at: now,
         });
     }
+}
+
+fn observed_key(approval: &PendingApproval) -> Option<&str> {
+    if approval.event != events::CODEX_USER_INPUT {
+        return None;
+    }
+    approval
+        .tool_input
+        .as_ref()
+        .and_then(|input| input.get("itemId").or_else(|| input.get("item_id")))
+        .and_then(Value::as_str)
+        .filter(|key| !key.is_empty())
+        .or(Some(approval.key.as_str()))
+}
+
+/// Timestamp precision varies between Codex versions. File position orders
+/// same-second question requests and outputs from the same rollout exactly.
+fn observation_order(incoming: &SessionState, current: &SessionState) -> std::cmp::Ordering {
+    let order = match (&incoming.codex_activity, &current.codex_activity) {
+        (Some(incoming), Some(current)) => incoming.at.cmp(&current.at),
+        _ => incoming.last_seen.cmp(&current.last_seen),
+    };
+    if order.is_eq()
+        && incoming.codex_rollout_path.is_some()
+        && incoming.codex_rollout_path == current.codex_rollout_path
+        && let (Some(incoming), Some(current)) =
+            (incoming.codex_rollout_offset, current.codex_rollout_offset)
+    {
+        return incoming.cmp(&current);
+    }
+    order
 }
 
 /// How a `PreToolUse` is matched to the `PostToolUse` that settles it.
@@ -459,7 +560,7 @@ impl SessionTable {
     ) -> bool {
         let mut seen = BTreeSet::new();
         let mut changed = false;
-        for session in sessions {
+        for mut session in sessions {
             if session.source != source || session.is_stale(now, self.stale_after_secs) {
                 continue;
             }
@@ -467,6 +568,43 @@ impl SessionTable {
             seen.insert(id.clone());
             if self.sessions.contains_key(&id) && !self.observed.contains(&id) {
                 let state = self.sessions.get_mut(&id).expect("existing hook state");
+                let newer_questions =
+                    state.codex_activity.is_none() || observation_order(&session, state).is_gt();
+                if newer_questions && state.phase != Phase::Completed {
+                    let questions = if session.phase == Phase::WaitingForAnswer
+                        && state
+                            .observed_questions_since
+                            .is_none_or(|since| session.last_seen >= since)
+                    {
+                        session
+                            .observed_questions
+                            .iter()
+                            .filter(|question| {
+                                !state.dismissed_observed_questions.contains(&question.key)
+                            })
+                            .cloned()
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    changed |= state.observed_questions != questions;
+                    state.observed_questions = questions;
+                    // A disk observation supplies no live reply channel, so it
+                    // can update the question wait but never replace pending.
+                    if state.pending.is_empty() && state.phase.is_waiting()
+                        || (state.pending.is_empty() && !state.observed_questions.is_empty())
+                    {
+                        let phase = state.phase_without_pending();
+                        changed |= state.phase != phase;
+                        state.phase = phase;
+                    }
+                    changed |= state.codex_activity != session.codex_activity
+                        || state.codex_rollout_offset != session.codex_rollout_offset
+                        || state.codex_rollout_path != session.codex_rollout_path;
+                    state.codex_activity = session.codex_activity.clone();
+                    state.codex_rollout_offset = session.codex_rollout_offset;
+                    state.codex_rollout_path = session.codex_rollout_path.clone();
+                }
                 let alive = session.observed_alive && state.phase != Phase::Completed;
                 changed |= state.observed_alive != alive;
                 state.observed_alive = alive;
@@ -482,6 +620,27 @@ impl SessionTable {
                 }
                 continue;
             }
+            if let Some(current) = self.sessions.get(&id) {
+                let order = observation_order(&session, current);
+                if order.is_lt()
+                    || (order.is_eq()
+                        && current.phase == Phase::Completed
+                        && session.phase != Phase::Completed)
+                {
+                    continue;
+                }
+                // Equal evidence can update names or liveness, but cannot undo
+                // an answer when timestamp/position evidence cannot order it.
+                if order.is_eq()
+                    && current.observed_questions.is_empty()
+                    && !session.observed_questions.is_empty()
+                {
+                    session.observed_questions.clear();
+                    if session.phase == Phase::WaitingForAnswer {
+                        session.phase = current.phase;
+                    }
+                }
+            }
             if self.sessions.get(&id) != Some(&session) {
                 self.sessions.insert(id.clone(), session);
                 changed = true;
@@ -489,6 +648,14 @@ impl SessionTable {
             self.observed.insert(id);
         }
         self.sessions.retain(|id, state| {
+            if state.source == source && !seen.contains(id) && !state.observed_questions.is_empty()
+            {
+                state.observed_questions.clear();
+                if state.pending.is_empty() && state.phase == Phase::WaitingForAnswer {
+                    state.phase = Phase::Running;
+                }
+                changed = true;
+            }
             if state.source == source && !seen.contains(id) && state.observed_alive {
                 state.observed_alive = false;
                 changed = true;
@@ -636,6 +803,200 @@ mod tests {
     /// Baseline for the synthetic clock; any constant works, this one just reads
     /// like a plausible instant rather than 0.
     const T0: u64 = 1_787_000_000;
+
+    fn observed_questions(at: u64, offset: u64, keys: &[&str]) -> SessionState {
+        let mut session = SessionState::new("s-1", HookSource::Codex, at);
+        session.phase = if keys.is_empty() {
+            Phase::Running
+        } else {
+            Phase::WaitingForAnswer
+        };
+        session.transcript_path = Some("C:/synthetic/rollout.jsonl".into());
+        session.codex_activity = Some(CodexActivity {
+            turn: Some("turn".into()),
+            at: u128::from(at) * 1_000_000_000,
+            started_at: Some(u128::from(T0) * 1_000_000_000),
+        });
+        session.codex_rollout_offset = Some(offset);
+        session.codex_rollout_path = session.transcript_path.clone();
+        session.observed_questions = keys
+            .iter()
+            .map(|key| ObservedQuestion {
+                key: (*key).into(),
+                prompt: Some("Choose?".into()),
+                requested_at: at,
+            })
+            .collect();
+        session
+    }
+
+    fn native_question(key: &str, item: &str) -> HookPayload {
+        payload(
+            json!({"session_id":"s-1", "hook_event_name":events::CODEX_USER_INPUT,
+            "tool_use_id":key, "tool_name":ASK_USER_QUESTION, "tool_input":{"itemId":item}}),
+        )
+    }
+
+    #[test]
+    fn hook_path_spelling_does_not_hide_same_second_question_changes() {
+        let mut table = SessionTable::new();
+        let mut hook = event(events::USER_PROMPT_SUBMIT);
+        hook.transcript_path = Some(r"C:\SYNTHETIC\ROLLOUT.JSONL".into());
+        table.apply(&hook, HookSource::Codex, T0);
+        let original = observed_questions(T0 + 1, 10, &["q1"]);
+        table.sync_observed(HookSource::Codex, vec![original.clone()], T0 + 1);
+        table.sync_observed(
+            HookSource::Codex,
+            vec![observed_questions(T0 + 1, 20, &["q2"])],
+            T0 + 1,
+        );
+        assert_eq!(table.get("s-1").unwrap().observed_questions[0].key, "q2");
+        table.sync_observed(
+            HookSource::Codex,
+            vec![observed_questions(T0 + 1, 30, &[])],
+            T0 + 1,
+        );
+        assert!(table.get("s-1").unwrap().observed_questions.is_empty());
+        assert_eq!(table.get("s-1").unwrap().phase, Phase::Running);
+        assert!(!table.sync_observed(HookSource::Codex, vec![original], T0 + 1));
+        assert_eq!(
+            table.get("s-1").unwrap().transcript_path,
+            hook.transcript_path
+        );
+    }
+
+    #[test]
+    fn live_hooks_merge_fresh_question_observations_without_replacing_pending_requests() {
+        let mut table = SessionTable::new();
+        table.apply(&event(events::USER_PROMPT_SUBMIT), HookSource::Codex, T0);
+        table.sync_observed(
+            HookSource::Codex,
+            vec![observed_questions(T0 + 1, 10, &["q1"])],
+            T0 + 1,
+        );
+        assert_eq!(table.get("s-1").unwrap().phase, Phase::WaitingForAnswer);
+        assert!(table.get("s-1").unwrap().pending.is_empty());
+        table.apply(
+            &native_question("native-1", "q1"),
+            HookSource::Codex,
+            T0 + 2,
+        );
+        let pending = table.get("s-1").unwrap().pending.clone();
+        table.sync_observed(
+            HookSource::Codex,
+            vec![observed_questions(T0 + 3, 20, &["q1", "q2"])],
+            T0 + 3,
+        );
+        assert_eq!(table.get("s-1").unwrap().pending, pending);
+        assert!(table.get_mut("s-1").unwrap().resolve("native-1"));
+        let state = table.get("s-1").unwrap();
+        assert_eq!(state.phase, Phase::WaitingForAnswer);
+        assert_eq!(
+            state
+                .observed_questions
+                .iter()
+                .map(|question| question.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["q2"]
+        );
+        // Codex has not written q1's output yet. Later unrelated activity must
+        // not recreate a native question that was already answered here.
+        table.sync_observed(
+            HookSource::Codex,
+            vec![observed_questions(T0 + 4, 30, &["q1", "q2"])],
+            T0 + 4,
+        );
+        assert_eq!(table.get("s-1").unwrap().observed_questions.len(), 1);
+        table.sync_observed(
+            HookSource::Codex,
+            vec![observed_questions(T0 + 5, 40, &[])],
+            T0 + 5,
+        );
+        assert_eq!(table.get("s-1").unwrap().phase, Phase::Running);
+
+        table.apply(
+            &permission_request("Bash", Some("approval")),
+            HookSource::Codex,
+            T0 + 6,
+        );
+        table.sync_observed(
+            HookSource::Codex,
+            vec![observed_questions(T0 + 7, 50, &["q3"])],
+            T0 + 7,
+        );
+        assert_eq!(table.get("s-1").unwrap().phase, Phase::WaitingForApproval);
+        assert_eq!(
+            table.get("s-1").unwrap().current_pending().unwrap().key,
+            "approval"
+        );
+        table.get_mut("s-1").unwrap().resolve("approval");
+        assert_eq!(table.get("s-1").unwrap().phase, Phase::WaitingForAnswer);
+        table.apply(&event(events::STOP), HookSource::Codex, T0 + 8);
+        table.sync_observed(
+            HookSource::Codex,
+            vec![observed_questions(T0 + 9, 60, &["q4"])],
+            T0 + 9,
+        );
+        assert_eq!(table.get("s-1").unwrap().phase, Phase::Completed);
+        assert!(table.get("s-1").unwrap().observed_questions.is_empty());
+        table.apply(
+            &event(events::USER_PROMPT_SUBMIT),
+            HookSource::Codex,
+            T0 + 10,
+        );
+        table.sync_observed(
+            HookSource::Codex,
+            vec![observed_questions(T0 + 9, 60, &["q4"])],
+            T0 + 10,
+        );
+        assert!(table.get("s-1").unwrap().observed_questions.is_empty());
+        table.sync_observed(
+            HookSource::Codex,
+            vec![observed_questions(T0 + 11, 70, &["q4"])],
+            T0 + 11,
+        );
+        assert_eq!(table.get("s-1").unwrap().observed_questions[0].key, "q4");
+        table.sync_observed(HookSource::Codex, vec![], T0 + 12);
+        assert!(table.get("s-1").unwrap().observed_questions.is_empty());
+        assert_eq!(table.get("s-1").unwrap().phase, Phase::Running);
+    }
+
+    #[test]
+    fn resolving_or_expiring_native_pending_dismisses_its_observed_question() {
+        for resolution in ["key", "oldest", "expiry"] {
+            let mut state = SessionState::new("s-1", HookSource::Codex, T0);
+            state.apply(&native_question("native", "rollout-call"), T0);
+            state.observed_questions =
+                observed_questions(T0, 0, &["rollout-call"]).observed_questions;
+            match resolution {
+                "key" => {
+                    assert!(state.resolve("native"));
+                }
+                "oldest" => {
+                    assert!(state.resolve_oldest().is_some());
+                }
+                _ => state.prune_pending(T0 + PENDING_TTL_SECS, PENDING_TTL_SECS),
+            }
+            assert!(state.pending.is_empty());
+            assert!(state.observed_questions.is_empty());
+            assert_eq!(state.phase, Phase::Running);
+            assert!(state.dismissed_observed_questions.contains("rollout-call"));
+        }
+    }
+
+    #[test]
+    fn hook_turn_boundaries_clear_observed_question_metadata() {
+        for event_name in [
+            events::SESSION_START,
+            events::USER_PROMPT_SUBMIT,
+            events::STOP,
+            events::INTERRUPT,
+        ] {
+            let mut state = observed_questions(T0, 1, &["q"]);
+            state.apply(&event(event_name), T0 + 1);
+            assert!(state.observed_questions.is_empty());
+        }
+    }
 
     /// The readout's per-agent task line: pending, running, and done sessions
     /// are each counted by state; silence past the stale window stops a session

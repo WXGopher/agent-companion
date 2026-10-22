@@ -41,6 +41,8 @@ export component AppSettings inherits Rectangle {
 
     in property <bool> completion-notifications: true;
     callback set-completion-notifications(bool);
+    in property <bool> question-notifications: true;
+    callback set-question-notifications(bool);
 
     // The outcome of the last button press, shown along the bottom.
     in property <string> app-message;
@@ -100,6 +102,13 @@ export component AppSettings inherits Rectangle {
                             detail: "Notify when a background task finishes.";
                             checked: root.completion-notifications;
                             toggle(enabled) => { root.set-completion-notifications(enabled); }
+                        }
+                        Rectangle { height: 1px; background: SettingsColors.border; }
+                        SettingToggle {
+                            label: "Question and approval notifications";
+                            detail: "Notify when a background TUI session needs your answer or approval.";
+                            checked: root.question-notifications;
+                            toggle(enabled) => { root.set-question-notifications(enabled); }
                         }
                     }
                 }

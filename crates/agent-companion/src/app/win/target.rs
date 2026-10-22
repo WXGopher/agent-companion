@@ -108,9 +108,15 @@ fn elements(
         let condition = automation
             .CreatePropertyCondition(UIA_ControlTypePropertyId, &super::variant_i4(control.0))?;
         let elements = root.FindAll(TreeScope_Descendants, &condition)?;
-        (0..elements.Length()?.min(128))
-            .map(|i| elements.GetElement(i))
-            .collect()
+        let count = elements.Length()?;
+        if !(0..=128).contains(&count) {
+            // A truncated search cannot establish that a content match is
+            // unique. Refuse the lookup instead of silently omitting peers.
+            return Err(windows::core::Error::from_hresult(
+                windows::Win32::Foundation::E_BOUNDS,
+            ));
+        }
+        (0..count).map(|i| elements.GetElement(i)).collect()
     }
 }
 
@@ -146,6 +152,86 @@ fn screen(element: &IUIAutomationElement) -> windows::core::Result<String> {
         tail.MoveEndpointByUnit(TextPatternRangeEndpoint_Start, TextUnit_Character, -8000)?;
         Ok(tail.GetText(-1)?.to_string())
     }
+}
+
+fn live_window(target: &Target) -> bool {
+    let mut pid = 0;
+    unsafe {
+        GetWindowThreadProcessId(super::hwnd(target.window), Some(&mut pid));
+    }
+    pid == target.pid && stamp(pid) == Some(target.created)
+}
+
+fn same_pane(expected: &[i32], focused: &[i32]) -> bool {
+    !expected.is_empty() && expected == focused
+}
+
+/// Focus can land on a child of a terminal control (for example, its search
+/// UI). Walk only the focused element's ancestry; a sibling split never counts.
+fn focused_pane(automation: &IUIAutomation) -> windows::core::Result<Vec<i32>> {
+    unsafe {
+        let mut element = automation.GetFocusedElement()?;
+        let walker = automation.RawViewWalker()?;
+        for _ in 0..32 {
+            if element.CurrentClassName()? == "TermControl" {
+                return runtime_id(&element);
+            }
+            element = walker.GetParentElement(&element)?;
+        }
+        Ok(Vec::new())
+    }
+}
+
+fn pane_is_focused(automation: &IUIAutomation, pane: &[i32]) -> bool {
+    focused_pane(automation).is_ok_and(|focused| same_pane(pane, &focused))
+}
+
+/// Find a unique current question in the panes exposed by these host windows.
+/// This is read-only: hidden tabs without a captured identity are not guessed
+/// from a title, nor selected as part of a notification foreground check.
+pub(super) fn from_hint(windows: &[isize], hint: &str) -> Option<Target> {
+    if windows.is_empty() {
+        return None;
+    }
+    let _apartment = Apartment::new();
+    let result: windows::core::Result<Option<Target>> = (|| unsafe {
+        let automation: IUIAutomation =
+            CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?;
+        let mut targets = Vec::new();
+        let mut screens = Vec::new();
+        for &window in windows {
+            let mut pid = 0;
+            GetWindowThreadProcessId(super::hwnd(window), Some(&mut pid));
+            let Some(created) = stamp(pid) else {
+                return Ok(None);
+            };
+            let root = automation.ElementFromHandle(super::hwnd(window))?;
+            let tabs = elements(&automation, &root, UIA_TabItemControlTypeId)?;
+            let mut selected_tabs = tabs.iter().filter(|tab| selected(tab));
+            let Some(tab) = selected_tabs.next() else {
+                return Ok(None);
+            };
+            if selected_tabs.next().is_some() {
+                return Ok(None);
+            }
+            let tab = runtime_id(tab)?;
+            for pane in elements(&automation, &root, UIA_TextControlTypeId)? {
+                if pane.CurrentClassName()? != "TermControl" {
+                    continue;
+                }
+                screens.push(super::normalize_pane_text(&screen(&pane)?));
+                targets.push(Target {
+                    window,
+                    pid,
+                    created,
+                    tab: tab.clone(),
+                    pane: runtime_id(&pane)?,
+                });
+            }
+        }
+        Ok(super::pick_question_pane(&screens, hint).map(|index| targets.swap_remove(index)))
+    })();
+    result.ok().flatten()
 }
 
 /// Called after printing a random marker, before starting the TUI. A background
@@ -193,15 +279,7 @@ pub fn capture(marker: &str) -> Option<Target> {
 /// Select a recorded hidden tab, then the recorded pane. Never pick by a
 /// project name, document contents, or the currently focused pane.
 pub fn activate(target: &Target) -> bool {
-    let mut pid = 0;
-    unsafe {
-        GetWindowThreadProcessId(super::hwnd(target.window), Some(&mut pid));
-    }
-    if pid != target.pid
-        || stamp(pid) != Some(target.created)
-        || target.tab.is_empty()
-        || target.pane.is_empty()
-    {
+    if !live_window(target) || target.tab.is_empty() || target.pane.is_empty() {
         return false;
     }
     let _apartment = Apartment::new();
@@ -225,7 +303,7 @@ pub fn activate(target: &Target) -> bool {
             for pane in elements(&automation, &root, UIA_TextControlTypeId)? {
                 if runtime_id(&pane)? == target.pane {
                     pane.SetFocus()?;
-                    return Ok(true);
+                    return Ok(pane_is_focused(&automation, &target.pane));
                 }
             }
             Ok(false)
@@ -243,15 +321,17 @@ pub fn activate(target: &Target) -> bool {
 /// A missing pane may fall back to its own window; never to another window
 /// sharing the same Windows Terminal process.
 pub fn activate_window(target: &Target) -> bool {
-    let mut pid = 0;
-    unsafe {
-        GetWindowThreadProcessId(super::hwnd(target.window), Some(&mut pid));
-    }
-    pid == target.pid && stamp(pid) == Some(target.created) && super::activate(target.window)
+    live_window(target) && super::activate(target.window)
 }
 
 pub fn is_foreground(target: &Target) -> bool {
-    super::foreground_window() == Some(target.window) && stamp(target.pid) == Some(target.created)
+    if super::foreground_window() != Some(target.window) || !live_window(target) {
+        return false;
+    }
+    let _apartment = Apartment::new();
+    let automation: windows::core::Result<IUIAutomation> =
+        unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) };
+    automation.is_ok_and(|automation| pane_is_focused(&automation, &target.pane))
 }
 
 pub fn from_meta(meta: &agent_companion_core::protocol::TerminalMeta) -> Option<Target> {
@@ -269,13 +349,77 @@ mod tests {
     use super::*;
     #[test]
     fn stale_process_or_missing_identity_never_focuses() {
-        assert!(!activate(&Target {
+        let target = Target {
             window: 0,
             pid: 0,
             created: 0,
             tab: vec![],
-            pane: vec![]
-        }));
+            pane: vec![],
+        };
+        assert!(!activate(&target));
+        assert!(!activate_window(&target));
+        assert!(!is_foreground(&target));
+        assert!(from_hint(&[], "Which environment should receive this deployment?").is_none());
+    }
+
+    #[test]
+    fn only_the_captured_split_counts_as_focused() {
+        let original = [42, 100, 2];
+        let other_split = [42, 100, 3];
+        let host = [42, 100];
+        assert!(same_pane(&original, &original));
+        assert!(!same_pane(&original, &other_split));
+        assert!(!same_pane(&original, &host));
+        assert!(!same_pane(&original, &[]));
+        assert!(!same_pane(&[], &[]));
+    }
+
+    #[test]
+    fn a_test_owned_window_requires_its_actual_process_and_creation_time() {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, IsWindowVisible, WINDOW_EX_STYLE, WS_POPUP,
+        };
+        use windows::core::PCWSTR;
+
+        // This hidden static control is owned by the test. It is never shown,
+        // activated, or given keyboard focus.
+        let window = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                windows::core::w!("STATIC"),
+                PCWSTR::null(),
+                WS_POPUP,
+                0,
+                0,
+                10,
+                10,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+        };
+        let mut target = Target {
+            window: window.0 as isize,
+            pid: std::process::id(),
+            created: stamp(std::process::id()).unwrap(),
+            tab: vec![1],
+            pane: vec![2],
+        };
+        assert!(live_window(&target));
+        target.created ^= 1;
+        assert!(!live_window(&target));
+        assert!(!activate(&target));
+        assert!(!activate_window(&target));
+        target.created ^= 1;
+        target.pid = 0;
+        assert!(!live_window(&target));
+        target.pid = std::process::id();
+        assert!(!unsafe { IsWindowVisible(window) }.as_bool());
+        unsafe { DestroyWindow(window).unwrap() };
+        assert!(!live_window(&target));
+        assert!(!activate(&target));
     }
 
     #[test]

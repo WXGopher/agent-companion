@@ -176,6 +176,9 @@ fn merge_snapshot(snapshot: Snapshot, sessions: &mut Vec<SessionState>) {
                 && same_turn(old, &incoming)
             {
                 incoming.phase = old.phase;
+                incoming.observed_questions = old.observed_questions.clone();
+                incoming.codex_rollout_offset = old.codex_rollout_offset;
+                incoming.codex_rollout_path = old.codex_rollout_path.clone();
             }
             sessions[index] = incoming;
         } else {

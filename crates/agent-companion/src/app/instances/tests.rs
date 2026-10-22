@@ -197,3 +197,35 @@ fn instance_visibility_follows_configuration_and_secondary_availability() {
     assert_eq!(chips.len(), 1);
     assert!(chips[0].agent.is_none());
 }
+
+#[test]
+fn question_notification_clicks_and_clears_stay_in_the_secondary_account() {
+    let attention = notifications::Attention {
+        session_id: "shared-session".into(),
+        request_key: "question:shared-call".into(),
+        title: "Codex · same-project".into(),
+        body: "Which option?".into(),
+    };
+    let notifications::WaitingUpdate::Show(secondary) =
+        secondary_waiting_update(notifications::WaitingUpdate::Show(attention.clone()))
+    else {
+        panic!("show must remain show");
+    };
+    assert_eq!(secondary.session_id, "dodex:shared-session");
+    assert_eq!(secondary.request_key, attention.request_key);
+    assert_eq!(secondary.title, "Dodex · same-project");
+    assert_eq!(attention.session_id, "shared-session");
+
+    let notifications::WaitingUpdate::Clear {
+        session_id,
+        request_key,
+    } = secondary_waiting_update(notifications::WaitingUpdate::Clear {
+        session_id: attention.session_id,
+        request_key: attention.request_key,
+    })
+    else {
+        panic!("clear must remain clear");
+    };
+    assert_eq!(session_id, secondary.session_id);
+    assert_eq!(request_key, secondary.request_key);
+}
