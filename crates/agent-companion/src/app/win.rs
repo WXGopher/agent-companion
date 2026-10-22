@@ -7,8 +7,10 @@ use std::collections::HashMap;
 
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
-    MonitorFromWindow, RDW_INVALIDATE, RDW_NOERASE, RedrawWindow, ScreenToClient,
+    DISPLAY_DEVICE_ACTIVE, DISPLAY_DEVICE_MIRRORING_DRIVER, DISPLAY_DEVICEW, EnumDisplayDevicesW,
+    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+    MONITORINFOEXW, MonitorFromPoint, MonitorFromWindow, RDW_INVALIDATE, RDW_NOERASE, RedrawWindow,
+    ScreenToClient,
 };
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
@@ -371,31 +373,42 @@ struct TaskbarCandidate {
     handle: isize,
     class: TaskbarClass,
     rect: Option<Rect>,
+    monitor: Option<isize>,
     is_primary: Option<bool>,
 }
 
-/// Select from a fresh shell snapshot; neither class nor enumeration order is
-/// a substitute for Windows' primary-monitor flag.
-fn select_taskbar(candidates: &[TaskbarCandidate]) -> Option<(isize, Rect)> {
+fn valid_taskbar(candidate: &TaskbarCandidate) -> Option<(isize, Rect)> {
+    let rect = candidate.rect?;
+    // Zero-size bars can appear while Explorer restarts or auto-hides.
+    (candidate.handle != 0 && rect.right > rect.left && rect.bottom > rect.top)
+        .then_some((candidate.handle, rect))
+}
+
+/// A fixed display wins when it has a usable taskbar. Otherwise follow the
+/// current primary display, without changing the caller's remembered choice.
+fn select_taskbar(
+    candidates: &[TaskbarCandidate],
+    requested_monitor: Option<isize>,
+) -> Option<(isize, Rect)> {
+    let mut primary = None;
     let mut fallback = None;
     for candidate in candidates {
-        let Some(rect) = candidate.rect else {
+        let Some(found) = valid_taskbar(candidate) else {
             continue;
         };
-        // Zero-size bars can appear while Explorer restarts or auto-hides.
-        if candidate.handle == 0 || rect.right <= rect.left || rect.bottom <= rect.top {
-            continue;
+        if requested_monitor.is_some() && candidate.monitor == requested_monitor {
+            return Some(found);
         }
         if candidate.is_primary == Some(true) {
-            return Some((candidate.handle, rect));
+            primary.get_or_insert(found);
         }
         // Preserve the old main-taskbar behavior if the monitor API fails,
         // without knowingly attaching to a non-primary monitor.
         if candidate.class == TaskbarClass::Main && candidate.is_primary.is_none() {
-            fallback.get_or_insert((candidate.handle, rect));
+            fallback.get_or_insert(found);
         }
     }
-    fallback
+    primary.or(fallback)
 }
 
 fn taskbar_class(window: HWND) -> Option<TaskbarClass> {
@@ -415,30 +428,35 @@ fn taskbar_class(window: HWND) -> Option<TaskbarClass> {
     }
 }
 
-fn taskbar_is_on_primary_monitor(window: HWND) -> Option<bool> {
-    // An auto-hidden bar can lie just outside its display. Use the nearest
-    // monitor instead of treating every off-screen bar as primary.
-    let monitor = unsafe { MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST) };
+fn monitor_info(monitor: HMONITOR) -> Option<MONITORINFOEXW> {
     if monitor.is_invalid() {
         return None;
     }
-    let mut info = MONITORINFO {
-        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+    let mut info = MONITORINFOEXW {
+        monitorInfo: MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFOEXW>() as u32,
+            ..Default::default()
+        },
         ..Default::default()
     };
-    unsafe { GetMonitorInfoW(monitor, &mut info) }
+    unsafe { GetMonitorInfoW(monitor, std::ptr::from_mut(&mut info).cast()) }
         .as_bool()
-        .then_some(info.dwFlags & MONITORINFOF_PRIMARY != 0)
+        .then_some(info)
 }
 
 unsafe extern "system" fn collect_taskbar(window: HWND, lparam: LPARAM) -> BOOL {
     if let Some(class) = taskbar_class(window) {
+        // An auto-hidden bar can lie just outside its display. Use the nearest
+        // monitor instead of treating every off-screen bar as primary.
+        let monitor = unsafe { MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST) };
         let candidates = unsafe { &mut *(lparam.0 as *mut Vec<TaskbarCandidate>) };
         candidates.push(TaskbarCandidate {
             handle: window.0 as isize,
             class,
             rect: rect_of(window),
-            is_primary: taskbar_is_on_primary_monitor(window),
+            monitor: (!monitor.is_invalid()).then_some(monitor.0 as isize),
+            is_primary: monitor_info(monitor)
+                .map(|info| info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0),
         });
     }
     BOOL(1)
@@ -475,9 +493,165 @@ pub struct Taskbar {
     pub notify: Rect,
 }
 
+/// A connected display which Windows can identify across app restarts. The
+/// opaque ID is a monitor device-interface path, never an HMONITOR or DISPLAYn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskbarDisplay {
+    pub id: String,
+    pub name: String,
+    pub primary: bool,
+    pub has_taskbar: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ConnectedDisplay {
+    monitor: isize,
+    display: TaskbarDisplay,
+}
+
+fn from_wide(text: &[u16]) -> String {
+    let length = text
+        .iter()
+        .position(|&unit| unit == 0)
+        .unwrap_or(text.len());
+    String::from_utf16_lossy(&text[..length])
+}
+
+unsafe extern "system" fn collect_display(
+    monitor: HMONITOR,
+    _context: HDC,
+    _rect: *mut RECT,
+    lparam: LPARAM,
+) -> BOOL {
+    let Some(info) = monitor_info(monitor) else {
+        return BOOL(1);
+    };
+    let displays = unsafe { &mut *(lparam.0 as *mut Vec<ConnectedDisplay>) };
+    let device_name = from_wide(&info.szDevice);
+    let number = device_name
+        .strip_prefix(r"\\.\DISPLAY")
+        .and_then(|number| number.parse::<u32>().ok())
+        .map(|number| number.to_string())
+        .unwrap_or_else(|| (displays.len() + 1).to_string());
+    let bounds = info.monitorInfo.rcMonitor;
+    let mut index = 0;
+    loop {
+        let mut device = DISPLAY_DEVICEW {
+            cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32,
+            ..Default::default()
+        };
+        // EDD_GET_DEVICE_INTERFACE_NAME returns the per-monitor interface
+        // identity in DeviceID, instead of the volatile adapter DISPLAYn name.
+        if !unsafe { EnumDisplayDevicesW(PCWSTR(info.szDevice.as_ptr()), index, &mut device, 1) }
+            .as_bool()
+        {
+            break;
+        }
+        index += 1;
+        if !device.StateFlags.contains(DISPLAY_DEVICE_ACTIVE)
+            || device.StateFlags.contains(DISPLAY_DEVICE_MIRRORING_DRIVER)
+        {
+            continue;
+        }
+        let id = from_wide(&device.DeviceID);
+        if id.is_empty() {
+            // Do not persist a display number when no durable identity exists.
+            continue;
+        }
+        let model = from_wide(&device.DeviceString);
+        let label = if index == 1 {
+            format!("Display {number}")
+        } else {
+            // Cloned physical outputs share a desktop monitor and taskbar.
+            format!("Display {number}.{index}")
+        };
+        let name = if model.is_empty() {
+            label
+        } else {
+            format!("{label} — {model}")
+        };
+        displays.push(ConnectedDisplay {
+            monitor: monitor.0 as isize,
+            display: TaskbarDisplay {
+                id,
+                name: format!(
+                    "{name} ({} × {})",
+                    bounds.right - bounds.left,
+                    bounds.bottom - bounds.top
+                ),
+                primary: info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0,
+                has_taskbar: false,
+            },
+        });
+    }
+    BOOL(1)
+}
+
+fn connected_displays() -> Vec<ConnectedDisplay> {
+    let mut displays = Vec::<ConnectedDisplay>::new();
+    if !unsafe {
+        EnumDisplayMonitors(
+            None,
+            None,
+            Some(collect_display),
+            LPARAM(&mut displays as *mut _ as isize),
+        )
+    }
+    .as_bool()
+    {
+        return Vec::new();
+    }
+    displays
+}
+
+fn requested_monitor(displays: &[ConnectedDisplay], display_id: Option<&str>) -> Option<isize> {
+    let display_id = display_id?;
+    displays
+        .iter()
+        .find(|entry| entry.display.id.eq_ignore_ascii_case(display_id))
+        .map(|entry| entry.monitor)
+}
+
+fn describe_displays(
+    displays: Vec<ConnectedDisplay>,
+    candidates: &[TaskbarCandidate],
+) -> Vec<TaskbarDisplay> {
+    let mut seen = std::collections::HashSet::new();
+    let mut displays: Vec<_> = displays
+        .into_iter()
+        .filter(|entry| seen.insert(entry.display.id.to_ascii_lowercase()))
+        .map(|mut entry| {
+            entry.display.has_taskbar = candidates.iter().any(|candidate| {
+                candidate.monitor == Some(entry.monitor) && valid_taskbar(candidate).is_some()
+            });
+            entry.display
+        })
+        .collect();
+    displays.sort_by(|left, right| {
+        right
+            .primary
+            .cmp(&left.primary)
+            .then_with(|| left.name.cmp(&right.name))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    displays
+}
+
+/// Connected, identifiable displays, including those without a shell taskbar.
+/// Their labels are for the UI; only their opaque IDs should be persisted.
+pub fn taskbar_displays() -> Vec<TaskbarDisplay> {
+    let displays = connected_displays();
+    let candidates = taskbar_candidates().unwrap_or_default();
+    describe_displays(displays, &candidates)
+}
+
 /// Find the taskbar on Windows' current primary monitor and its notification
 /// area. Called afresh so display changes and Explorer restarts are picked up.
 pub fn taskbar() -> Option<Taskbar> {
+    taskbar_on_display(None)
+}
+
+fn taskbar_candidates() -> Option<Vec<TaskbarCandidate>> {
     let mut candidates = Vec::<TaskbarCandidate>::new();
     unsafe {
         EnumWindows(
@@ -486,7 +660,16 @@ pub fn taskbar() -> Option<Taskbar> {
         )
     }
     .ok()?;
-    let (handle, rect) = select_taskbar(&candidates)?;
+    Some(candidates)
+}
+
+/// Use a remembered display when its taskbar is available, otherwise the
+/// current primary taskbar. Discovery is fresh so a returning display or shell
+/// is adopted automatically without changing the saved display identity.
+pub fn taskbar_on_display(display_id: Option<&str>) -> Option<Taskbar> {
+    let candidates = taskbar_candidates()?;
+    let monitor = display_id.and_then(|id| requested_monitor(&connected_displays(), Some(id)));
+    let (handle, rect) = select_taskbar(&candidates, monitor)?;
     let handle = hwnd(handle);
     let notify = find_child(handle, NOTIFY_CLASS)
         .and_then(rect_of)

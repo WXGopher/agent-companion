@@ -63,6 +63,11 @@ export component CodexTuiWindow inherits Window {
     // floating against it because the shell would not take a child.
     in property <string> taskbar-status;
     callback set-taskbar-enabled(bool);
+    in property <[string]> taskbar-displays: ["Follow primary display"];
+    in property <int> taskbar-display-index;
+    in property <string> taskbar-display-status;
+    out property <bool> taskbar-display-selecting;
+    callback set-taskbar-display(int);
 
     // Read from the OS registration, never a separate saved preference.
     in-out property <bool> run-at-login;
@@ -264,6 +269,10 @@ export component CodexTuiWindow inherits Window {
                     app-message: root.app-message;
                     taskbar-enabled: root.taskbar-enabled;
                     taskbar-status: root.taskbar-status;
+                    taskbar-displays: root.taskbar-displays;
+                    taskbar-display-index: root.taskbar-display-index;
+                    taskbar-display-status: root.taskbar-display-status;
+                    taskbar-display-focus-changed(focused) => { root.taskbar-display-selecting = focused; }
                     run-at-login: root.run-at-login;
                     show-codex: root.show-codex;
                     good-at: root.good-at;
@@ -272,6 +281,7 @@ export component CodexTuiWindow inherits Window {
                     uninstall-codex() => { root.uninstall-codex(); }
                     set-completion-notifications(enabled) => { root.set-completion-notifications(enabled); }
                     set-taskbar-enabled(enabled) => { root.set-taskbar-enabled(enabled); }
+                    set-taskbar-display(index) => { root.set-taskbar-display(index); }
                     set-run-at-login(enabled) => { root.set-run-at-login(enabled); }
                     set-agent-shown(agent, shown) => { root.set-agent-shown(agent, shown); }
                     set-thresholds(good, warn) => { root.set-thresholds(good, warn); }

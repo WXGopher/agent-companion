@@ -1,6 +1,44 @@
 # Windows validation
 
-## Unreleased: primary-display taskbar (2026-10-22)
+## Unreleased: taskbar display selection (2026-10-22)
+
+Windows Settings → Taskbar & app → Taskbar display offers a default follow-primary
+choice and fixed connected displays. Each screen has a readable label with its
+number, model and resolution. The preference stores the monitor device-interface
+identity instead of a display number or native window handle. Choosing a screen
+applies immediately and saves automatically, including while the readout is
+hidden.
+
+If the selected display disconnects or has no usable taskbar, the readout uses
+the current primary taskbar temporarily. Its saved identity remains available
+for returning to that display after reconnection. Existing settings continue
+to use the primary display by default.
+
+The Windows application suite passed with 214 passed and 5 explicitly ignored.
+Coverage includes durable display identity, temporary fallback and reconnection,
+old-config compatibility, and actual ComboBox pointer/keyboard interactions at
+100%, 150% and 200% scale in 820 × 720 and 720 × 640 settings windows. The picker
+works with the readout hidden, updates the saved selection, preserves a CLI
+draft and retains the correct identity if monitor labels are reused while it
+has focus. Selected and fallback renders were visually inspected. Formatting,
+workspace all-targets Clippy with `-D warnings` and diff whitespace checks passed.
+
+The optimized workspace build was installed locally as `100.0`, with verified
+backups retained. All four Companion executables match their build SHA-256
+hashes. Native acceptance used separate temporary application configurations:
+the installed app appeared on the selected secondary display, returned to the
+same display after a restart, and used the primary display for a missing saved
+identity without erasing that identity. Each visible readout was verified as
+a child of its target taskbar with its rectangle contained inside the taskbar.
+All three cases passed, and the normal installed app was restarted on the
+primary display afterward. The real application configuration and Windows
+display configuration were not changed by these acceptance cases.
+
+Physical monitor unplug/replug and changing Windows' primary-display assignment
+during an active session remain manual scenarios; regression snapshots cover
+selection and recovery for those state changes.
+
+## Primary-display default baseline (2026-10-22)
 
 The Windows readout now enumerates both `Shell_TrayWnd` and
 `Shell_SecondaryTrayWnd` and selects the taskbar whose monitor Windows marks as

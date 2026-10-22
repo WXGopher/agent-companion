@@ -42,6 +42,7 @@ mod sessions;
 mod subscription;
 mod task_status;
 mod taskbar;
+mod taskbar_display_settings;
 pub(crate) mod win;
 
 /// The Slint markup, compiled by `build.rs`.
@@ -75,6 +76,8 @@ const TICK: Duration = Duration::from_millis(500);
 const ANIMATION_POLL: Duration = Duration::from_millis(100);
 /// How often a new window is looked for so it can be taken out of the taskbar.
 const ADOPT_POLL: Duration = Duration::from_millis(150);
+/// Display inventories matter only while the settings window is visible.
+const DISPLAY_SETTINGS_POLL: Duration = Duration::from_secs(2);
 /// One full breath of the waiting animation.
 const PULSE_PERIOD_MS: u128 = 2_000;
 
@@ -107,7 +110,7 @@ pub fn pump() {
 fn notification_clicked(session_id: &str) {
     if let Some(app) = APP.with(|slot| slot.borrow().clone()) {
         app.close_flyout();
-        if let Some(taskbar) = app.host.get().or_else(win::taskbar) {
+        if let Some(taskbar) = app.host.get().or_else(|| app.preferred_taskbar()) {
             app.show_flyout(taskbar.rect, Anchor::Taskbar, false);
         }
         app.jump(session_id);
@@ -161,6 +164,8 @@ struct App {
     /// visible blink a moment after it appears.
     flyout_handle: Cell<Option<isize>>,
     settings_window: RefCell<Option<ui::CodexTuiWindow>>,
+    taskbar_display_settings: RefCell<taskbar_display_settings::DisplaySettings>,
+    last_display_settings_poll: Cell<Instant>,
     codex_tui_editor: RefCell<Option<Rc<codex_tui::Editor>>>,
 
     table: RefCell<SessionTable>,
@@ -213,6 +218,10 @@ impl App {
             flyout_dismissal: RefCell::new(None),
             flyout_handle: Cell::new(None),
             settings_window: RefCell::new(None),
+            taskbar_display_settings: RefCell::new(
+                taskbar_display_settings::DisplaySettings::default(),
+            ),
+            last_display_settings_poll: Cell::new(Instant::now()),
             codex_tui_editor: RefCell::new(None),
             table: RefCell::new(SessionTable::new()),
             jump_request: Cell::new(0),
@@ -256,6 +265,7 @@ impl App {
         }
         self.poll_secondary();
         self.sync_subscription_sources();
+        self.watch_the_taskbar();
         self.refresh();
         self.migrate_login_launch();
 
@@ -316,21 +326,38 @@ impl App {
         }
     }
 
-    /// Keep the readout attached to the primary display's current taskbar.
+    fn preferred_taskbar(&self) -> Option<win::Taskbar> {
+        let config = self.config.borrow();
+        match config.taskbar.display.as_deref() {
+            Some(display) => win::taskbar_on_display(Some(display)),
+            None => win::taskbar(),
+        }
+    }
+
+    /// Keep the readout attached to the chosen display's current taskbar.
     ///
     /// Explorer restarts — on a crash, on a settings change, on an update — and
     /// takes the shell taskbars with it. Our window survives the loss of its
     /// parent, orphaned and invisible, and the only way back is to notice and
     /// re-adopt. Polling rather than listening for `TaskbarCreated`: the
     /// broadcast needs a window procedure of our own, which Slint owns, and this
-    /// also lets us follow changes to Windows' primary display.
+    /// also lets us follow changes to Windows' displays and restore a saved
+    /// target when it reconnects.
     fn watch_the_taskbar(&self) {
+        let taskbar = self.preferred_taskbar();
+        let location = |host: win::Taskbar| (host.handle, host.rect);
+        let changed = self.host.get().map(location) != taskbar.map(location);
+        self.host.set(taskbar);
+        if changed {
+            self.bar.dismiss_tooltip();
+            self.close_flyout();
+            self.refresh_bar();
+        }
+        // Track the host even while hidden: cards and notification-opened
+        // panels still belong to the selected display.
         if !self.bar.is_shown() {
             return;
         }
-        let taskbar = win::taskbar();
-        let changed = self.host.get().map(|host| host.handle) != taskbar.map(|found| found.handle);
-        self.host.set(taskbar);
         if changed && taskbar.is_none() {
             // The shell is mid-restart. Leave the window where it is; the next
             // tick that finds a taskbar will re-adopt it.
@@ -1088,6 +1115,7 @@ impl App {
         }
         // Cheap, and the only thing that notices explorer coming back.
         self.watch_the_taskbar();
+        self.poll_taskbar_display_settings();
         let sessions_arrived = self.poll_codex_sessions();
 
         let before = self.table.borrow().counts(now);
@@ -1192,7 +1220,6 @@ impl App {
             self.refresh_bar();
             // The window is brand new, so it has to be found and re-adopted
             // before it is anywhere at all.
-            self.host.set(None);
             self.watch_the_taskbar();
         } else {
             self.bar.hide();
@@ -1203,6 +1230,7 @@ impl App {
             config.save();
         }
         self.refresh_settings();
+        self.refresh_taskbar_display_preferences(false);
     }
 
     /// What the readout managed to do, in words, for the settings window.
@@ -1686,6 +1714,7 @@ impl App {
             let _ = editor.show();
             self.heal_readout();
             self.refresh_settings();
+            self.refresh_taskbar_display_preferences(true);
             return;
         }
         let editor = crate::tui_deployment::primary_home().and_then(|home| {
@@ -1731,6 +1760,12 @@ impl App {
         window.on_set_taskbar_enabled(move |enabled| {
             if let Some(app) = app.upgrade() {
                 app.set_taskbar_enabled(enabled);
+            }
+        });
+        let app = Rc::downgrade(self);
+        window.on_set_taskbar_display(move |index| {
+            if let Some(app) = app.upgrade() {
+                app.set_taskbar_display(index);
             }
         });
         let app = Rc::downgrade(self);
@@ -1785,6 +1820,51 @@ impl App {
         *self.codex_tui_editor.borrow_mut() = Some(editor);
         self.heal_readout();
         self.refresh_settings();
+        self.refresh_taskbar_display_preferences(true);
+    }
+
+    fn set_taskbar_display(&self, index: i32) {
+        let selection = self.taskbar_display_settings.borrow().selection(index);
+        let Some(display) = selection else { return };
+        {
+            let mut config = self.config.borrow_mut();
+            if config.taskbar.display != display {
+                config.taskbar.display = display;
+                config.save();
+            }
+        }
+        self.watch_the_taskbar();
+        self.refresh_taskbar_display_preferences(false);
+    }
+
+    fn poll_taskbar_display_settings(&self) {
+        let visible = self
+            .settings_window
+            .borrow()
+            .as_ref()
+            .is_some_and(|window| window.window().is_visible());
+        if visible && self.last_display_settings_poll.get().elapsed() >= DISPLAY_SETTINGS_POLL {
+            self.refresh_taskbar_display_preferences(false);
+        }
+    }
+
+    /// Refresh only display choices and readout status. In particular, this
+    /// never scans hooks/login registration or touches the CLI editor's draft.
+    fn refresh_taskbar_display_preferences(&self, force: bool) {
+        let open = self.settings_window.borrow();
+        let Some(window) = open.as_ref() else { return };
+        self.last_display_settings_poll.set(Instant::now());
+        let displays = win::taskbar_displays();
+        let config = self.config.borrow();
+        let preferred = config.taskbar.display.as_deref();
+        self.taskbar_display_settings.borrow_mut().refresh_window(
+            window,
+            &displays,
+            preferred,
+            config.taskbar.enabled,
+            force,
+        );
+        window.set_taskbar_status(self.taskbar_status().into());
     }
 
     /// Put one line under the settings window's buttons.
