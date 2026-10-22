@@ -129,6 +129,37 @@ fn click_control(window: &MinimalSoftwareWindow, label: &str, role: AccessibleRo
     );
 }
 
+fn control_value(window: &MinimalSoftwareWindow, label: &str, role: AccessibleRole) -> String {
+    let root = ItemRc::new_root(WindowInner::from_pub(window.window()).component());
+    let mut pending = vec![root];
+    while let Some(item) = pending.pop() {
+        let mut child = item.first_child();
+        while let Some(next) = child {
+            child = next.next_sibling();
+            pending.push(next);
+        }
+        if item.is_accessible()
+            && item.accessible_role() == role
+            && item.is_visible()
+            && item
+                .accessible_string_property(AccessibleStringProperty::Label)
+                .is_some_and(|value| value == label)
+        {
+            return item
+                .accessible_string_property(AccessibleStringProperty::Value)
+                .unwrap_or_default()
+                .to_string();
+        }
+    }
+    panic!("missing {role:?} named {label:?}");
+}
+
+fn key(window: &MinimalSoftwareWindow, key: slint::platform::Key) {
+    let text: slint::SharedString = key.into();
+    window.dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+    window.dispatch_event(WindowEvent::KeyReleased { text });
+}
+
 fn checked_blue_pixels(
     window: &MinimalSoftwareWindow,
     pixels: &[Rgb8Pixel],
@@ -345,6 +376,12 @@ fn codex_tui_editor_renders_and_applies_only_explicit_actions(
         "the checkbox must repaint when the draft deselects it"
     );
     let draft = editor.window.get_preview();
+    taskbar_display_picker_renders_and_saves_only_user_choices(
+        &editor.window,
+        &window,
+        &path,
+        original,
+    );
     for scheme in [
         slint::language::ColorScheme::Light,
         slint::language::ColorScheme::Dark,
@@ -536,6 +573,199 @@ fn codex_tui_editor_renders_and_applies_only_explicit_actions(
         ["update-codex", "update-dodex"].repeat(3)
     );
     editor.window.hide().unwrap();
+}
+
+fn taskbar_display_picker_renders_and_saves_only_user_choices(
+    settings_window: &super::ui::CodexTuiWindow,
+    window: &MinimalSoftwareWindow,
+    cli_path: &std::path::Path,
+    original_cli: &str,
+) {
+    use super::taskbar_display_settings::DisplaySettings;
+    use super::win::TaskbarDisplay;
+
+    let config_dir = tempfile::tempdir().unwrap();
+    let config_path = config_dir.path().join("config.json");
+    let mut initial_config = super::config::Config::default();
+    initial_config.taskbar.enabled = false;
+    let initial_bytes = serde_json::to_vec(&initial_config).unwrap();
+    std::fs::write(&config_path, &initial_bytes).unwrap();
+    let config = Rc::new(RefCell::new(initial_config));
+    let displays = Rc::new(RefCell::new(vec![
+        TaskbarDisplay {
+            id: "desk-device".into(),
+            name: "Display 1 · Desk".into(),
+            primary: true,
+            has_taskbar: true,
+        },
+        TaskbarDisplay {
+            id: "side-device".into(),
+            name: "Display 2 · Side".into(),
+            primary: false,
+            has_taskbar: true,
+        },
+    ]));
+    let model = Rc::new(RefCell::new(DisplaySettings::default()));
+    let saves = Rc::new(std::cell::Cell::new(0));
+    settings_window.on_set_taskbar_display({
+        let weak_window = settings_window.as_weak();
+        let config = config.clone();
+        let displays = displays.clone();
+        let model = model.clone();
+        let saves = saves.clone();
+        let config_path = config_path.clone();
+        move |index| {
+            let choice = model.borrow().selection(index).expect("valid rendered row");
+            let mut config = config.borrow_mut();
+            if config.taskbar.display != choice {
+                config.taskbar.display = choice;
+                std::fs::write(&config_path, serde_json::to_vec(&*config).unwrap()).unwrap();
+                saves.set(saves.get() + 1);
+            }
+            model.borrow_mut().refresh_window(
+                &weak_window.upgrade().unwrap(),
+                &displays.borrow(),
+                config.taskbar.display.as_deref(),
+                config.taskbar.enabled,
+                false,
+            );
+        }
+    });
+    let refresh = |force| {
+        let config = config.borrow();
+        model.borrow_mut().refresh_window(
+            settings_window,
+            &displays.borrow(),
+            config.taskbar.display.as_deref(),
+            config.taskbar.enabled,
+            force,
+        );
+    };
+    let draft = settings_window.get_preview();
+    assert!(settings_window.get_dirty());
+    settings_window.set_taskbar_enabled(false);
+    settings_window.set_taskbar_status("The readout is hidden.".into());
+    settings_window.set_settings_page(1);
+    refresh(true);
+    assert_eq!(saves.get(), 0);
+    assert_eq!(std::fs::read(&config_path).unwrap(), initial_bytes);
+
+    for scale in [1.0, 1.5, 2.0] {
+        window.dispatch_event(WindowEvent::ScaleFactorChanged {
+            scale_factor: scale,
+        });
+        for (width, height) in [(820.0, 720.0), (720.0, 640.0)] {
+            settings_window
+                .window()
+                .set_size(slint::LogicalSize::new(width, height));
+            draw(window, "taskbar-display-before-scroll");
+            // The page scrolls normally at its minimum size, including when
+            // the unrelated CLI draft's review banner occupies the footer.
+            for delta_y in [10_000.0, -160.0] {
+                window.dispatch_event(WindowEvent::PointerScrolled {
+                    position: slint::LogicalPosition::new(width - 70.0, 400.0),
+                    delta_x: 0.0,
+                    delta_y,
+                });
+            }
+            refresh(false);
+            draw(window, &format!("taskbar-display-hidden-{width}-{scale}"));
+            assert_eq!(
+                control_value(window, "Taskbar display", AccessibleRole::Combobox),
+                "Follow primary display"
+            );
+            let before = saves.get();
+            click_control(window, "Taskbar display", AccessibleRole::Combobox);
+            assert!(
+                settings_window.get_taskbar_display_selecting(),
+                "the actual picker must receive focus"
+            );
+            key(window, slint::platform::Key::DownArrow);
+            key(window, slint::platform::Key::DownArrow);
+            assert_eq!(
+                config.borrow().taskbar.display.as_deref(),
+                Some("side-device")
+            );
+            assert_eq!(settings_window.get_taskbar_display_index(), 2);
+            assert_eq!(saves.get(), before + 2);
+            key(window, slint::platform::Key::Return);
+            draw(window, &format!("taskbar-display-selected-{width}-{scale}"));
+            assert_eq!(
+                control_value(window, "Taskbar display", AccessibleRole::Combobox),
+                "Display 2 · Side"
+            );
+            let persisted: super::config::Config =
+                serde_json::from_slice(&std::fs::read(&config_path).unwrap()).unwrap();
+            assert_eq!(persisted.taskbar.display.as_deref(), Some("side-device"));
+            assert!(
+                !persisted.taskbar.enabled,
+                "a display selection must work with the readout hidden"
+            );
+            key(window, slint::platform::Key::UpArrow);
+            key(window, slint::platform::Key::UpArrow);
+            assert_eq!(config.borrow().taskbar.display, None);
+            assert_eq!(saves.get(), before + 4);
+            assert!(settings_window.get_dirty());
+            assert_eq!(settings_window.get_preview(), draft);
+            assert_eq!(std::fs::read_to_string(cli_path).unwrap(), original_cli);
+        }
+    }
+
+    // A replacement monitor can have exactly the old visible name/number.
+    // Refreshing while the dropdown is open must retain the old ID mapping.
+    click_control(window, "Taskbar display", AccessibleRole::Combobox);
+    displays.borrow_mut()[1].id = "replacement-side-device".into();
+    let before = saves.get();
+    refresh(false);
+    assert_eq!(saves.get(), before);
+    key(window, slint::platform::Key::DownArrow);
+    key(window, slint::platform::Key::DownArrow);
+    assert_eq!(
+        config.borrow().taskbar.display.as_deref(),
+        Some("side-device")
+    );
+    assert!(
+        settings_window
+            .get_taskbar_display_status()
+            .contains("disconnected")
+    );
+    key(window, slint::platform::Key::Return);
+    click_control(window, "Codex CLI", AccessibleRole::Button);
+    let saved_bytes = std::fs::read(&config_path).unwrap();
+    let before = saves.get();
+    refresh(false);
+    assert_eq!(saves.get(), before, "inventory refresh must never autosave");
+    assert_eq!(std::fs::read(&config_path).unwrap(), saved_bytes);
+    assert_eq!(settings_window.get_taskbar_display_index(), 3);
+    settings_window.set_settings_page(1);
+    draw(window, "taskbar-display-disconnected");
+    assert_eq!(
+        control_value(window, "Taskbar display", AccessibleRole::Combobox),
+        "Selected display (disconnected)"
+    );
+
+    displays.borrow_mut()[1].id = "side-device".into();
+    refresh(false);
+    draw(window, "taskbar-display-reconnected");
+    assert_eq!(settings_window.get_taskbar_display_index(), 2);
+    assert_eq!(
+        control_value(window, "Taskbar display", AccessibleRole::Combobox),
+        "Display 2 · Side"
+    );
+    assert_eq!(saves.get(), before);
+    displays.borrow_mut()[1].has_taskbar = false;
+    refresh(false);
+    draw(window, "taskbar-display-no-taskbar");
+    assert!(
+        settings_window
+            .get_taskbar_display_status()
+            .contains("No taskbar on Display 2")
+    );
+    assert_eq!(saves.get(), before);
+    assert!(settings_window.get_dirty());
+    assert_eq!(settings_window.get_preview(), draft);
+    assert_eq!(std::fs::read_to_string(cli_path).unwrap(), original_cli);
+    settings_window.set_settings_page(0);
 }
 
 #[cfg(windows)]

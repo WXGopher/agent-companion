@@ -1,4 +1,4 @@
-import { Switch, SpinBox, ScrollView } from "std-widgets.slint";
+import { ComboBox, Switch, SpinBox, ScrollView } from "std-widgets.slint";
 import { SettingsTextField, SettingsButton, SettingsColors, SettingsCard } from "settings-common.slint";
 
 component SettingToggle inherits Rectangle {
@@ -29,6 +29,32 @@ component SettingToggle inherits Rectangle {
     }
 }
 
+component TaskbarDisplaySelector inherits Rectangle {
+    in property <[string]> options;
+    in property <int> selected-index;
+    in property <string> status;
+    callback selected(int);
+    callback focus-changed(bool);
+
+    changed selected-index => { control.current-index = root.selected-index; }
+
+    VerticalLayout {
+        spacing: 7px;
+        Text { text: "Taskbar display"; color: SettingsColors.text; font-size: 12px; font-weight: 600; }
+        control := ComboBox {
+            model: root.options;
+            current-index: root.selected-index;
+            accessible-label: "Taskbar display";
+            changed has-focus => { root.focus-changed(self.has-focus); }
+            selected(value) => {
+                root.selected(self.current-index);
+                self.current-index = root.selected-index;
+            }
+        }
+        Text { text: root.status; color: SettingsColors.secondary; font-size: 11px; wrap: word-wrap; }
+    }
+}
+
 export component AppSettings inherits Rectangle {
     in property <bool> integrations;
     in property <bool> dirty;
@@ -53,6 +79,11 @@ export component AppSettings inherits Rectangle {
     // floating against it because the shell would not take a child.
     in property <string> taskbar-status;
     callback set-taskbar-enabled(bool);
+    in property <[string]> taskbar-displays: ["Follow primary display"];
+    in property <int> taskbar-display-index;
+    in property <string> taskbar-display-status;
+    callback set-taskbar-display(int);
+    callback taskbar-display-focus-changed(bool);
 
     // Read from the registry, which is the mechanism itself, so this can never
     // drift from what Windows will actually do.
@@ -121,6 +152,14 @@ export component AppSettings inherits Rectangle {
                             detail: root.taskbar-status;
                             checked: root.taskbar-enabled;
                             toggle(enabled) => { root.set-taskbar-enabled(enabled); }
+                        }
+                        Rectangle { height: 1px; background: SettingsColors.border; }
+                        TaskbarDisplaySelector {
+                            options: root.taskbar-displays;
+                            selected-index: root.taskbar-display-index;
+                            status: root.taskbar-display-status;
+                            focus-changed(focused) => { root.taskbar-display-focus-changed(focused); }
+                            selected(index) => { root.set-taskbar-display(index); }
                         }
                         Rectangle { height: 1px; background: SettingsColors.border; }
                         SettingToggle {

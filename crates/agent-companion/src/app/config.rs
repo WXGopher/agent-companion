@@ -83,6 +83,9 @@ pub struct TaskbarConfig {
     /// Off means no readout in the taskbar at all. On by default: it is the
     /// cheapest place Agent Companion has to put a number somebody checks all day.
     pub enabled: bool,
+    /// A stable Windows display identity, or `None` to follow the primary
+    /// display. Keep a disconnected target so reconnecting restores the choice.
+    pub display: Option<String>,
     /// Whether Codex and Dodex account blocks are shown in the readout.
     pub codex: bool,
     /// Where the percentage-left colour turns: green at or above `good_at`,
@@ -97,6 +100,7 @@ impl Default for TaskbarConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            display: None,
             codex: true,
             good_at: crate::usage_cache::LEFT_COMFORTABLE,
             warn_at: crate::usage_cache::LEFT_TIGHT,
@@ -210,6 +214,7 @@ mod tests {
     #[test]
     fn the_taskbar_readout_defaults_to_on() {
         assert!(Config::default().taskbar.enabled);
+        assert_eq!(Config::default().taskbar.display, None);
 
         // A config an older Agent Companion wrote may have no taskbar section at all,
         // or a taskbar section with the offset keys the readout used to
@@ -219,6 +224,34 @@ mod tests {
         let dragged: Config =
             serde_json::from_str(r#"{"taskbar":{"enabled":false,"x":40,"y":9}}"#).unwrap();
         assert!(!dragged.taskbar.enabled);
+        assert_eq!(dragged.taskbar.display, None);
+    }
+
+    #[test]
+    fn taskbar_display_choice_round_trips_without_enabling_the_readout() {
+        let mut config = Config::default();
+        config.taskbar.enabled = false;
+        config.taskbar.display = Some(r"\\?\DISPLAY#DELA123#stable-device".into());
+
+        let raw = serde_json::to_string(&config).unwrap();
+        let back: Config = serde_json::from_str(&raw).unwrap();
+        assert_eq!(back.taskbar, config.taskbar);
+        assert!(!back.taskbar.enabled);
+
+        config.taskbar.display = None;
+        let back: Config = serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+        assert_eq!(back.taskbar.display, None);
+    }
+
+    #[test]
+    fn older_taskbar_settings_follow_the_primary_display() {
+        for raw in [
+            r#"{}"#,
+            r#"{"taskbar":{"enabled":true,"codex":false,"goodAt":70,"warnAt":30}}"#,
+        ] {
+            let config: Config = serde_json::from_str(raw).unwrap();
+            assert_eq!(config.taskbar.display, None);
+        }
     }
 
     #[test]

@@ -16,7 +16,7 @@ Windows 只保留任务栏 C / D 读数入口；点击打开面板，右键可�
 - **任务状态**：查看运行中、待处理和已结束的任务，点击返回对应对话或终端。
 - **Tasks / Usage**：切换任务与用量，查看剩余额度、重置时间、累计 Token 和最近七个有记录日期的用量柱状图。
 - **状态栏定制**：选择 Codex CLI 状态栏组件，实时预览并保存。
-- **Windows 集成**：任务栏分别显示 Codex（`C`）和 Dodex（`D`）的每周剩余额度；支持任务完成通知、TUI 提问与审批通知、开机启动，以及可选的工具审批和提问卡片。待回答通知静音弹出，3 秒后收起；点击可返回原终端，Windows Terminal 优先定位对应标签页和分屏。详见[提问通知与终端定位](docs/WINDOWS_QUESTIONS.md)。
+- **Windows 集成**：任务栏分别显示 Codex（`C`）和 Dodex（`D`）的每周剩余额度；默认跟随主显示器，也可在设置中指定屏幕。支持任务完成通知、TUI 提问与审批通知、开机启动，以及可选的工具审批和提问卡片。待回答通知静音弹出，3 秒后收起；点击可返回原终端，Windows Terminal 优先定位对应标签页和分屏。详见[提问通知与终端定位](docs/WINDOWS_QUESTIONS.md)。
 - **macOS 入口**：菜单栏显示每周剩余额度，Codex 在上、Dodex 在下；有历史读数的实例在闲置时继续显示，仅最近一次额度查询失败时旧值带 `*`，悬停可查看最后成功时间和失败原因。尚无读数时显示 `—` 和对应任务状态；点击弹出任务／用量面板，设置从面板底部打开。
 - **任务状态标记**：分别显示 Codex／Dodex 状态：蓝色呼吸表示进行中，黄色表示待确认／待输入或失败，绿色仅表示所有任务均完成，灰色表示无任务或停止、暂停、未知等状态。混合任务优先显示等待，其次显示运行。macOS 菜单栏与 Windows 任务栏使用相同颜色含义。
 - **macOS 面板**：顶部显示 Agent Companion、当前版本和正在运行的任务数。点击底部的太阳／月亮按钮切换亮色／暗色主题，Tasks 和 Usage 同步更新；重启后保留主题选择，默认使用暗色。
@@ -42,6 +42,8 @@ Windows 只保留任务栏 C / D 读数入口；点击打开面板，右键可�
 ```
 
 随后在 Codex 中用 `/hooks` 审阅并信任配置，再开启新会话。如需提问卡片及精确终端跳转，使用同目录的 `agent-companion-codex.exe` 启动 Codex。
+
+**Windows 显示屏幕**：右键任务栏读数 → **Settings… → Taskbar & app → Taskbar display**。默认 **Follow primary display**；也可指定已连接的屏幕，选择后立即生效并保存。指定屏幕断开或没有任务栏时暂用主屏，恢复可用后自动切回。
 
 **Windows TUI 双开**：右键任务栏读数 → **Settings… → TUI 双开 → 安装 Dodex TUI**。也可从解压目录运行：
 
@@ -90,7 +92,7 @@ Windows uses only the C / D taskbar readout: click for the panel, or right-click
 - **Tasks**: track running, waiting and finished tasks, then jump back to the conversation or terminal.
 - **Tasks / Usage**: switch to remaining quota, reset times, lifetime tokens and a bar chart of the last seven reported days.
 - **Status bar editor**: choose Codex CLI components with a live preview.
-- **Windows integration**: separate taskbar readings for Codex (`C`) and Dodex (`D`) weekly quota remaining, completion and TUI question/approval notifications, startup settings, and optional tool approvals and question cards. Question notifications are silent and collapse after three seconds; clicking returns to the original terminal, preferring the recorded Windows Terminal tab and split pane. See [question notifications and terminal navigation](docs/WINDOWS_QUESTIONS.md).
+- **Windows integration**: separate taskbar readings for Codex (`C`) and Dodex (`D`) weekly quota remaining, following the primary display by default or a fixed display chosen in Settings; completion and TUI question/approval notifications, startup settings, and optional tool approvals and question cards. Question notifications are silent and collapse after three seconds; clicking returns to the original terminal, preferring the recorded Windows Terminal tab and split pane. See [question notifications and terminal navigation](docs/WINDOWS_QUESTIONS.md).
 - **macOS menu bar**: the menu bar shows weekly quota remaining, with Codex above Dodex. Instances with a previous reading stay visible while idle; the previous value carries `*` only after a failed quota query, with the last success time and error on hover. Before a reading is available, its row shows `—` and the task status; click it for tasks and usage. The menu bar is the only macOS entry; open Settings from the popup footer.
 - **Task status marks**: Codex / Dodex each show breathing blue for running tasks, yellow for approval/input or failure, green only when every task completed, and gray for no tasks, stopped, paused or unknown states. Waiting takes priority over running in mixed groups. The macOS menu bar and Windows taskbar use the same color meanings.
 - **macOS panel**: the header shows Agent Companion, its current version and the number of running tasks. Use the sun / moon button at the bottom to switch light / dark themes across Tasks and Usage. Your theme choice is saved across restarts; dark is the default.
@@ -116,6 +118,8 @@ The interface retains the last successful quota reading for the same account, ma
 ```
 
 Use `/hooks` in Codex to review and trust the configuration, then start a new session. For question cards and precise terminal navigation, launch Codex through `agent-companion-codex.exe` in the same folder.
+
+**Windows display selection**: right-click the taskbar readout → **Settings… → Taskbar & app → Taskbar display**. **Follow primary display** is the default. Choose a connected display to apply and save the selection immediately. If that display disconnects or has no taskbar, the readout temporarily uses the primary display and returns when the selected taskbar becomes available.
 
 **Windows TUI instances**: Settings → **TUI 双开 → 安装 Dodex TUI**, or run `agent-companion.exe dodex-tui --install` from the extracted release. Use `--repair` to complete or repair an installation. The console entries live in `%LOCALAPPDATA%\AgentCompanion\bin`; reopen your terminal after PATH registration. Run `dodex login`, `dodex resume`, `dodex exec`, or `dodex update`. No desktop App is required. Existing secondary profiles remain in place. Arguments, terminal interaction, working directories and exit codes are native. `dodex app` reports that desktop duplication has been removed. [TUI guide](docs/macos-dual-instance.md)
 

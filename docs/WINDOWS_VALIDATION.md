@@ -1,5 +1,82 @@
 # Windows validation
 
+## Unreleased: taskbar display selection (2026-10-22)
+
+Windows Settings → Taskbar & app → Taskbar display offers a default follow-primary
+choice and fixed connected displays. Each screen has a readable label with its
+number, model and resolution. The preference stores the monitor device-interface
+identity instead of a display number or native window handle. Choosing a screen
+applies immediately and saves automatically, including while the readout is
+hidden.
+
+If the selected display disconnects or has no usable taskbar, the readout uses
+the current primary taskbar temporarily. Its saved identity remains available
+for returning to that display after reconnection. Existing settings continue
+to use the primary display by default.
+
+The Windows application suite passed with 214 passed and 5 explicitly ignored.
+Coverage includes durable display identity, temporary fallback and reconnection,
+old-config compatibility, and actual ComboBox pointer/keyboard interactions at
+100%, 150% and 200% scale in 820 × 720 and 720 × 640 settings windows. The picker
+works with the readout hidden, updates the saved selection, preserves a CLI
+draft and retains the correct identity if monitor labels are reused while it
+has focus. Selected and fallback renders were visually inspected. Formatting,
+workspace all-targets Clippy with `-D warnings` and diff whitespace checks passed.
+
+The optimized workspace build was installed locally as `100.0`, with verified
+backups retained. All four Companion executables match their build SHA-256
+hashes. Native acceptance used separate temporary application configurations:
+the installed app appeared on the selected secondary display, returned to the
+same display after a restart, and used the primary display for a missing saved
+identity without erasing that identity. Each visible readout was verified as
+a child of its target taskbar with its rectangle contained inside the taskbar.
+All three cases passed, and the normal installed app was restarted on the
+primary display afterward. The real application configuration and Windows
+display configuration were not changed by these acceptance cases.
+
+Physical monitor unplug/replug and changing Windows' primary-display assignment
+during an active session remain manual scenarios; regression snapshots cover
+selection and recovery for those state changes.
+
+## Primary-display default baseline (2026-10-22)
+
+The Windows readout now enumerates both `Shell_TrayWnd` and
+`Shell_SecondaryTrayWnd` and selects the taskbar whose monitor Windows marks as
+primary. The existing 500 ms watcher refreshes this selection, so changing the
+primary display or recreating shell taskbars does not require restarting
+Companion. A recognized taskbar on a known secondary monitor is not selected;
+the classic main-taskbar fallback applies only when its monitor query fails.
+
+Five synthetic regression tests cover class/enumeration order, primary-display
+changes, recreated handles, negative coordinates, thin auto-hidden bars,
+invalid candidates and monitor-query fallback. A sixth, read-only native test
+found the current Windows taskbar and independently confirmed its monitor
+against the primary display at `(0, 0)`. All six passed; the native check was
+executed rather than skipped.
+
+The Windows application test suite passed with 201 passed and 5 explicitly
+ignored, including these six checks. Workspace all-targets Clippy with
+`-D warnings`, `cargo fmt --all --check`, the locked Windows application build
+and `git diff --check` passed. The local development executable is
+`target/debug/agent-companion.exe`.
+
+An optimized local workspace build was subsequently installed over the existing
+0.3.33 installation, with the previous executables and application settings
+backed up. The old app exited through its normal pipe shutdown request. All
+four installed Companion executables match the optimized build's SHA-256
+hashes; the installed application and `acomp` both report local version `100.0`,
+and one application process is running from the installed location.
+
+Read-only native window inspection reproduced the issue before replacement:
+the old visible readout was embedded in `Shell_TrayWnd` on a non-primary
+monitor. After restarting the installed build, its visible readout is embedded
+in `Shell_SecondaryTrayWnd` on the verified primary monitor, with its rectangle
+inside the taskbar. The inspection did not change the display configuration.
+
+Live primary-display switching, monitor hot-plugging and mixed-DPI reparenting
+remain manual acceptance scenarios; the synthetic snapshots and native lookup
+do not establish those interactions.
+
 ## v0.3.34 usage configuration compatibility (2026-10-21)
 
 The usage worker forced `--strict-config`, causing native startup to fail on
